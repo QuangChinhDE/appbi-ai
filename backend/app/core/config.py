@@ -272,7 +272,7 @@ class Settings(BaseSettings):
     AI_USER_USD_PER_DAY: float = 2.0
     AI_MAX_MODEL_CALLS_PER_TURN: int = 8
     AI_MAX_USD_PER_TURN: float = 0.5
-    AI_MAX_OUTPUT_TOKENS_PER_CALL: int = 8192
+    AI_MAX_OUTPUT_TOKENS_PER_CALL: int = 16384
     AI_MAX_INPUT_TOKENS_PER_CALL: int = 120000
     # Agent Flow add-on calls one turn may make (the Core decides; never recursive).
     AI_MAX_EXTENSION_CALLS_PER_TURN: int = 1

@@ -40,6 +40,7 @@ async def invoke_for_link(*, link_id: int, turn_id: str, reason: str, question: 
     from app.core.database import SessionLocal
     from app.models.models import DashboardPublicLink
     from app.services.agent_flows import binding as binding_service
+    from app.services.agent_flows import registry as reg
     from app.services.agent_flows.dispatch import EXTENSION_PROMPT, chat_base_prompt, run_for_link
     from app.services.ai_runtime import gateway
     from app.services.chat.extension import VERSION, _WHY, _notice, accept, verified_numbers
@@ -57,7 +58,9 @@ async def invoke_for_link(*, link_id: int, turn_id: str, reason: str, question: 
         link = db.get(DashboardPublicLink, int(link_id))
         bind = binding_service.get_for_link(db, int(link_id)) if link is not None else None
         flow_key = getattr(bind, "brain_key", None)
-        name = flow_key or ""
+        # the viewer reads the flow's NAME in a notice, never its internal key
+        published = reg.resolve_published(db, flow_key) if flow_key else None
+        name = str(getattr(published[0], "name", "") or "") if published else ""
         data = core_env.get("data") if isinstance(core_env.get("data"), dict) else {}
         note = str(((data.get("answer") or {}).get("headline")) or core_env.get("message") or "")[:600]
         base = chat_base_prompt(ctx) + EXTENSION_PROMPT
@@ -65,11 +68,13 @@ async def invoke_for_link(*, link_id: int, turn_id: str, reason: str, question: 
                                link_usd_per_day=resolve_usd_limit(appearance), turn_ref=turn_id,
                                credential=None)
         started = time.monotonic()
+        replay = str(getattr(settings, "AI_CHAT_EXTENSION_REPLAY_PATH", "") or "")
         with gateway.billing(bill):
-            gen = run_for_link(db, link=link, dashboard=ctx.dashboard, ctx=ctx, question=question,
-                               history=[{"role": "assistant", "content": "Lõi dữ liệu đã trả lời: " + note}]
-                               if note else [],
-                               session_key="", filters=list(ctx.public_filters or []), base_system_prompt=base)
+            gen = _replayed(db, link=link, ctx=ctx, flow_key=flow_key, question=question) if replay else \
+                run_for_link(db, link=link, dashboard=ctx.dashboard, ctx=ctx, question=question,
+                             history=[{"role": "assistant", "content": "Lõi dữ liệu đã trả lời: " + note}]
+                             if note else [],
+                             session_key="", filters=list(ctx.public_filters or []), base_system_prompt=base)
             pending: Optional[asyncio.Future] = None
             try:
                 while True:
@@ -142,6 +147,34 @@ async def invoke_for_link(*, link_id: int, turn_id: str, reason: str, question: 
     elif documents and core_env.get("status") == "answered":
         notices.append(_notice("sources_separate"))
     return supporting, notices
+
+
+async def _replayed(db, *, link, ctx, flow_key: Optional[str], question: str):
+    """TEST-ONLY (AI_CHAT_EXTENSION_REPLAY_PATH, refused in production): the link's
+    flow with its MODEL replaced by a recorded output. Every gate still runs - the
+    binding, the published version, the link's knowledge ceiling - and the output
+    goes through the same validator as a live run."""
+    from app.services import llm_test_budget as _budget
+    from app.services.agent_flows import binding as binding_service
+    from app.services.agent_flows.dispatch import build_report_info, new_run_id, resolve_for_link
+    from app.services.agent_flows.envelope import FlowOutput, blocked
+    from app.services.agent_flows.permissions import public_run_scope
+    from app.services.dashboard_ai_bot.events import AgentEvent
+
+    run_id = new_run_id()
+    bind, row, flow, problem = resolve_for_link(db, link=link, dashboard=ctx.dashboard)
+    if problem or flow is None or row is None:
+        out = blocked(run_id, "", problem or "not_configured")
+    else:
+        info = binding_service.build_binding_info(bind, flow=flow, report=build_report_info(ctx.dashboard, ctx),
+                                                  link_token=getattr(link, "token", ""), version=row.version, ctx=ctx)
+        ctx.knowledge_scope = public_run_scope(db, row, flow, info.knowledge.model_dump(),
+                                               getattr(bind, "created_by", None))
+        hit = _budget.extension_replay_lookup(flow_key or "", question)
+        out = (FlowOutput.model_validate({**hit, "run_id": run_id}) if hit is not None
+               else blocked(run_id, "", "replay_missing"))
+    yield AgentEvent(type="result", extra={"envelope": out.to_reader_dict()})
+    yield AgentEvent(type="done")
 
 
 def bound_flow_key(db, link_id: int) -> Optional[str]:

@@ -111,10 +111,18 @@ def test_the_frontend_prefers_the_published_text_over_rebuilding_it():
     """
     import pathlib
 
-    fe = (pathlib.Path(__file__).resolve().parents[2]
-          / "frontend" / "src" / "components" / "dashboards" / "DashboardAiBot.tsx")
-    src = fe.read_text(encoding="utf-8")
-    assert "envelope.answer?.text" in src, (
-        "the reader no longer prefers the server's own answer text, so a rating "
-        "is once again matched against a string the client invented."
-    )
+    # 2026-10-28 (declared protection change, ADR-3 revised): the public bot no
+    # longer renders a FLOW's answer - it is a client of the Answer Core, and a
+    # reader's thumb is stored on the Core's turn BY TURN ID
+    # (`/ai/answer/{turn_id}/rating`). No text is matched at all, which is the
+    # stronger form of what this test protects: a rating never depends on a string
+    # the client built. Pinned on both halves of that contract.
+    root = pathlib.Path(__file__).resolve().parents[2] / "frontend" / "src"
+    bot = (root / "components" / "dashboards" / "DashboardAiBot.tsx").read_text(encoding="utf-8")
+    client = (root / "lib" / "api" / "public.ts").read_text(encoding="utf-8")
+    assert "ratePublicAnswer(token, ex.turnId" in bot, (
+        "the public bot no longer rates the Core's turn by its id")
+    body = client[client.index("export async function ratePublicAnswer"):]
+    body = body[:body.index("\n}\n")]
+    assert "/ai/answer/${turnId}/rating" in body and "JSON.stringify({ conversation_key: conversationKey, rating })" \
+        in body, "a public rating carries something besides the turn id and the thumb - e.g. client-built text"

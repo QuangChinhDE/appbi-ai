@@ -94,7 +94,9 @@ SYSTEM = (
     "filter on the metric's date field: {ref:{\"operator\":\"date_range\",\"value\":{\"from\":\"2025-01-01\","
     "\"to\":\"2026-01-01\"}}} where from is the first day INCLUDED and to is the day AFTER the last one (excluded). "
     "Do not also group by that date unless the question asks for a breakdown over time. "
-    "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation."
+    "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation. "
+    "Fields listed under an explore's filter_fields may be used ONLY in filters, never in dimensions; to break "
+    "down by such a field, choose an explore that lists it among its dimensions."
 )
 
 
@@ -102,13 +104,17 @@ def prompt_catalog(catalog: list[CatalogExplore]) -> list[CatalogExplore]:
     """ONE entry per dataset for the model. With multi-hop reach every explore of a
     dataset offers nearly the same fields; making the model pick among five
     look-alikes was a source of wrong picks (holdout). The server picks the
-    explore afterwards (`retarget`)."""
+    explore afterwards (`retarget`). A published chart is not a look-alike - each
+    shows its own grouping - so every one is kept."""
     best: dict[int, CatalogExplore] = {}
+    kept = [c for c in catalog if c.published]
     for c in catalog:
+        if c.published:
+            continue
         cur = best.get(c.dataset_id)
         if cur is None or (len(c.fields), -c.explore_id) > (len(cur.fields), -cur.explore_id):
             best[c.dataset_id] = c
-    return sorted(best.values(), key=lambda c: c.explore_id)
+    return sorted([*best.values(), *kept], key=lambda c: c.explore_id)
 
 
 def retarget(p: "Plan", catalog: list[CatalogExplore]) -> "Plan":
@@ -118,7 +124,8 @@ def retarget(p: "Plan", catalog: list[CatalogExplore]) -> "Plan":
     customers without orders (holdout D03/D04); from the fact base it does not."""
     from dataclasses import replace as _replace
 
-    if not p.measures:
+    if not p.measures or p.explore.published:
+        # a published chart is the reading the planner chose, not a look-alike
         return p
     fact = p.measures[0].rsplit(".", 1)[0]
     used = {*p.dimensions, *p.measures, *p.filters}
@@ -136,6 +143,20 @@ def build_prompt(question: str, catalog: list[CatalogExplore], previous: Optiona
     if chosen:
         body["chosen_metric"] = {"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
     return json.dumps(body, ensure_ascii=False)
+
+
+_NOT_IN_DATA = "Dữ liệu được phép không có số liệu cho câu hỏi này, nên không trả lời bằng một con số khác."
+
+
+def _no_echo(outcome, question: str):
+    """A refusal whose reason only repeats the question explains nothing: live public-bot
+    run, the model answered `unsupported` with the viewer's own question as the reason."""
+    def words(s):
+        return "".join(ch for ch in str(s or "").lower() if ch.isalnum())
+    if isinstance(outcome, Unsupported) and outcome.code == "unsupported" and words(question) \
+            and words(outcome.reason) in (words(question), ""):
+        return Unsupported(_NOT_IN_DATA)
+    return outcome
 
 
 def _hold_to_choice(outcome, chosen: Optional[dict]):
@@ -166,7 +187,7 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
         raw = _budget.replay_lookup(question, bool(previous), choice=(chosen or {}).get("measure"))
         if raw is None:
             return Unsupported("Không có kết quả mô hình đã ghi cho câu hỏi này (chế độ phát lại).")
-        return _hold_to_choice(validate(raw, catalog), chosen)
+        return _hold_to_choice(_no_echo(validate(raw, catalog), question), chosen)
     _budget.QUESTION.set(question)
     _budget.FOLLOWUP.set(bool(previous))
     if complete is None:
@@ -179,7 +200,51 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
     raw = complete(build_prompt(question, catalog, previous, chosen), system=SYSTEM, max_tokens=900)
     if raw is None:
         return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.", code="model_unavailable")
-    return _hold_to_choice(validate(raw, catalog), chosen)
+    return _hold_to_choice(_no_echo(validate(raw, catalog), question), chosen)
+
+
+def _explore_that_groups(raw: dict, explore: CatalogExplore, catalog: list[CatalogExplore]) -> CatalogExplore:
+    """The explore the plan names, or - when the plan GROUPS BY a field that explore
+    only lets it filter by (a scope's filter-only field) - the one other explore of the
+    same Dataset that shows every asked dimension and has every asked measure. Live
+    run (public bot): "Doanh thu theo khu vực" was planned on the report's KPI, which
+    the region slicer only filters; the region chart answers it."""
+    def names(key):
+        vals = raw.get(key) or []
+        return [(v.get("ref") or v.get("field")) if isinstance(v, dict) else v for v in vals
+                if isinstance(v, (str, dict))] if isinstance(vals, list) else []
+
+    def has(e, ref, kinds):
+        return any(f.kind in kinds and (f.ref == ref or f.ref.rsplit(".", 1)[-1] == str(ref).rsplit(".", 1)[-1])
+                   for f in e.fields)
+
+    wanted, measures = names("dimensions"), names("measures")
+    if not any(has(explore, d, ("filter",)) and not has(explore, d, ("dimension",)) for d in wanted):
+        return explore
+    fits = [c for c in catalog if c is not explore and c.dataset_id == explore.dataset_id
+            and all(has(c, d, ("dimension",)) for d in wanted) and all(has(c, m, ("measure",)) for m in measures)]
+    return fits[0] if len(fits) == 1 else explore
+
+
+def _breakdown_not_filtered(raw: dict, explore: CatalogExplore) -> dict:
+    """A plan that GROUPS BY a field its explore only filters by, and also filters that
+    field to a value, asked for a filter, not a breakdown. When the model's own
+    `covered` names exactly ONE other dimension of the explore that the plan leaves
+    out, that dimension is the breakdown. Live run (public bot): "Doanh thu theo sản
+    phẩm ở khu vực Central" was planned by region AND region = Central on the product
+    chart, while `covered` mapped "sản phẩm" to the product."""
+    dims = raw.get("dimensions")
+    filters = raw.get("filters") if isinstance(raw.get("filters"), dict) else {}
+    if not isinstance(dims, list) or not filters:
+        return raw
+    kinds = {f.ref: f.kind for f in explore.fields}
+    misplaced = [d for d in dims if isinstance(d, str) and kinds.get(d) == "filter" and d in filters]
+    if not misplaced:
+        return raw
+    named = {v for v in (raw.get("covered") or {}).values() if isinstance(v, str)}
+    kept = [d for d in dims if d not in misplaced]
+    candidates = [r for r in named if kinds.get(r) == "dimension" and r not in kept and r not in filters]
+    return {**raw, "dimensions": kept + (candidates if len(candidates) == 1 else [])}
 
 
 def validate(raw: Any, catalog: list[CatalogExplore]):
@@ -231,8 +296,12 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
         explore = None
     if explore is None:
         return Unsupported("Kế hoạch dùng nguồn dữ liệu ngoài phạm vi được phép.")
+    raw = _breakdown_not_filtered(raw, explore)
+    explore = _explore_that_groups(raw, explore, catalog)
     dims = {f.ref: f for f in explore.fields if f.kind == "dimension"}
     meas = {f.ref: f for f in explore.fields if f.kind == "measure"}
+    #: what a filter may name: the dimensions and the scope's filter-only fields
+    filt = {f.ref: f for f in explore.fields if f.kind in ("dimension", "filter")}
 
     def resolve(ref, allowed):
         """A catalog ref as written, or the ONE catalog field of that name when the
@@ -299,17 +368,19 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
             continue
         if g not in GRAINS:
             return Unsupported("Độ chi tiết thời gian của kế hoạch không hợp lệ.")
-        if not is_time(dims[ref]):
+        if not is_time(dims[ref]) and not explore.published:
+            # (a published chart's period column - "2024-03" of a calendar view - is
+            # bucketed by the scope itself, which refuses a grain it cannot derive)
             return Unsupported(f"Trường “{dims[ref].label}” chưa được khai báo kiểu ngày/giờ trong mô hình ngữ nghĩa, "
                                "nên chưa nhóm theo thời gian được. Cần chủ sở hữu mô hình khai báo đúng kiểu.")
         grains[ref] = g
     filters = {}
     for raw_ref, cond in (raw.get("filters") or {}).items():
-        ref = resolve(raw_ref, dims)
+        ref = resolve(raw_ref, filt)
         if ref is None or not isinstance(cond, dict) or cond.get("operator") not in OPERATORS:
             return Unsupported("Bộ lọc của kế hoạch không hợp lệ.")
-        if cond["operator"] == "date_range" and not is_time(dims[ref]):
-            return Unsupported(f"Trường “{dims[ref].label}” không phải trường ngày nên không lọc theo khoảng thời gian được.")
+        if cond["operator"] == "date_range" and not is_time(filt[ref]):
+            return Unsupported(f"Trường “{filt[ref].label}” không phải trường ngày nên không lọc theo khoảng thời gian được.")
         filters[ref] = {"operator": cond["operator"], "value": cond.get("value")}
     sorts = []
     for s in raw.get("sorts") or []:
@@ -325,7 +396,7 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
     in_plan = set(d) | set(m) | set(filters)
     for phrase, target in covered.items():
         if isinstance(target, str):
-            ref = resolve(target, {**dims, **meas})
+            ref = resolve(target, {**filt, **meas})
             if ref is None:
                 continue  # not a catalog ref (a label, a placeholder): no claim either way
         else:
@@ -348,7 +419,7 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "
                                "nên không trả lời phần đó thay vì trả lời sai.")
     plan_ = Plan(explore=explore, dimensions=d, measures=m, time_grains=grains, filters=filters, sorts=sorts,
-                 covered={str(k): resolve(v, {**dims, **meas}) for k, v in covered.items() if isinstance(v, str)})
+                 covered={str(k): resolve(v, {**filt, **meas}) for k, v in covered.items() if isinstance(v, str)})
     lim = raw.get("limit")
     if isinstance(lim, int) and not isinstance(lim, bool) and 1 <= lim <= 100 and len(d) == 1 and sorts:
         plan_.limit = lim  # an echoed plan (a pick, a consent) keeps the ranking it was shown with

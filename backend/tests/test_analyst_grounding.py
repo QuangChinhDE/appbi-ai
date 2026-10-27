@@ -766,3 +766,24 @@ def test_english_connectives_in_a_mixed_question_are_not_unexplained_words():
     p, why = ground(_plan(["l.net_sales"], ["p.category"]), "Doanh số by ngành hàng excluding returns",
                     covered={"doanh số": "l.net_sales", "ngành hàng": "p.category"})
     assert p is None and why
+
+
+def test_growth_is_explained_by_a_time_breakdown_and_only_by_one():
+    """Live public-bot run: "Doanh thu tăng trưởng theo tháng thế nào?" grouped by month
+    was refused on "trưởng". Growth is read off a period breakdown, like "xu hướng";
+    without one it is still an unanswered part of the question."""
+    by_month, why = ground(_plan(["l.net_sales"], ["o.order_date"], {"o.order_date": "month"}),
+                           "Doanh số tăng trưởng theo tháng thế nào?")
+    assert why is None and by_month.dimensions == ["o.order_date"]
+    total, why = ground(_plan(["l.net_sales"]), "Doanh số tăng trưởng thế nào?")
+    assert total is None and "trưởng" in why
+
+
+def test_asking_what_a_chart_shows_is_framing_not_an_unanswered_part():
+    """Live public-bot run: "Biểu đồ doanh thu theo nhóm sản phẩm cho biết điều gì?"
+    was refused on "biết điều"; asking what a chart tells is the request, not data."""
+    ok, why = ground(_plan(["l.net_sales"], ["c.segment"]),
+                     "Biểu đồ doanh số theo phân khúc khách hàng cho biết điều gì?")
+    assert why is None and ok.dimensions == ["c.segment"]
+    ok, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng nói lên những gì?")
+    assert why is None

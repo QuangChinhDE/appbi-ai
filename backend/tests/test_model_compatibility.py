@@ -146,12 +146,24 @@ def _capture_dispatch(monkeypatch):
     ("gemini", "gemini-3.8-flash", "gemini", {"strict": True, "max_tokens": 16000}),
 ])
 def test_a_step_runs_its_model_through_the_protocol_that_model_needs(monkeypatch, provider, model, fn, extra):
+    # every step goes through the Model Gateway first (ai_runtime/gateway.py): a
+    # ledger it can reserve in, and the step's own budget fits the default cap
+    import sqlalchemy as sa
+    from app.models.ai_runtime import AiUsageLedger
+    from app.services.ai_runtime import gateway
+
+    engine = sa.create_engine("sqlite://", poolclass=sa.pool.StaticPool,
+                              connect_args={"check_same_thread": False})
+    AiUsageLedger.__table__.create(engine)
+    monkeypatch.setattr(gateway, "_engine", lambda: engine)
     seen = _capture_dispatch(monkeypatch)
     _collect(REAL_STREAM(provider=provider, api_key="k", model=model, system_prompt="s",
                        messages=[{"role": "user", "content": "q"}], tools=[]))
     assert seen["fn"] == fn and seen["kw"]["model"] == model
     for k, v in extra.items():
         assert seen["kw"][k] == v, (k, seen["kw"].get(k))
+    with engine.connect() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM ai_usage_ledger")).scalar() == 1
 
 
 # ── OpenAI Responses (GPT-6) ──────────────────────────────────────────────────

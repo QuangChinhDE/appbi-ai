@@ -35,7 +35,7 @@ cai chiec het du lieu lay gio
 by per of in for each and total
 """.split())  # last line: English connectives (the English UI's examples, mixed questions)
 # Words that are explained by grouping on a time field.
-_TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong".split())
+_TIME = set("ngay tuan thang quy nam thoi gian gan day xu huong bien dong tang truong".split())
 
 
 def fold(text: str) -> str:
@@ -116,7 +116,7 @@ def _valid_phrases(covered: dict, question: str, q: set[str], fields: dict) -> d
     content = q - _STOP
     vocab: set[str] = set()
     for fld in fields.values():
-        if fld.kind == "dimension":  # entities ("sản phẩm"), never another metric's words
+        if fld.kind in ("dimension", "filter"):  # entities ("sản phẩm"), never another metric's words
             vocab |= _field_words(fld)
     vocab -= _GENERIC
     for phrase, ref in (covered or {}).items():

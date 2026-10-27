@@ -26,6 +26,7 @@ planner (or an add-on) to name a chart the link does not publish.
 """
 from __future__ import annotations
 
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -81,6 +82,24 @@ def _as_date(v: Any) -> Optional[date]:
         except ValueError:
             return None
     return None
+
+
+_UNDERIVABLE = object()
+
+
+def _period_key(v: Any, grain: str) -> Any:
+    """The bucket of a PERIOD a chart shows ("2024-03" of a calendar view's month,
+    "2024" of its year) at `grain`: the period itself at its own grain, a coarser one
+    derived, a finer one underivable. Not a period: no bucket (None)."""
+    s = str(v or "").strip()
+    if len(s) == 7 and s[4] == "-" and s[:4].isdigit() and s[5:].isdigit():
+        y, m = s[:4], int(s[5:])
+        own = {"month": s, "quarter": f"{y}-Q{(m - 1) // 3 + 1}", "year": y}
+    elif len(s) == 4 and s.isdigit():
+        own = {"year": s}
+    else:
+        return None
+    return own.get(grain, _UNDERIVABLE)
 
 
 def _num(v: Any) -> Optional[float]:
@@ -183,6 +202,13 @@ class PublishedReportScope:
         ordered = first + sorted(c for c in ctx.allowed_chart_ids if c not in first)
 
         vocab = _Vocabulary(self.db)
+        exposed = {str(r) for r in ((ctx.exposed_fields or (set(), set()))[0] or set()) if "." in str(r)}
+        slicer_labels = {}
+        for s in (getattr(ctx.dashboard, "slicers_config", None) or []):
+            if isinstance(s, dict) and s.get("label"):
+                for k in ("semanticField", "fieldKey"):
+                    if s.get(k):
+                        slicer_labels[str(s[k])] = str(s["label"])
         out = []
         for chart_id in ordered:
             if len(out) >= MAX_CHARTS:
@@ -198,30 +224,55 @@ class PublishedReportScope:
             dataset_id = getattr(table, "dataset_id", None)
             excluded = {str(c).lower() for c in (ctx.excluded_columns or set())}
             cf, dims, measures = [], [], {}
+            name = str(meta.get("name") or getattr(chart, "name", None) or f"Chart {chart_id}")
+            metric_words, breakdown_words = _title_parts(name)
+            one_dim = len(fields.get("dimensions") or []) == 1
             for d in fields.get("dimensions") or []:
                 ref = str(d.get("field") or "")
                 if not ref or ref.rsplit(".", 1)[-1].lower() in excluded or ref in dims:
                     continue
                 dtype, desc, words = vocab.dimension(dataset_id, ref)
+                if slicer_labels.get(ref):
+                    # the word the report itself gives a viewer for this field ("Khu vực")
+                    words = tuple(dict.fromkeys([slicer_labels[ref], *words]))[:12]
+                if one_dim and breakdown_words:
+                    # the breakdown the report's title names ("sản phẩm" of "Doanh thu theo sản phẩm")
+                    words = tuple(dict.fromkeys([*words, breakdown_words]))[:12]
                 cf.append(CatalogField(ref, "dimension", dtype, str(d.get("label") or ref), desc, words))
                 dims.append(ref)
+            only = len(fields.get("measures") or []) == 1
             for m in fields.get("measures") or []:
                 ref = str(m.get("field") or "")
                 if not ref or ref.rsplit(".", 1)[-1].lower() in excluded or ref in measures:
                     continue
                 agg, desc, words = vocab.measure(dataset_id, ref, m.get("agg"))
+                if only and metric_words:
+                    # the words the report's title gives a viewer for its one metric
+                    # ("Doanh thu" of "Doanh thu theo sản phẩm") over an English label
+                    words = tuple(dict.fromkeys([*words, metric_words]))[:12]
                 cf.append(CatalogField(ref, "measure", agg, str(m.get("label") or ref), desc, words))
                 measures[ref] = agg
             if not measures:
                 continue
-            name = str(meta.get("name") or getattr(chart, "name", None) or f"Chart {chart_id}")
+            # The fields this LINK lets a viewer filter by (its slicers / filter pane), from
+            # the chart's own dataset: offered for FILTERING only. `read` refuses them as a
+            # grouping, so they never become a breakdown the report does not show.
+            for ref in sorted(exposed):
+                view_name = ref.rpartition(".")[0]
+                if ref in dims or ref in measures or ref.rsplit(".", 1)[-1].lower() in excluded or \
+                        vocab._view(dataset_id, view_name)[0] is None:
+                    continue
+                dtype, _desc, words = vocab.dimension(dataset_id, ref)
+                cf.append(CatalogField(ref, "filter", dtype, slicer_labels.get(ref) or ref.rsplit(".", 1)[-1],
+                                       "Chỉ dùng để lọc: biểu đồ không chia theo trường này.", words))
             pages = pages_of.get(chart_id, [])
             self._charts[chart_id] = _Chart(chart_id, name, pages, dataset_id, stype, dims, measures)
             label = name + (f" (trang {', '.join(pages)})" if pages else "")
             out.append(CatalogExplore(
                 explore_id=chart_id, model_id=None, dataset_id=int(dataset_id or -chart_id),
                 dataset_name=name, dataset_table_id=getattr(chart, "dataset_table_id", None),
-                base_view=next(iter(measures)).rsplit(".", 1)[0], source_type=stype, label=label, fields=cf))
+                base_view=next(iter(measures)).rsplit(".", 1)[0], source_type=stype, label=label, fields=cf,
+                published=True))
         return out
 
     def chart(self, chart_id: int) -> Optional[_Chart]:
@@ -249,6 +300,13 @@ class PublishedReportScope:
         if chart is None:
             raise _refuse("outside_published_scope", "Biểu đồ này không thuộc báo cáo được công khai.")
         dims, measures = list(dims or []), list(measures or [])
+        if len(dims) == 1 and not measures and dims[0] not in chart.dims and not filters and not grains:
+            # A value lookup on a field this chart only FILTERS by (the Core checking
+            # "Central" is a real region): the distinct values another published chart
+            # of the same dataset SHOWS - data the viewer already sees.
+            other = self._chart_showing(dims[0], chart.dataset_id)
+            if other is not None:
+                return self._values_of(other, dims[0])
         missing = [r for r in dims if r not in chart.dims] + [r for r in measures if r not in chart.measures]
         missing += [r for r in (grains or {}) if r not in chart.dims]
         if missing:
@@ -285,7 +343,11 @@ class PublishedReportScope:
                 v = r.get(ref)
                 if grain:
                     d = _as_date(v)
-                    v = _bucket(d, grain) if d else None
+                    v = _bucket(d, grain) if d else _period_key(v, grain)
+                    if v is _UNDERIVABLE:
+                        raise _refuse("grain_not_shown",
+                                      f"Biểu đồ “{chart.name}” hiển thị theo kỳ “{r.get(ref)}”, không chia nhỏ "
+                                      f"hơn được theo “{grain}”.", field=ref)
                 out.append(v)
             return tuple(out)
 
@@ -344,6 +406,23 @@ class PublishedReportScope:
         }
         return PublishedResult(columns=columns, rows=out_rows, truncated=truncated, meta=meta)
 
+    def _chart_showing(self, ref: str, dataset_id) -> Optional[_Chart]:
+        return next((c for c in self._charts.values() if ref in c.dims and c.dataset_id == dataset_id), None)
+
+    def _values_of(self, chart: _Chart, ref: str) -> PublishedResult:
+        from app.services.agent_flows.tools.context import _fetch_chart_data
+
+        data = _fetch_chart_data(self.ctx, chart.chart_id)
+        cols = [str(c) for c in data.get("columns") or []]
+        values = []
+        for row in data.get("rows") or []:
+            v = dict(zip(cols, row)).get(ref)
+            if v is not None and v not in values:
+                values.append(v)
+        return PublishedResult(columns=[_Col(ref, ref, "dimension")], rows=[{ref: v} for v in values],
+                               truncated=False, meta={"chart_id": chart.chart_id, "chart": chart.name,
+                                                      "rows_returned": len(values), "duration_ms": 0})
+
     def evidence(self, p, result: PublishedResult) -> dict:
         m = result.meta
         return {
@@ -356,6 +435,17 @@ class PublishedReportScope:
             "duration_ms": m.get("duration_ms"), "freshness": m.get("data_as_of") or "live",
             "regrouped": bool(m.get("regrouped")),
         }
+
+
+def _title_parts(title: str) -> tuple[str, str]:
+    """(metric phrase, breakdown phrase) of a chart title's last "·" segment:
+    "QA Bot · Doanh thu theo sản phẩm" -> ("Doanh thu", "sản phẩm"); "Tổng doanh thu"
+    -> ("Tổng doanh thu", ""). The report's own words for its metric and breakdown."""
+    text = title.rsplit("·", 1)[-1].strip()
+    parts = re.split(r"\s+(?:theo|by|per|từng)\s+", text, maxsplit=1, flags=re.IGNORECASE)
+    metric = re.split(r"\s+(?:của|trong|of|in)\s+", parts[0], maxsplit=1, flags=re.IGNORECASE)[0]
+    breakdown = parts[1] if len(parts) > 1 else ""
+    return metric.strip(" -–—:")[:60], breakdown.strip(" -–—:")[:60]
 
 
 def _label(p, ref: str) -> str:

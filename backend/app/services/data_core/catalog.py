@@ -24,7 +24,9 @@ _TIME_TYPES = frozenset({"date", "time", "datetime", "timestamp"})
 @dataclass
 class CatalogField:
     ref: str              # view.field — what GQS takes
-    kind: str             # dimension | measure
+    #: dimension | measure | filter (a field the scope may FILTER by but not group by:
+    #: the public bot's link-exposed slicer fields on a chart that does not show them)
+    kind: str
     type: str
     label: str
     description: str = ""
@@ -54,13 +56,20 @@ class CatalogExplore:
     source_type: str
     label: str
     fields: list[CatalogField] = field(default_factory=list)
+    #: a published chart: its own reading of the dataset, never collapsed with the
+    #: other charts of that dataset in the model's prompt (`planner.prompt_catalog`)
+    published: bool = False
 
     def as_prompt(self) -> dict:
-        return {
+        out = {
             "explore_id": self.explore_id, "dataset": self.dataset_name, "label": self.label,
             "dimensions": [f.as_prompt() for f in self.fields if f.kind == "dimension"],
             "measures": [f.as_prompt() for f in self.fields if f.kind == "measure"],
         }
+        filter_only = [f.as_prompt() for f in self.fields if f.kind == "filter"]
+        if filter_only:
+            out["filter_fields"] = filter_only
+        return out
 
 
 def _synonyms(defn: dict) -> tuple[str, ...]:
@@ -228,7 +237,7 @@ def is_identifier(f: CatalogField) -> bool:
 
 
 def is_time(f: CatalogField) -> bool:
-    return f.kind == "dimension" and f.type.lower() in _TIME_TYPES
+    return f.kind in ("dimension", "filter") and f.type.lower() in _TIME_TYPES
 
 
 def _ancestors(db, dataset_id: int) -> list[int]:

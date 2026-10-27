@@ -137,7 +137,7 @@ def _setting(name: str, default: float) -> float:
 
 
 def max_output_tokens(requested: Optional[int]) -> int:
-    cap = int(_setting("AI_MAX_OUTPUT_TOKENS_PER_CALL", 8192))
+    cap = int(_setting("AI_MAX_OUTPUT_TOKENS_PER_CALL", 16384))
     return max(1, min(int(requested or cap), cap))
 
 

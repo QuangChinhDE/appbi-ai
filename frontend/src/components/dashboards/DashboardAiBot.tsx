@@ -405,6 +405,8 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
   const rows = data?.rows || [];
   const ev = data?.evidence || null;
   const filters = [...(ev?.filters_described || []), ...(ev?.filters_applied || [])];
+  const [allRows, setAllRows] = useState(false);
+  const shown = allRows ? rows : rows.slice(0, MAX_TABLE_ROWS);
   return (
     <div className="space-y-2">
       {e.status === 'answered' && answer && (
@@ -427,7 +429,7 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.slice(0, MAX_TABLE_ROWS).map((r, i) => (
+                  {shown.map((r, i) => (
                     <tr key={i} className="odd:bg-surface-2">
                       {cols.map((c) => (
                         <td key={c.name} className={`px-1.5 py-1 ${c.role === 'measure' ? 'text-right tabular-nums' : ''}`}>
@@ -438,7 +440,17 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
                   ))}
                 </tbody>
               </table>
-              {(rows.length > MAX_TABLE_ROWS || data?.truncated) && (
+              {rows.length > shown.length && (
+                <button
+                  type="button"
+                  className="mt-1 text-label text-text-link hover:underline"
+                  data-testid="ai-bot-table-more"
+                  onClick={() => setAllRows(true)}
+                >
+                  {t('dashboards.aiBot.core.showAllRows', { count: rows.length })}
+                </button>
+              )}
+              {data?.truncated && (
                 <p className="mt-1 text-label text-text-tertiary">{t('dashboards.aiBot.core.truncated')}</p>
               )}
             </div>
@@ -474,6 +486,12 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
         <p className="rounded-lg bg-warning-bg p-3 text-caption text-text-primary" role="status"
            data-testid="ai-bot-refused" data-code={e.code || ''}>
           {e.message || data?.message}
+        </p>
+      )}
+      {e.code === 'documents_only' && (
+        // no published data answers this; what follows comes from documents only (as AI Chat says)
+        <p className="text-label text-text-tertiary" data-testid="ai-bot-no-data-part">
+          {t('dashboards.aiBot.core.noDataPart')}
         </p>
       )}
       {e.status === 'failed' && (
