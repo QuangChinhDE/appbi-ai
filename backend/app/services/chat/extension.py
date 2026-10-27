@@ -134,7 +134,14 @@ def verified_numbers(core_env: dict) -> set[float]:
 
 
 def accept(out: dict, *, allowed_doc_ids: set[int], verified: set[float]) -> tuple[list, list, list]:
-    """(documents, findings, warnings) from a FlowOutput reader dict."""
+    """(documents, findings, warnings) from a FlowOutput reader dict.
+
+    Every string kept is scrubbed of internals here, by the Core, whatever produced
+    the output: the executor scrubs a live run already, and a validator that trusts
+    its input is not a boundary (the public-reader security journey's echo - tool
+    names, error codes, a Traceback, an internal URL - must never reach a reader)."""
+    from app.services.agent_flows.reader_text import scrub
+
     warnings: list[dict] = []
     documents: list[dict] = []
     seen: set[int] = set()
@@ -151,9 +158,9 @@ def accept(out: dict, *, allowed_doc_ids: set[int], verified: set[float]) -> tup
         if int(ref) in seen:
             continue
         seen.add(int(ref))
-        documents.append({"doc_id": int(ref), "title": str(c.get("label") or "")[:300],
-                          "quote": str(c.get("quote") or "")[:1200], "version": c.get("version"),
-                          "used": [str(u)[:200] for u in (c.get("used") or [])][:5]})
+        documents.append({"doc_id": int(ref), "title": scrub(str(c.get("label") or ""))[:300],
+                          "quote": scrub(str(c.get("quote") or ""))[:1200], "version": c.get("version"),
+                          "used": [scrub(str(u))[:200] for u in (c.get("used") or [])][:5]})
     texts: list[str] = []
     dropped = 0
     for b in ((out.get("answer") or {}).get("blocks") or []):
@@ -168,7 +175,7 @@ def accept(out: dict, *, allowed_doc_ids: set[int], verified: set[float]) -> tup
     if dropped:
         warnings.append({"code": "flow_figures_dropped", "count": dropped})
     findings: list[dict] = []
-    text = "\n\n".join(texts).strip()[:6000]
+    text = scrub("\n\n".join(texts).strip())[:6000]
     if text:
         if documents:
             findings.append({"text": text, "unverified_figures": unverified_figures(text, verified)})

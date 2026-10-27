@@ -250,7 +250,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
           onClick={() => setOpen(true)}
           className="fixed bottom-5 right-5 z-40 flex h-12 items-center gap-2 rounded-full bg-brand px-4 text-small font-emphasis text-text-inverse shadow-linear-md hover:bg-brand-hover"
           data-testid="ai-bot-open"
-          aria-label={t('dashboards.aiBot.core.open')}
+          aria-label={t('dashboards.aiBot.core.openAria')}
         >
           <MessageCircle className="h-5 w-5" aria-hidden="true" />
           <span className="hidden sm:inline">{t('dashboards.aiBot.core.open')}</span>

@@ -186,3 +186,23 @@ def test_extension_replay_answers_only_its_flow_and_question_and_never_in_produc
         b.extension_replay_lookup("f1", "Chính sách là gì?")
     monkeypatch.setattr(settings, "AI_CHAT_EXTENSION_REPLAY_PATH", "")
     assert b.extension_replay_lookup("f1", "Chính sách là gì?") is None
+
+
+def test_an_add_on_output_that_echoes_internals_reaches_no_reader():
+    """The security property tests/security/public-reader.spec.ts locks for a FLOW-
+    answered public turn, locked where the add-on output now enters the Core: the
+    flow's prose repeats a tool name, an error code, a Traceback and an internal URL
+    (the e2e's own echo); the Core's validator keeps none of it, on any surface."""
+    echo = (" get_chart_data: chart_id 9 is not part of this dashboard (chart_out_of_scope, error_code, "
+            "brain_key, answer_node). failed to load chart 1: ValueError. dataset_table_42 at "
+            "http://localhost:8000/api/v1/internal. Traceback (most recent call last):\n"
+            "  File \"x.py\", line 1, in f\n\nHết.")
+    out = {"status": "ok", "answer": {"blocks": [{"type": "text", "markdown": "Theo chính sách." + echo}]},
+           "citations": [{"kind": "document", "ref": "90", "label": "Chính sách" + echo, "quote": "Trích." + echo}]}
+    documents, findings, _ = accept(out, allowed_doc_ids={90}, verified=set())
+    shown = " ".join([findings[0]["text"], documents[0]["title"], documents[0]["quote"]])
+    for internal in ("get_chart_data", "chart_out_of_scope", "error_code", "brain_key", "answer_node",
+                     "ValueError", "dataset_table_42", "localhost:8000", "/api/v1/internal", "Traceback",
+                     'File "x.py"'):
+        assert internal not in shown, internal
+    assert "Theo chính sách" in findings[0]["text"]
