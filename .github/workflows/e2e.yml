@@ -14,6 +14,11 @@ name: E2E (Playwright, full stack)
 
 on:
   push:
+    # Only the integration branches. A feature branch's push used to run the
+    # whole suite AND its PR ran it again through product-gate - two ~60 min
+    # runs per commit competing for runners. The PR run is the gate; the push
+    # run stays where nothing else checks (after a merge into demo/master).
+    branches: [demo, master]
     paths:
       - "backend/**"
       - "frontend/**"
@@ -39,6 +44,15 @@ jobs:
     # ~39 min with them; the UI/UX acceptance suite (dashboard-responsive-uiux*,
     # ~20 min of serial real-browser journeys) brings it to ~60.
     timeout-minutes: 80
+    # FOUR SHARDS, each its own full stack (Postgres, backend, Next build): the
+    # suite was ~60 min of one serial browser. Playwright splits by FILE, so a
+    # serial spec stays whole in one shard. fail-fast off: one red shard must
+    # not cancel the others' evidence. product-gate reads the job's combined
+    # result, which is failure if any shard fails.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -345,7 +359,7 @@ jobs:
 
       - name: Run the suite
         working-directory: e2e
-        run: npx playwright test
+        run: npx playwright test --shard=${{ matrix.shard }}/4
 
       # A reviewer must be able to see what broke without reproducing it locally.
       # One screenshot per chart type (+ BAR_LINE branches, tiles, transitions):
@@ -354,7 +368,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chart-visual-evidence
+          name: chart-visual-evidence-${{ matrix.shard }}
           path: .artifacts/chart-visual/
           if-no-files-found: warn
           retention-days: 14
@@ -363,7 +377,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-artifacts
+          name: playwright-artifacts-${{ matrix.shard }}
           path: |
             e2e/test-results/
             e2e/playwright-report/
