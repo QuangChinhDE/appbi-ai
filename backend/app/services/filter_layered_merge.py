@@ -251,6 +251,30 @@ def make_dashboard_layers(
     ]
 
 
+def slicers_filtering_pages(slicers: list[dict] | None, page_ids: list[str] | None) -> list[dict]:
+    """The report slicers that constrain a chart shown on ``page_ids``.
+
+    The builder's rule (dashboards/[id]/page.tsx ``slicerFiltersPage``,
+    public-page-filters.ts ``slicerFiltersOnPage``): scope ``'custom'`` filters a
+    page only when ``pageScope[page].filter`` is true; ``'all'``/unset filters
+    every page. A chart on several pages keeps a slicer any of them applies —
+    never wider than any page. Without page ids (a report with no pages) every
+    slicer applies, as before.
+    """
+    out: list[dict] = []
+    for s in slicers or []:
+        if not isinstance(s, dict):
+            out.append(s)  # left for the merge to diagnose, as before
+            continue
+        if (s.get("scope") or "all") != "custom" or not page_ids:
+            out.append(s)
+            continue
+        page_scope = s.get("pageScope") if isinstance(s.get("pageScope"), dict) else {}
+        if any(isinstance(page_scope.get(p), dict) and page_scope[p].get("filter") for p in page_ids):
+            out.append(s)
+    return out
+
+
 def make_public_layers(
     *,
     chart_base: Optional[List[Dict[str, Any]]] = None,

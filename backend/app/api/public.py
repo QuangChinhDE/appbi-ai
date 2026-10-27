@@ -81,6 +81,7 @@ from app.services.filter_layered_merge import (
     link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
+    slicers_filtering_pages,
     split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
@@ -700,6 +701,7 @@ def _build_public_chart_filters(
     context_for_log: str = "public_chart",
     hard_bounds_out: list[dict] | None = None,
     viewer_allowed: tuple[set[str], set[str]] | None = None,
+    slicer_page_ids: list[str] | None = None,
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
     public endpoint that fetches chart data.
@@ -817,7 +819,12 @@ def _build_public_chart_filters(
         make_public_layers(
             dashboard_filters=visible_filters,
             dashboard_filters_locked=authoritative_filters,
-            dashboard_slicers=list(getattr(dash, "slicers_config", None) or []),
+            # Only the slicers that filter the page(s) this chart is on — a
+            # custom-scope slicer switched off for a page must not reach it.
+            dashboard_slicers=slicers_filtering_pages(
+                list(getattr(dash, "slicers_config", None) or []),
+                slicer_page_ids if slicer_page_ids is not None else page_ids,
+            ),
             viewer_slicers=list(viewer_filters or []),
             viewer_filters=[],  # mini-pane overrides — wired in Phase F
             link_locked=locked_link,
@@ -3625,12 +3632,25 @@ def _public_link_tool_context(
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     _refuse_malformed_link(link_filters_config)
+    _viewer = [f for f in (viewer_filters or []) if isinstance(f, dict)]
     combined = _build_public_chart_filters(
-        dash, link_filters_config, [f for f in (viewer_filters or []) if isinstance(f, dict)],
+        dash, link_filters_config, _viewer,
         context_for_log=context_for_log,
     )
+    # A custom-scope slicer filters only the pages it is set to: a chart reads
+    # the slicers of ITS page(s), as its tile does — not every slicer of the
+    # report (which the engine refuses on a chart it cannot join to).
+    public_filters_by_chart: dict[int, list[dict]] = {}
+    if any(isinstance(s, dict) and s.get("scope") == "custom" for s in (getattr(dash, "slicers_config", None) or [])):
+        for _cid in {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}:
+            public_filters_by_chart[_cid] = _build_public_chart_filters(
+                dash, link_filters_config, _viewer,
+                context_for_log=context_for_log,
+                slicer_page_ids=_public_chart_page_ids(dash, _cid, None),
+            )
     return ToolContext.from_dashboard(
         db=db, dashboard=dash, public_filters=combined,
+        public_filters_by_chart=public_filters_by_chart,
         page_scope_by_chart=_public_page_scope_by_chart(dash, link_filters_config),
         exposed_fields=_viewer_allowed(dash, link_filters_config),
         # the link's data freshness, as its tiles read it (Realtime = live)
