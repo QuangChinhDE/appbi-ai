@@ -81,6 +81,48 @@ def test_only_a_bigquery_job_carries_the_bytes_limit(monkeypatch, ds_type, expec
     assert seen["max_rows"] == 11 and seen["timeout_seconds"] == 7 and seen["limit"] is None
 
 
+@pytest.mark.parametrize("outcome", ["ok", "error"])
+def test_a_bigquery_read_records_the_bytes_it_scanned(monkeypatch, outcome):
+    """Acceptance on the real stack (2026-10-27): every BigQuery read was finished
+    with bytes_processed=None, so the per-user daily byte budget charged each one
+    its full reservation (1 GiB) - a user was refused after ~20 questions on tables
+    of a few KB. The job's own byte count is recorded, in the ledger and in the
+    evidence, whatever the outcome once the job has run."""
+    from app.services import relationship_key_guard
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.governed_query import CancelRegistry
+    from app.services.governed_query.service import GovernedQueryService
+
+    def fake_execute(**kw):
+        kw["on_job_stats"]({"bytes_processed": 4321})
+        if outcome == "error":
+            raise RuntimeError("the rows could not be read")
+        return ["a"], [{"a": 1}], 0.0
+
+    monkeypatch.setattr(DataSourceConnectionService, "execute_query", staticmethod(fake_execute))
+    monkeypatch.setattr(relationship_key_guard, "verify_key_probes", lambda *a, **k: None)
+    finished = {}
+    compiled = types.SimpleNamespace(
+        query_id="unit-q2", datasource=types.SimpleNamespace(id=1, config={}), ds_type="bigquery",
+        sql="SELECT 1", key_probes=(), bounds=QueryBounds(max_rows=10, timeout_seconds=7, bq_max_bytes=12345),
+        request=types.SimpleNamespace(principal=types.SimpleNamespace(surface="chat", ref="user:u"), relation="r"),
+        columns=(types.SimpleNamespace(name="a", ref="v.a", role="measure"),), dataset_ids=(1,),
+        semantic_epoch="e", dialect="bigquery", sql_fingerprint="s", policy_fingerprint="p",
+        filters_applied=(), filters_dropped=(), freshness=None, warnings=())
+    service = object.__new__(GovernedQueryService)
+    service.cancel_registry = CancelRegistry()
+    service.audit = types.SimpleNamespace(begin=lambda c: None,
+                                          finish=lambda qid, **kw: finished.update(kw))
+    service.plan = lambda request: compiled
+    if outcome == "ok":
+        result = GovernedQueryService.execute(service, object())
+        assert result.evidence.bytes_processed == 4321
+    else:
+        with pytest.raises(RuntimeError):
+            GovernedQueryService.execute(service, object())
+    assert finished["bytes_processed"] == 4321 and finished["status"] == outcome
+
+
 #: PR-1G: the ONLY code outside the package that may reach GQS. A new consumer
 #: is a reviewed change to this set, not a side effect.
 #: Since the unified AI Chat the consumer is Chat: its API (consents), its

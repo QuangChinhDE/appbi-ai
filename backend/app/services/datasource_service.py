@@ -1066,6 +1066,7 @@ class DataSourceConnectionService:
         maximum_bytes_billed: Optional[int] = None,
         on_backend_id: Optional[Callable[[Any], None]] = None,
         job_labels: Optional[Dict[str, str]] = None,
+        on_job_stats: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]], float]:
         """
         Execute a SQL query against a data source.
@@ -1081,6 +1082,8 @@ class DataSourceConnectionService:
                 (internal engine callers only — never exposed to a request)
             max_rows: Server-side fetch cap (fetchmany) — the Query Runner sets it
             maximum_bytes_billed: BigQuery job-level billing cap
+            on_job_stats: BigQuery only - receives {"bytes_processed"} of the job once
+                its result is read (GQS records it against the daily byte budget)
             
         Returns:
             Tuple of (columns, data, execution_time_ms)
@@ -1119,6 +1122,7 @@ class DataSourceConnectionService:
                     maximum_bytes_billed=maximum_bytes_billed,
                     on_backend_id=on_backend_id,
                     job_labels=job_labels,
+                    on_job_stats=on_job_stats,
                 )
             elif ds_type == DataSourceType.GOOGLE_SHEETS.value:
                 result = DataSourceConnectionService._execute_google_sheets(config, sql_query, limit)
@@ -1678,6 +1682,7 @@ class DataSourceConnectionService:
         maximum_bytes_billed: Optional[int] = None,
         on_backend_id: Optional[Callable[[Any], None]] = None,
         job_labels: Optional[Dict[str, str]] = None,
+        on_job_stats: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> Tuple[List[str], List[Dict[str, Any]]]:
         """Execute query against BigQuery.
 
@@ -1775,6 +1780,10 @@ class DataSourceConnectionService:
                 _report(query_job)
                 results = query_job.result(timeout=timeout_seconds, max_results=max_rows) if max_rows else query_job.result(timeout=timeout_seconds)
             
+            if on_job_stats is not None:
+                # known once the result is read; a cache hit scans (and bills) 0 bytes
+                on_job_stats({"bytes_processed": int(query_job.total_bytes_processed or 0)})
+
             # Get column names
             columns = [field.name for field in results.schema]
             

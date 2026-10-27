@@ -287,22 +287,25 @@ class GovernedQueryService:
             ) from exc
 
         started = time.monotonic()
+        # what the warehouse job reports about itself (BigQuery: the bytes it scanned);
+        # without it the daily byte budget charges every read its full reservation
+        stats: dict = {}
         try:
-            columns, rows = self._run(compiled)
+            columns, rows = self._run(compiled, stats)
             self._refuse_unexpected_output(compiled, columns)
         except GovernedRefusal as refusal:
             self._finish(compiled, _AUDIT_STATUS.get(refusal.code, "refused"),
-                         refusal_code=refusal.code, started=started)
+                         refusal_code=refusal.code, started=started, stats=stats)
             raise
         except Exception:
-            self._finish(compiled, "error", started=started)
+            self._finish(compiled, "error", started=started, stats=stats)
             raise
 
         b = compiled.bounds
         truncated = len(rows) > b.max_rows
         rows = rows[: b.max_rows]
         duration_ms = int((time.monotonic() - started) * 1000)
-        self._finish(compiled, "ok", rows_returned=len(rows), started=started)
+        self._finish(compiled, "ok", rows_returned=len(rows), started=started, stats=stats)
         evidence = QueryEvidence(
             query_id=compiled.query_id,
             principal_ref=compiled.request.principal.ref,
@@ -318,7 +321,7 @@ class GovernedQueryService:
             bounds=b,
             rows_returned=len(rows),
             truncated=truncated,
-            bytes_processed=None,
+            bytes_processed=stats.get("bytes_processed"),
             duration_ms=duration_ms,
             freshness=compiled.freshness,
             warnings=compiled.warnings,
@@ -540,7 +543,7 @@ class GovernedQueryService:
                 {"columns": sorted(str(c) for c in extra)},
             )
 
-    def _run(self, compiled: CompiledQuery):
+    def _run(self, compiled: CompiledQuery, stats: Optional[dict] = None):
         from app.services.datasource_service import DataSourceConnectionService
         from app.services.governed_query.cancellation import (
             REGISTRY, BigQueryCanceller, MySQLCanceller, PostgresCanceller,
@@ -581,6 +584,7 @@ class GovernedQueryService:
                 max_rows=b.max_rows + 1,
                 maximum_bytes_billed=b.bq_max_bytes if compiled.ds_type == "bigquery" else None,
                 on_backend_id=_register,
+                on_job_stats=stats.update if stats is not None else None,
                 # Attribution on the warehouse side: which governed query ran it.
                 job_labels={"appbi_surface": "gqs", "appbi_query": _bq_label(qid)}
                 if compiled.ds_type == "bigquery" else None,
@@ -645,9 +649,9 @@ class GovernedQueryService:
         return tuple(out)
 
     def _finish(self, compiled: CompiledQuery, status: str, *, refusal_code: Optional[str] = None,
-                rows_returned: Optional[int] = None, started: float) -> None:
+                rows_returned: Optional[int] = None, started: float, stats: Optional[dict] = None) -> None:
         self.audit.finish(compiled.query_id, status=status, refusal_code=refusal_code,
-                          rows_returned=rows_returned, bytes_processed=None,
+                          rows_returned=rows_returned, bytes_processed=(stats or {}).get("bytes_processed"),
                           duration_ms=int((time.monotonic() - started) * 1000))
 
     def _audit_refusal(self, request: GovernedQueryRequest, query_id: str, code: str) -> None:
