@@ -226,6 +226,33 @@ def _explore_that_groups(raw: dict, explore: CatalogExplore, catalog: list[Catal
     return fits[0] if len(fits) == 1 else explore
 
 
+_ALL_OF = ("bo loc", "bo", "tat ca cac", "tat ca", "toan bo", "moi", "all")
+
+
+def _unrestricted_field_kept(phrase: str, explore: CatalogExplore, filters: dict) -> bool:
+    """"bỏ lọc khu vực", "tất cả khu vực": the question asks NOT to restrict a field it
+    names. A plan with no filter on that field answers it (live public-bot run: the
+    model mapped "tất cả khu vực" to null and the follow-up was refused); a plan that
+    still filters it does not."""
+    from app.services.data_core.grounding import _STOP, fold
+
+    words = "".join(ch if ch.isalnum() else " " for ch in fold(phrase)).split()
+    rest = None
+    for i in range(len(words)):
+        if not set(words[:i]) <= _STOP:  # only function words may precede it ("tính tất cả ...")
+            break
+        tail = " ".join(words[i:])
+        head = next((h for h in _ALL_OF if tail.startswith(h + " ")), None)
+        if head is not None:
+            rest = tail[len(head) + 1:]
+            break
+    if rest is None:
+        return False
+    named = [f for f in explore.fields if f.kind in ("dimension", "filter")
+             and rest in {" ".join(fold(t).split()) for t in (f.label, *(f.synonyms or ())) if t}]
+    return bool(named) and all(f.ref not in filters for f in named)
+
+
 def _breakdown_not_filtered(raw: dict, explore: CatalogExplore) -> dict:
     """A plan that GROUPS BY a field its explore only filters by, and also filters that
     field to a value, asked for a filter, not a breakdown. When the model's own
@@ -414,6 +441,8 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                     any(t[:1].isupper() for t in str(phrase).split()[1:])):
                 # "khách Doanh nghiệp": a Capitalised value the model could not place.
                 # Grounding looks it up among real values or refuses naming it.
+                continue
+            if _unrestricted_field_kept(phrase, explore, filters):
                 continue
         if ref is None or ref not in in_plan:
             return Unsupported(f"Dữ liệu bạn được dùng không có trường cho “{str(phrase)[:80]}”, "

@@ -48,6 +48,9 @@ _ALL_TIME = re.compile(r"\b(?:tu (?:truoc|dau|xua) (?:toi|den) (?:nay|gio)|toan 
 _SUBJECT = re.compile(r"\b(?:cua )?(?:cong ty|ben minh|chung ta|doanh nghiep minh)\b(?! \w+ (?:nghiep|hang))")
 # asking what a chart or figure shows: "(biểu đồ ...) cho biết điều gì", "nói lên những gì"
 _EXPLAIN = re.compile(r"\b(?:cho (?:biet|thay)|noi len)(?: (?:nhung dieu|dieu|nhung) gi)?\b")
+# lifting a restriction: "bỏ (bộ) lọc khu vực", "tất cả (các) khu vực", "toàn bộ ..." -
+# the planner checks the plan does not filter the field named after it
+_LIFT = re.compile(r"\b(?:bo (?:bo )?loc|bo dieu kien|tat ca(?: cac)?|toan bo)\b")
 # exclusion markers: the negation obligation (grounding) checks the plan carries them
 _EXCLUDE = re.compile(r"\b(?:ngoai tru|loai tru|loai bo)\b")
 # follow-up continuation: "chia tiếp", "thêm ... vào (nữa)", "còn ... thì sao"
@@ -139,7 +142,7 @@ def extract(question: str, *, chosen_metric: bool = False, followup: bool = Fals
         if not n and which_one and m_kind_superlative(consumed):
             n = 1  # "which X ... most": the top one (ties kept by the server)
         ranking = {"direction": direction, "n": n if n and n > 0 else None}
-    for rx in (_ALL_TIME, _SUBJECT, _EXPLAIN, _EXCLUDE):
+    for rx in (_ALL_TIME, _SUBJECT, _EXPLAIN, _LIFT, _EXCLUDE):
         while True:
             text, m = cut(rx, text)
             if not m:

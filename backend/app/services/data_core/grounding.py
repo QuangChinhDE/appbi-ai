@@ -364,7 +364,9 @@ def is_forecast(question: str) -> bool:
 # folded they collide with ordinary words ("chỉ" / "chi phí", "tối đa" / "tôi",
 # "không" as a yes/no particle). Each one obliges the plan to carry the matching
 # operator; a plan that does not is refused, never answered with the opposite.
-_NEG = re.compile(r"(?<!\w)(không|chưa|ngoại trừ|loại trừ|loại bỏ|bỏ qua|bỏ|trừ|khác|ngoài)(?=\s+\w)")
+# "bỏ lọc / bỏ bộ lọc / bỏ điều kiện" lifts a filter - a follow-up, not an exclusion
+_NEG = re.compile(r"(?<!\w)(không|chưa|ngoại trừ|loại trừ|loại bỏ|bỏ qua|bỏ(?!\s+(?:lọc|bộ lọc|điều kiện))|trừ|khác|ngoài)"
+                  r"(?=\s+\w)")
 _YES_NO = re.compile(r"(?<!\w)có(?:\s+\w+){1,6}\s+không\s*[?.!]*\s*$")
 _CMP = re.compile(r"(?<!\w)(lớn hơn|nhỏ hơn|cao hơn|thấp hơn|nhiều hơn|ít hơn|ít nhất|tối thiểu|tối đa|trên|dưới|vượt|hơn)"
                   r"\s+(?:\w+\s+){0,2}\d")

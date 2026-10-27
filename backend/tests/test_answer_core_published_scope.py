@@ -348,3 +348,33 @@ def test_a_refusal_that_only_repeats_the_question_says_why_instead():
                                    [CatalogField(R, "measure", "sum", "Doanh thu")])],
                 complete=lambda *a, **k: {"status": "unsupported", "reason": "Không có dữ liệu đổi trả."})
     assert kept.reason == "Không có dữ liệu đổi trả."
+
+
+def test_a_follow_up_that_lifts_a_filter_is_answered_without_it():
+    """Live run P12: after "Doanh thu theo sản phẩm ở khu vực Central", "Bỏ lọc khu
+    vực, tính tất cả khu vực" was planned right (no region filter) but refused because
+    the model mapped "tất cả khu vực" to null. Asking for ALL of a field is answered by
+    not filtering it - and refused when the plan still filters it."""
+    from app.services.data_core.grounding import ground
+    from app.services.data_core.planner import Unsupported, validate
+
+    products = CatalogExplore(11, None, 90, "Doanh thu theo sản phẩm", None, "v", "bigquery", "x", [
+        CatalogField(P, "dimension", "string", "Product name", "", ("sản phẩm",)),
+        CatalogField(R, "measure", "sum", "Total revenue", "", ("Doanh thu",)),
+        CatalogField(Q, "filter", "string", "Khu vực")], published=True)
+    q = "Bỏ lọc khu vực, tính tất cả khu vực"
+    raw = {"status": "plan", "explore_id": 11, "dimensions": [P], "measures": [R], "filters": {},
+           "covered": {"tất cả khu vực": None}}
+    p = validate(raw, [products])
+    assert not isinstance(p, Unsupported), p
+    previous = {"explore_id": 11, "dimensions": [P], "measures": [R],
+                "filters": {Q: {"operator": "eq", "value": "Central"}}}
+    ok, why = ground(p, q, carried=[P, R, Q], covered=p.covered, previous=previous)
+    assert why is None and ok.filters == {}, why
+    still = validate({**raw, "filters": {Q: {"operator": "eq", "value": "Central"}}}, [products])
+    assert isinstance(still, Unsupported)
+    # the second live run: the model's phrase began with a function word
+    p = validate({**raw, "covered": {"tính tất cả khu vực": None}}, [products])
+    assert not isinstance(p, Unsupported), p
+    # a real field word before it is not a lift ("doanh thu tất cả khu vực" names a metric)
+    assert isinstance(validate({**raw, "covered": {"lợi nhuận tất cả khu vực": None}}, [products]), Unsupported)
