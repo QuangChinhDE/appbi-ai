@@ -27,6 +27,29 @@ const NOT_AVAILABLE = /conversation not available|không mở được cuộc tr
 let convUrl = '';
 let addOnUrl = '';
 
+/** Is `v` in these response bodies as a VALUE: a JSON number anywhere, or a raw /
+ *  thousands-grouped number inside a string (a narrative)? Digits inside an id are not:
+ *  a random turn id `9363254a…` once matched a bare substring check for 6325. */
+function numberOn(bodies: string[], v: number): boolean {
+  const nums: number[] = [];
+  const strs: string[] = [];
+  const walk = (x: unknown): void => {
+    if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === 'object') Object.values(x).forEach(walk);
+    else if (typeof x === 'number') nums.push(x);
+    else if (typeof x === 'string') strs.push(x);
+  };
+  for (const b of bodies) {
+    try { walk(JSON.parse(b)); } catch { strs.push(b); }   // not JSON (a stream): read as text
+  }
+  if (nums.some((n) => Math.abs(n - v) < 0.005)) return true;
+  const int = String(Math.trunc(v));
+  const grouped = (sep: string) => int.replace(/\B(?=(\d{3})+(?!\d))/g, sep);
+  const forms = [String(v), int, grouped(','), grouped('.'), grouped(' ')];
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return strs.some((s) => forms.some((f) => new RegExp(`(?<!\\w|\\d[.,])${esc(f)}(?:\\.0+)?(?!\\w|[.,]\\d)`).test(s)));
+}
+
 /** The share dialog's own search (scoped to a resource you may share; never a directory dump). */
 async function shareableViewer(owner: Awaited<ReturnType<typeof api>>, conversationId: number) {
   const email = `qa-chat-viewer@${DOMAIN}`;
@@ -214,7 +237,7 @@ test('R7 · shared with someone who may not read the source: questions only, no 
   await expect(page.getByTestId('chat-question')).toHaveCount(0);
   const wire = bodies.join('\n');
   for (const v of [...Object.values(ORACLE.prod_rev_q1_2024), ...Object.values(ORACLE.prod_rev_q2_2024)].filter((n) => n > 1000)) {
-    expect(wire.includes(String(v)), `oracle value ${v} reached the viewer`).toBe(false);
+    expect(numberOn(bodies, v), `oracle value ${v} reached the viewer`).toBe(false);
   }
   expect(wire).not.toContain('"rows"');
   await shot(page, info, 'R7b-viewer-redacted');
@@ -321,8 +344,10 @@ test('R13 · old links: an unknown or foreign conversation shows "not available"
 
 // ── visual inspection at six sizes ────────────────────────────────────────────
 test('R14 · 360 / 390 / 768 / 1024 / 1440 / 1920: no horizontal scroll, composer and header fit, no console errors', async ({ page }, info) => {
-  const errors = watch(page);
   await login(page, 'qa-chat-owner');
+  // watched from here: a 429 from the login rate limiter (the suite logs in many times;
+  // the helper waits and retries) is the limiter working, not a chat page error
+  const errors = watch(page);
   for (const [w, h] of [[360, 800], [390, 844], [768, 1024], [1024, 768], [1440, 900], [1920, 1080]]) {
     await page.setViewportSize({ width: w, height: h });
     await page.goto(addOnUrl);
