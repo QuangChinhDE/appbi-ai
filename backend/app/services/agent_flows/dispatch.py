@@ -1117,15 +1117,16 @@ async def run_as_extension(
         # TEST-ONLY: the flow's model answered from a recording (test budget rules:
         # an unmetered paid call is refused). The gates above already ran.
         hit = _budget.extension_replay_lookup(flow.key, question)
-        out = (FlowOutput.model_validate({**hit, "run_id": run_id}) if hit is not None
-               else blocked(run_id, "Không có kết quả đã ghi cho câu hỏi này (chế độ phát lại).", "replay_missing"))
-        yield AgentEvent(type="result", extra={"envelope": out.to_dict()})
+        replayed = (FlowOutput.model_validate({**hit, "run_id": run_id}) if hit is not None
+                    else blocked(run_id, "Không có kết quả đã ghi cho câu hỏi này (chế độ phát lại).", "replay_missing"))
+        # handed over as the object: recorded in full and narrowed below, like a live run
+        yield AgentEvent(type="result", extra={"output": replayed})
         yield AgentEvent(type="done")
 
     try:
         async for ev in _engine():
             if ev.type == "result":
-                out = FlowOutput.model_validate(ev.extra.get("envelope"))
+                out = ev.extra.pop("output", None) or FlowOutput.model_validate(ev.extra.get("envelope"))
                 runs_service.record(db, inp=inp, out=out, brain_key=flow.key, version=row.version,
                                     binding_id=None, chat_thread_id=None, store_content=True)
                 recorded = True
