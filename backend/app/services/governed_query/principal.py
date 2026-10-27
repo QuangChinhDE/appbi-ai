@@ -28,7 +28,9 @@ from typing import Any, Iterable, Literal, Optional
 from app.core.authz.decision import Action, Decision, can
 
 Kind = Literal["human", "pat", "system"]
-Surface = Literal["analyst", "agent_flow", "studio_test", "chart", "preview", "profile"]
+#: `chat` is the unified AI Chat Data Core; `analyst` remains for ledger rows written
+#: before it (the same Core, under its earlier name).
+Surface = Literal["chat", "analyst", "agent_flow", "studio_test", "chart", "preview", "profile"]
 
 #: Surfaces a SYSTEM principal (a scheduler job) may never act on: an answer to a
 #: person is made with that person's rights, not the service's (I-2).

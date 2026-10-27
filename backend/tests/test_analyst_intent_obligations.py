@@ -1,4 +1,4 @@
-"""Meaning-changing words oblige the plan (services/analyst/grounding.py).
+"""Meaning-changing words oblige the plan (services/data_core/grounding.py).
 
 PO directive (quality recovery): negation, comparison, a time boundary and "only"
 used to sit in the no-meaning word list, so a plan for "đơn CHƯA hoàn tất" and
@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.analyst.catalog import CatalogExplore, CatalogField
-from app.services.analyst.grounding import check_obligations, ground, intent_obligations
-from app.services.analyst.planner import Plan
+from app.services.data_core.catalog import CatalogExplore, CatalogField
+from app.services.data_core.grounding import check_obligations, ground, intent_obligations
+from app.services.data_core.planner import Plan
 
 FIELDS = [
     CatalogField("o.order_count", "measure", "count_distinct", "Số đơn hàng"),
@@ -106,7 +106,7 @@ def test_a_field_outside_the_model_is_still_refused():
 def test_a_value_that_does_not_exist_is_a_choice_not_an_answer():
     from types import SimpleNamespace
 
-    from app.services.analyst.service import _check_filter_values
+    from app.services.data_core.service import _check_filter_values
 
     def values_of(ref):
         return SimpleNamespace(columns=[SimpleNamespace(name="v", ref=ref)], rows=[{"v": "Hoàn tất"}, {"v": "Huỷ"}])

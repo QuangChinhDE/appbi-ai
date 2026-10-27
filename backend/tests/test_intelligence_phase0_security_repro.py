@@ -219,12 +219,17 @@ def test_sec03_studio_preview_scope_keeps_the_caller_term():
 
 
 def test_sec03_live_chat_scope_does_keep_the_caller_term():
-    """The reference behaviour SEC-03 is measured against. If this fails the
-    live path regressed, which is worse than the finding."""
+    """The reference behaviour SEC-03 is measured against, on the live signed-in
+    path - since the unified AI Chat, a Flow runs there only as an extension, and
+    its ceiling is `extension_scope(db, row, flow, <the caller>)`: the caller is a
+    term (no delegation at all, ADR-1). If this fails the live path regressed."""
     from app.services.agent_flows import dispatch
 
-    calls = _run_scope_calls(dispatch.run_for_chat_thread)
-    assert calls and all(any(k.arg == "caller" for k in c.keywords) for c in calls)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(dispatch.run_as_extension)))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", getattr(n.func, "attr", "")) == "extension_scope"]
+    assert calls and all(len(c.args) == 4 and getattr(c.args[3], "id", "") == "user" for c in calls)
+    assert not _run_scope_calls(dispatch.run_as_extension), "an extension must not use the delegating run_scope"
 
 
 # ── SEC-04  capabilities default to ALLOWED when a context never declared them

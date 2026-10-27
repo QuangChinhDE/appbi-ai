@@ -39,11 +39,11 @@ if settings.WORKBOARDS_ENABLED:
 
 api_router.include_router(semantic.router)
 
-# AppBI Analyst (M2 MVP) — the first Governed Query Service consumer. Mounted
-# ONLY when enabled; every read it makes goes through GQS and the audit ledger.
-if settings.ANALYST_ENABLED:
-    from app.api.analyst import router as analyst_router
-    api_router.include_router(analyst_router)
+# AI Chat — the one place a signed-in person asks a question. Always mounted: the
+# Data Core reads through GQS and needs no optional module; AI_CHAT_ENABLED is an
+# emergency switch checked per turn (503), so history stays readable when it is off.
+from app.api.chat import router as chat_router  # noqa: E402
+api_router.include_router(chat_router)
 
 # Metadata Catalog — AppBI-native Govern backend (Vocabulary + Metrics + Knowledge Hub),
 # proxied under /catalog. Imported ONLY when enabled so the core app is unaffected while OFF.
@@ -60,13 +60,6 @@ if settings.METADATA_CATALOG_ENABLED:
     # a live report says, so it must not ride on a knowledge-authoring grant.
     from app.modules.agent_flows.api import router as agent_flows_router
     api_router.include_router(agent_flows_router)
-
-    # Direct Chat: the READER's side of the same module — which assistants may I
-    # open, what did we say, ask the next thing. Registered after the Studio router
-    # so `/agent-flows/chat/*` is matched by its own prefix rather than by a
-    # `/agent-flows/{something}` route above it.
-    from app.modules.agent_flows.chat_api import router as agent_flows_chat_router
-    api_router.include_router(agent_flows_chat_router)
 
 # Observability — dataset health (incidents + semantic lineage + usage + alert channels)
 api_router.include_router(observability.router)

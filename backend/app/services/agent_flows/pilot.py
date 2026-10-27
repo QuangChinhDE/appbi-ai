@@ -1,7 +1,7 @@
 """Who may be answered by an Agent Flow — the reader rollout policy.
 
 ONE POLICY FOR EVERY READER PATH. Public-link chat (`dispatch.run_for_link`) and
-Direct Chat (`dispatch.run_for_chat_thread`) both ask `reader_decision`; nothing else
+AI Chat extensions (`dispatch.run_as_extension`) both ask `reader_decision`; nothing else
 serves a reader an Agent Flow answer. Author Studio Test (`dispatch.run_preview`) is
 not a reader path and keeps its own gate (edit permission on the flow). The legacy
 dashboard assistant (`dashboard_ai_bot`) never goes through here and is unaffected.

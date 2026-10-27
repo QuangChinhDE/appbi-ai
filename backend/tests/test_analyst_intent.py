@@ -1,4 +1,4 @@
-"""Question intent extraction (services/analyst/intent.py).
+"""Question intent extraction (services/data_core/intent.py).
 
 Sealed set 8 (2026-10-22) refused answerable questions because grounding treated
 whole constructions word by word: request framing ("Anh chị cho em hỏi ..."),
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.analyst.intent import extract
+from app.services.data_core.intent import extract
 
 
 @pytest.mark.parametrize("question, content", [

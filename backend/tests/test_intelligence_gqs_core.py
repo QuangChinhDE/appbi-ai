@@ -83,7 +83,11 @@ def test_only_a_bigquery_job_carries_the_bytes_limit(monkeypatch, ds_type, expec
 
 #: PR-1G: the ONLY code outside the package that may reach GQS. A new consumer
 #: is a reviewed change to this set, not a side effect.
-APPROVED_CONSUMERS = {"api/analyst.py", "services/analyst/service.py", "services/analyst/catalog.py"}
+#: Since the unified AI Chat the consumer is Chat: its API (consents), its
+#: conversation store (the viewer's catalog) and orchestrator (ledger, cancel), and
+#: the Data Core that plans and executes.
+APPROVED_CONSUMERS = {"api/chat.py", "services/chat/conversations.py", "services/chat/orchestrator.py",
+                      "services/data_core/service.py", "services/data_core/catalog.py"}
 
 
 def test_only_the_approved_consumers_reach_gqs():
@@ -100,8 +104,10 @@ def test_only_the_approved_consumers_reach_gqs():
         "consumers. A new query path through GQS is a reviewed PR that extends APPROVED_CONSUMERS.")
 
 
-def test_the_analyst_is_mounted_only_behind_its_flag():
+def test_the_one_chat_router_is_the_only_gqs_answer_router():
+    """Since the unified AI Chat (contract C2) the Analyst router is gone and the
+    chat router is mounted once, unconditionally: AI_CHAT_ENABLED is checked per
+    turn (503), so no flag can mount a second answering path."""
     text = (APP / "api" / "__init__.py").read_text(encoding="utf-8")
-    block = text[text.index("if settings.ANALYST_ENABLED:"):]
-    assert "analyst_router" in block.split("\n\n")[0]
-    assert text.count("analyst_router") == 2, "the Analyst router is included outside its flag"
+    assert "analyst_router" not in text and not (APP / "api" / "analyst.py").exists()
+    assert text.count("include_router(chat_router)") == 1

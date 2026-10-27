@@ -52,7 +52,7 @@ def test_the_two_reader_dispatch_paths_filter_and_the_author_path_does_not():
     from app.services.agent_flows import dispatch
 
     src = inspect.getsource(dispatch)
-    for fn in ("run_for_link", "run_for_chat_thread"):
+    for fn in ("run_for_link", "run_as_extension"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
         # `to_reader_dict()` narrows the notices through `reader_notices` and drops
@@ -68,14 +68,16 @@ def test_the_two_reader_dispatch_paths_filter_and_the_author_path_does_not():
 
 
 def test_stored_thread_history_is_filtered_for_the_reader():
-    """Turns recorded before the boundary existed are replayed through the same
-    reader path, so the filter cannot trust what was written."""
-    import inspect
+    """Turns recorded before the boundary existed (imported Flow-chat history,
+    services/chat/envelope.normalize) are replayed through the reader filter, so
+    the filter cannot trust what was written."""
+    from app.services.chat.envelope import normalize
 
-    from app.services.agent_flows import direct_chat
-
-    src = inspect.getsource(direct_chat)
-    assert '"audience", "reader") != "author"' in src
+    raw = {"v": "flow_v0", "answer": "x", "notices": [
+        {"code": "a", "text": "for the author", "audience": "author"},
+        {"code": "b", "text": "for the reader"}, {"code": "c", "text": "legacy, no audience"}]}
+    kept = [n["code"] for n in normalize(raw, "answered")["legacy"]["notices"]]
+    assert kept == ["b", "c"]
 
 
 # ── recorded in full, sent filtered ─────────────────────────────────────────
@@ -107,7 +109,7 @@ def test_the_reader_paths_narrow_on_send_and_record_the_full_set():
     from app.services.agent_flows import dispatch
 
     src = inspect.getsource(dispatch)
-    for fn in ("run_for_link", "run_for_chat_thread"):
+    for fn in ("run_for_link", "run_as_extension"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
         assert "to_reader_dict()" in body, f"{fn} must narrow the SENT envelope"
@@ -202,9 +204,9 @@ def test_a_withheld_figure_is_not_in_the_readers_notice():
 def test_the_stored_thread_replay_scrubs_notice_facts():
     import inspect
 
-    from app.services.agent_flows import direct_chat
+    from app.services.chat import envelope
 
-    assert "reader_notice_dict(n)" in inspect.getsource(direct_chat)
+    assert "reader_notice_dict(n)" in inspect.getsource(envelope.normalize)
 
 
 def test_the_reader_rollout_policy_is_one_decision_for_every_reader(monkeypatch):
@@ -245,7 +247,7 @@ def test_both_reader_paths_ask_the_policy_and_studio_test_does_not():
     assert Settings.model_fields["AGENT_FLOW_READER_MODE"].default == "pilot"
     assert Settings.model_fields["AGENT_FLOW_PILOT_LINK_IDS"].default == ""
     src = inspect.getsource(dispatch)
-    for fn in ("run_for_link", "run_for_chat_thread"):
+    for fn in ("run_for_link", "run_as_extension"):
         body = src[src.index("async def %s(" % fn):]
         body = body[:body.index("\nasync def ", 10)] if "\nasync def " in body[10:] else body
         assert "_reader_gate(" in body, fn

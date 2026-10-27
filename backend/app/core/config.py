@@ -147,17 +147,26 @@ class Settings(BaseSettings):
     # NEXT_PUBLIC_* flags) to restore it exactly as it was.
     WORKBOARDS_ENABLED: bool = False
 
-    # ── AppBI Analyst (M2 MVP, the first GQS consumer) ──────────────────
-    # Default OFF: /api/v1/analyst/* is not even mounted until enabled. Every
-    # query it runs goes through the Governed Query Service, the durable ledger
-    # and these SERVER-SIDE budgets (never taken from a request). 0 = unlimited.
-    ANALYST_ENABLED: bool = False
-    # Optional extra restriction: comma-separated e-mails. EMPTY = no extra
-    # restriction; the `analyst` module permission decides (presets grant it to
-    # admin only, so enabling the module exposes it to nobody else by default).
-    # Non-empty = only these people, ON TOP of the module permission. The operator
-    # kill switch is ANALYST_ENABLED.
-    ANALYST_PILOT_ALLOWLIST: str = ""
+    # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──
+    # The Data Core answers every Chat turn through the Governed Query Service under
+    # the asker's identity; an Agent Flow is an optional extension. `chat: view` is
+    # the only module gate and NO setting here grants data (EXPLORE per Dataset does).
+    # AI_CHAT_ENABLED is the operator's EMERGENCY switch: off = new turns get a 503
+    # "temporarily unavailable" (history stays readable). It never routes anybody to
+    # another engine; there is none.
+    AI_CHAT_ENABLED: bool = True
+    # Per-person ceilings, checked BEFORE any model is called. 0 = unlimited.
+    AI_CHAT_TURNS_PER_USER_DAY: int = 100
+    AI_CHAT_MAX_RUNNING_PER_USER: int = 2
+    # A Flow extension's wall clock, inside the turn; its model and tool calls are
+    # capped by the turn (dispatch.run_as_extension), never raised by the flow.
+    AI_CHAT_EXTENSION_TIMEOUT_SECONDS: int = 40
+    AI_CHAT_EXTENSION_MAX_LLM_CALLS: int = 6
+    AI_CHAT_EXTENSION_MAX_TOOL_CALLS: int = 16
+    # A turn still `running` after this is shown as failed/interrupted (its worker died).
+    AI_CHAT_TURN_STALE_SECONDS: int = 900
+    # Data Core tunables. The ANALYST_ prefix is historical (the Core was the AI
+    # Analyst's); they are read by services/data_core and services/chat only.
     # Accepting a dropped filter (a wider answer than asked). OFF until the consent
     # journey is certified in the browser: with it off a dropped filter is a plain
     # refusal, the consent endpoint answers 403 and a consent token is never spent.
@@ -173,6 +182,10 @@ class Settings(BaseSettings):
     # Test-only: answer planner calls from recorded model outputs (JSONL of
     # {"question", "followup", "raw"}) instead of calling a model. Refused in production.
     ANALYST_PLANNER_REPLAY_PATH: str = ""
+    # Test-only: answer an AI Chat extension flow's model from recorded outputs (JSONL
+    # of {"flow_key", "question", "output"}); every gate and validation still runs.
+    # Refused in production.
+    AI_CHAT_EXTENSION_REPLAY_PATH: str = ""
     ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
     ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
     ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
@@ -252,11 +265,6 @@ class Settings(BaseSettings):
     # 0 = unlimited (the pre-v2 behaviour).
     AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
-    # Direct Chat (signed-in users talking to a flow with no report) is metered per
-    # USER instead of per link: there is no link to hang a ceiling on, and the
-    # natural brake a public link has — somebody must find and open it — does not
-    # exist for a nav item every employee can click. 0 = unlimited.
-    DIRECT_CHAT_RUNS_PER_DAY: int = 100
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
     # ON by default. Verification is fail-closed, so an empty ledger would mean

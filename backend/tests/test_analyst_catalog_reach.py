@@ -58,14 +58,14 @@ def db():
 
 
 def test_a_view_two_hops_away_is_offered(db):
-    from app.services.analyst.catalog import _joined_views
+    from app.services.data_core.catalog import _joined_views
 
     names = {v.name for v in _joined_views(db, db.get(SemanticExplore, 1), [1])}
     assert names == {"orders", "customers"}
 
 
 def test_reach_stays_inside_the_dataset_lineage(db):
-    from app.services.analyst.catalog import _joined_views
+    from app.services.data_core.catalog import _joined_views
 
     assert "customers_x" not in {v.name for v in _joined_views(db, db.get(SemanticExplore, 1), [1])}
     assert {v.name for v in _joined_views(db, db.get(SemanticExplore, 1), [2])} == set()
@@ -76,7 +76,7 @@ def test_governed_metric_names_are_the_measures_synonyms_only_when_approved():
     key); the words people use for a metric are governed in the Registry. Only an
     APPROVED metric bound to this Dataset adds them."""
     from app.models.governance import GovernMetric, GovernMetricBinding
-    from app.services.analyst.catalog import governed_aliases
+    from app.services.data_core.catalog import governed_aliases
 
     engine = create_engine("sqlite://", future=True)
     Base.metadata.create_all(engine, tables=[Dataset.__table__, DatasetTable.__table__,
@@ -107,7 +107,7 @@ def test_only_approved_glossary_terms_are_a_fields_vocabulary():
     guess that every region means the same. A dimension or measure links glossary
     terms; only Approved terms add words."""
     from app.models.governance import Glossary, GlossaryTerm
-    from app.services.analyst.catalog import glossary_words
+    from app.services.data_core.catalog import glossary_words
 
     engine = create_engine("sqlite://", future=True)
     Base.metadata.create_all(engine, tables=[Glossary.__table__, GlossaryTerm.__table__])
@@ -139,7 +139,7 @@ def test_the_planner_is_offered_only_the_datasets_the_question_names():
     """Set 9 root cause: "doanh số" questions were planned on another Dataset's English
     "Revenue" (and mixed two Datasets' fields). A Dataset whose metric (label or governed
     synonym, whole phrase) or whose name the question says is what the planner sees."""
-    from app.services.analyst.catalog import CatalogExplore, CatalogField, datasets_named
+    from app.services.data_core.catalog import CatalogExplore, CatalogField, datasets_named
 
     def ex(i, ds, name, label, syn=()):
         return CatalogExplore(explore_id=i, model_id=i, dataset_id=ds, dataset_name=name, dataset_table_id=i,

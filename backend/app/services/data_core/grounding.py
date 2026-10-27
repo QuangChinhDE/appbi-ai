@@ -84,7 +84,7 @@ def is_function_phrase(phrase: str, *, has_time: bool, source_words: set[str] | 
     """A question phrase that names no data: only function/analysis words, or only
     time words when the plan groups by time (holdout: the model mapped "biến động
     ra sao", "tổng cộng" and "theo tháng" to null and the turn was refused)."""
-    from app.services.analyst.intent import extract
+    from app.services.data_core.intent import extract
 
     # request framing, a ranking or a quantity question is a construction, not a field
     words = syllables(extract(phrase).content) - _STOP - (source_words or set())  # naming the dataset names no field
@@ -285,7 +285,7 @@ def _swap_bridged(plan, q, qf, phrases, carried):
             cands = [c for c in plan.explore.fields if c.kind == kind and c.ref not in used and c.ref != ref
                      and _lexical(c, q, qf) and (_field_words(c) - _GENERIC) & phrases[ref]]
             if kind == "dimension":
-                from app.services.analyst.catalog import is_identifier
+                from app.services.data_core.catalog import is_identifier
 
                 cands = [c for c in cands if not is_identifier(c)]
             out.append(cands[0].ref if len(cands) == 1 else ref)
@@ -432,7 +432,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
     if is_forecast(question):
         return None, ("Câu hỏi hỏi về tương lai (dự báo). Phân tích AI chỉ trả lời từ dữ liệu đã có, "
                       "không dự báo.")
-    from app.services.analyst.intent import extract
+    from app.services.data_core.intent import extract
 
     # Constructions of the request (framing, ranking, quantity) are recognised as a
     # whole; what grounding must explain is the rest. A ranking is an obligation.
@@ -498,7 +498,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         v = cond.get("value")
         return cond.get("operator") == "eq" or (cond.get("operator") == "in" and isinstance(v, list) and len(v) == 1)
 
-    from app.services.analyst.catalog import is_identifier
+    from app.services.data_core.catalog import is_identifier
 
     def breakdown_ok(d):
         """An identifier or a numeric column lists rows, it does not summarise them:
@@ -665,7 +665,7 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         shown = list(dict.fromkeys(shown))[:6] or sorted(unexplained)[:6]
         return None, ("Câu hỏi có phần chưa khớp với dữ liệu được dùng: “" + " ".join(shown) + "”. "
                       "Hệ thống không bỏ qua phần đó; hãy diễn đạt lại theo tên trường hoặc giá trị có trong dữ liệu.")
-    from app.services.analyst.planner import describe_plan
+    from app.services.data_core.planner import describe_plan
 
     sorts = [s for s in plan.sorts if s.get("field") in set(dims) | set(measures)]
     limit = None

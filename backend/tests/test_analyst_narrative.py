@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from app.services.analyst.narrative import describe
+from app.services.data_core.narrative import describe
 
 AFTER = date(2026, 11, 5)  # every period in _rows() has ended
 
@@ -112,7 +112,7 @@ def test_one_complete_period_with_groups_ranks_the_groups_in_it():
 def test_a_shape_a_line_cannot_carry_is_drafted_as_a_table_of_every_column():
     from types import SimpleNamespace
 
-    from app.services.analyst.narrative import chart_draft
+    from app.services.data_core.narrative import chart_draft
 
     plan = SimpleNamespace(dimensions=["c.region", "o.channel", "o.order_date"], measures=["l.net_sales"],
                            time_grains={"o.order_date": "quarter"}, filters={}, limit=None, sorts=[],
@@ -179,7 +179,7 @@ def test_a_filtered_answer_drafts_a_chart_with_exactly_those_filters():
     Its filters are now the chart's base filters, selecting exactly the same rows."""
     from types import SimpleNamespace
 
-    from app.services.analyst.narrative import chart_draft
+    from app.services.data_core.narrative import chart_draft
 
     plan = SimpleNamespace(dimensions=["c.region"], measures=["l.net_sales"], time_grains={}, sorts=[], limit=None,
                            explore=SimpleNamespace(dataset_table_id=7), filters={
@@ -198,7 +198,7 @@ def test_a_filtered_answer_drafts_a_chart_with_exactly_those_filters():
 def test_a_top_n_draft_only_when_the_chart_limit_gives_the_same_rows():
     from types import SimpleNamespace
 
-    from app.services.analyst.narrative import chart_draft
+    from app.services.data_core.narrative import chart_draft
 
     cols = [{"name": "c", "role": "dimension"}, {"name": "m", "role": "measure"}]
     plan = SimpleNamespace(dimensions=["c.region"], measures=["l.net_sales"], time_grains={}, filters={}, limit=2,

@@ -1501,7 +1501,7 @@ async def test_flow_as_chat(
     remove, reintroduced on the other surface.
 
     It is assembled through `direct_chat.ephemeral_chat_binding` and the same
-    scope derivation `run_for_chat_thread` uses, so the panel and the live turn
+    scope derivation the chat runs used, so the panel and the live turn
     cannot drift apart: same binding shape, same knowledge scope, same charts.
 
     `_may_edit_flow` is the only gate, and that is deliberate — a chat flow reads

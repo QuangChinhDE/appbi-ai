@@ -11,9 +11,9 @@ From the real-model BigQuery evaluation (2026-10-21, datasource 52):
 """
 from __future__ import annotations
 
-from app.services.analyst.catalog import CatalogExplore, CatalogField
-from app.services.analyst.planner import Plan, Unsupported, validate
-from app.services.analyst.service import no_match_message
+from app.services.data_core.catalog import CatalogExplore, CatalogField
+from app.services.data_core.planner import Plan, Unsupported, validate
+from app.services.data_core.service import no_match_message
 
 
 def _explore():
@@ -66,7 +66,7 @@ def test_an_empty_result_under_a_filter_is_not_an_answer():
 def test_the_prompt_marks_identifiers_and_carries_synonyms():
     """Real-model run: grouping by a key column listed items instead of the category
     the person asked for; identifiers are marked and business synonyms reach the model."""
-    from app.services.analyst.catalog import CatalogField
+    from app.services.data_core.catalog import CatalogField
 
     key = CatalogField("items.product_id", "dimension", "string", "Product").as_prompt()
     cat = CatalogField("products.category", "dimension", "string", "category",
@@ -78,7 +78,7 @@ def test_the_prompt_marks_identifiers_and_carries_synonyms():
 def test_the_same_question_twice_gives_two_savable_draft_names():
     import datetime as dt
 
-    from app.services.analyst.service import draft_title
+    from app.services.data_core.service import draft_title
 
     q = "Doanh thu theo tháng?"
     a = draft_title(q, dt.datetime(2026, 10, 21, 9, 0, 0))
@@ -141,7 +141,7 @@ def test_a_date_range_is_validated_and_described_with_its_inclusive_days():
 def test_the_planner_model_tier_is_a_setting_with_the_baseline_by_default(monkeypatch):
     from app.core.config import settings
     from app.services import llm_client
-    from app.services.analyst import planner
+    from app.services.data_core import planner
 
     seen = []
     monkeypatch.setattr(llm_client.LLMClient, "complete_json",
@@ -201,7 +201,7 @@ def _marketing():
 def test_a_plain_text_clarify_option_naming_one_metric_becomes_a_pickable_choice():
     # Internal-preview live smoke: the model offered "Doanh số" / "Chi phí marketing" as
     # plain strings; a pick re-asked "<question> - Doanh số" and the model asked again.
-    from app.services.analyst.planner import Clarify
+    from app.services.data_core.planner import Clarify
 
     out = validate({"status": "clarify", "question": "Theo chỉ số nào?", "options": ["revenue", "Marketing spend", "Lợi nhuận"]},
                    [_explore(), _marketing()])
@@ -214,7 +214,7 @@ def test_a_plain_text_clarify_option_naming_one_metric_becomes_a_pickable_choice
 def test_a_plain_text_option_whose_metric_is_in_two_datasets_stays_plain():
     from dataclasses import replace
 
-    from app.services.analyst.planner import Clarify
+    from app.services.data_core.planner import Clarify
 
     other = replace(_explore(), explore_id=8, dataset_id=5, dataset_name="Sales copy")
     out = validate({"status": "clarify", "question": "?", "options": ["Revenue"]}, [_explore(), other])

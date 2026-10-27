@@ -205,7 +205,7 @@ def datasets_named(catalog: list[CatalogExplore], question: str) -> set[int]:
     and mixing fields of two Datasets; the person had named Rig Commerce's metric."""
     import re as _re
 
-    from app.services.analyst.grounding import fold
+    from app.services.data_core.grounding import fold
 
     q = " " + " ".join(w for w in _re.split(r"[^0-9a-z]+", fold(question)) if w) + " "
 

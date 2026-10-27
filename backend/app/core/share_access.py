@@ -3,7 +3,6 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import require_full_access
 from app.models.agent_brain import AgentBrainVersion
-from app.models.agent_flow_chat_thread import AgentFlowChatThread
 from app.models.dataset import Dataset
 from app.models.models import Chart, Dashboard, DataSource
 from app.models.governance import GovernKnowledgeDoc
@@ -26,12 +25,9 @@ _RESOURCE_MODEL_MAP = {
     # for shares the write side could not create. Keyed by `brain_key` so one share
     # covers the flow across all of its versions.
     ResourceType.AGENT_BRAIN: (AgentBrainVersion, "agent_flows", "brain_key"),
-    # Keyed by the thread's own id. `require_full_access` then decides who may
-    # share it, and its answer is why `chat` has an `edit` level at all: an owner
-    # only reaches `full` on their own row when the module level is `edit` or
-    # above, so a two-level `chat` would have left people unable to share their
-    # own conversation.
-    ResourceType.CHAT_THREAD: (AgentFlowChatThread, "chat", "id"),
+    # AI Chat conversations register themselves (services/chat/conversations.py):
+    # `core` must not import a service. The retired chat_thread / analyst_session
+    # types are not shareable any more (their shares were migrated, 20261027_0001).
 }
 
 

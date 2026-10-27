@@ -10,7 +10,7 @@ with rows capped at ANALYST_MAX_ROWS and no SQL text or choice tokens.
 WHAT A STORED TURN IS NOT
 -------------------------
 It is not a grant. `dataset_ids` and `refs` record what the turn read so that EVERY
-read of it re-checks the viewer's CURRENT rights (services/analyst/sessions.py): a
+read of it re-checks the viewer's CURRENT rights (services/data_core/sessions.py): a
 share of the session, or the owner after a revoked grant, sees the question and
 `redacted` instead of numbers they may no longer read.
 """

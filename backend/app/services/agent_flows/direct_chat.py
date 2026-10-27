@@ -1,4 +1,10 @@
-"""Chatting with a flow when there is no report on screen.
+"""A flow that runs with no report on screen: an AI Chat EXTENSION.
+
+Since the unified AI Chat (docs/features/unified-ai-chat/contract.md) a flow is no
+longer a chat of its own: the Data Core owns every Chat turn and may invoke a flow
+that qualifies here as a bounded extension (dispatch.run_as_extension). Threads,
+transcripts and the per-flow chat quota were retired with that; what remains is
+the door below - which flows can run without a report at all.
 
 WHY A FLOW HAS TO EARN THIS
 ---------------------------
@@ -31,15 +37,11 @@ the door.
 from __future__ import annotations
 
 import logging
-import secrets
-from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from app.models.agent_brain import AgentBrainVersion
-from app.models.agent_flow_chat_thread import AgentFlowChatThread
-from app.services.agent_flows.envelope import reader_notice_dict
 from app.services.agent_flows.contract import (
     _CHART_KEYED_TOOLS,
     Flow,
@@ -245,217 +247,3 @@ def ephemeral_chat_binding(flow: Flow) -> Any:
         # The transcript IS the run content here, so it is never optional.
         store_question_content=True,
     )
-
-
-# ═══ Threads ══════════════════════════════════════════════════════════════════
-def new_session_key() -> str:
-    """Owner of this thread's runtime memory row.
-
-    `ai_chat_sessions.session_key` is globally unique and the engine looks a session
-    up by it ALONE, so this must not collide with a public link's browser-tab key.
-    """
-    return f"dc_{secrets.token_hex(16)}"[:64]
-
-
-def session_token(thread_id: int) -> str:
-    """`ai_chat_sessions.token` for a direct-chat thread.
-
-    That column is NOT NULL and `load_memory` drops memory whose stored token differs
-    from the caller's — the mechanism that stops one browser tab carrying facts
-    between two public links. A direct chat has no link token, so it gets its own
-    namespace, exactly as a Studio test does with `studio:`.
-    """
-    return f"chat:{thread_id}"[:200]
-
-
-def create_thread(db: Session, user: Any, brain_key: str) -> AgentFlowChatThread:
-    thread = AgentFlowChatThread(
-        user_id=user.id,
-        brain_key=brain_key,
-        session_key=new_session_key(),
-    )
-    db.add(thread)
-    db.commit()
-    db.refresh(thread)
-    return thread
-
-
-#: What a person may do with a conversation that is not theirs.
-#:
-#:   none   it is not theirs and nobody shared it
-#:   view   they may read the transcript
-#:   edit   they may read it AND ask the next question in it
-#:   owner  they started it: rename, delete, share
-ThreadAccess = str
-
-
-from app.core.permissions import is_module_admin as _is_module_admin  # noqa: E402
-
-
-def _module_level(user: Any) -> str:
-    """This person's `chat` level, read the same way every gate reads it."""
-    from app.core.dependencies import _normalize_permissions, _sanitize_permission_level
-
-    return _sanitize_permission_level(_normalize_permissions(user).get("chat", "none"))
-
-
-def thread_access(db: Session, user: Any, thread: AgentFlowChatThread) -> ThreadAccess:
-    """How this person stands to this conversation.
-
-    THREE WAYS IN, AND THEY ARE NOT THE SAME.
-
-      owner   they started it. Rename, delete and share are theirs alone.
-      share   somebody handed it to them, at `view` or `edit`.
-      full    `chat: full` — the oversight level, which reads everything in the
-              workspace the way `full` does in every other module.
-
-    Deliberately NOT a way to run the flow. Asking the next question is checked
-    separately against the FLOW's own share (`resolve_for_chat`), so handing
-    somebody a conversation can never become a way around who may use the
-    assistant behind it.
-    """
-    if str(getattr(thread, "user_id", "")) == str(getattr(user, "id", "")):
-        return "owner"
-    if _is_module_admin(user, "chat"):
-        return "full"
-
-    from app.core.resource_shares import get_highest_share_for_resource
-    from app.models.resource_share import ResourceType
-
-    share = get_highest_share_for_resource(
-        db, user, ResourceType.CHAT_THREAD, str(thread.id)
-    )
-    if share is None:
-        return "none"
-    level = getattr(share.permission, "value", share.permission)
-    return "edit" if str(level) == "edit" else "view"
-
-
-def get_thread(db: Session, user: Any, thread_id: int) -> AgentFlowChatThread | None:
-    """The conversation, if this person may READ it at all.
-
-    Callers that go on to WRITE — rename, delete, or ask the next question — must
-    additionally consult `thread_access`; reading is the weaker question and this
-    answers only that.
-    """
-    thread = (
-        db.query(AgentFlowChatThread)
-        .filter(
-            AgentFlowChatThread.id == thread_id,
-            AgentFlowChatThread.deleted_at.is_(None),
-        )
-        .first()
-    )
-    if thread is None:
-        return None
-    return thread if thread_access(db, user, thread) != "none" else None
-
-
-def list_threads(
-    db: Session, user: Any, brain_key: str | None = None, limit: int = 100
-) -> list[AgentFlowChatThread]:
-    """Their own conversations, plus the ones shared with them.
-
-    `chat: full` sees every conversation in the workspace — the oversight level.
-    Ordered by last activity across all three sources, so a conversation somebody
-    just added to does not sit below a stale one of your own.
-    """
-    from sqlalchemy import or_
-
-    q = db.query(AgentFlowChatThread).filter(
-        AgentFlowChatThread.deleted_at.is_(None)
-    )
-    if not _is_module_admin(user, "chat"):
-        from app.core.resource_shares import get_shared_resource_ids_query
-        from app.models.resource_share import ResourceType
-
-        shared = get_shared_resource_ids_query(db, user, ResourceType.CHAT_THREAD)
-        ids = [int(r[0]) for r in shared.all() if str(r[0]).strip().isdigit()]
-        own = AgentFlowChatThread.user_id == user.id
-        q = q.filter(or_(own, AgentFlowChatThread.id.in_(ids)) if ids else own)
-    if brain_key:
-        q = q.filter(AgentFlowChatThread.brain_key == brain_key)
-    return q.order_by(AgentFlowChatThread.last_active_at.desc()).limit(limit).all()
-
-
-def touch(db: Session, thread: AgentFlowChatThread, *, title_from: str = "") -> None:
-    """Mark the thread used, and name it from the first question asked in it."""
-    thread.last_active_at = datetime.now(timezone.utc)
-    if title_from and not (thread.title or "").strip():
-        cleaned = " ".join(title_from.split())
-        thread.title = cleaned[:120] + ("…" if len(cleaned) > 120 else "")
-    try:
-        db.commit()
-    except Exception:  # noqa: BLE001 — never fail a turn over its own bookkeeping
-        logger.warning("[chat] thread touch failed", exc_info=True)
-        db.rollback()
-
-
-def soft_delete(db: Session, thread: AgentFlowChatThread) -> None:
-    """The ONLY lifecycle action. Runs keep their `chat_thread_id` so a user tidying
-    their chat list does not erase the deployment's cost history."""
-    thread.deleted_at = datetime.now(timezone.utc)
-    db.commit()
-
-
-def transcript(db: Session, thread: AgentFlowChatThread, limit: int = 50) -> list[dict]:
-    """The conversation, rebuilt from run history.
-
-    THE RUN CONTENT IS THE TRANSCRIPT, and `ai_chat_sessions.messages` is not. That
-    column is assigned straight from a request body by a public endpoint, so it is
-    whatever a client last posted; `agent_flow_run_content` is written by the runtime
-    from the envelope it actually produced.
-
-    The cost of that choice, stated: content rows are pruned on a retention window
-    (180 days by default), so a thread older than that keeps its runs — and its
-    metrics — but loses its words. A dedicated message table is what buys longer,
-    and it is not worth a second write path until somebody needs it.
-    """
-    from app.models.agent_flow_run import AgentFlowRun, AgentFlowRunContent
-
-    # Newest `limit` runs, then flipped: a long thread must keep its RECENT turns,
-    # and taking them ascending would hand back the opening of the conversation and
-    # drop everything the last answer depended on.
-    rows = (
-        db.query(AgentFlowRun, AgentFlowRunContent)
-        .outerjoin(AgentFlowRunContent, AgentFlowRunContent.run_id == AgentFlowRun.id)
-        .filter(AgentFlowRun.chat_thread_id == thread.id)
-        .order_by(AgentFlowRun.created_at.desc())
-        .limit(limit)
-        .all()
-    )
-    rows = list(reversed(rows))
-
-    out: list[dict] = []
-    for run, content in rows:
-        question = (content.question if content else None) or run.question_norm or ""
-        if question:
-            out.append({"role": "user", "content": question})
-        answer = (content.answer if content else None) or ""
-        if answer or run.status in ("blocked", "failed"):
-            out.append({
-                "role": "assistant",
-                "content": answer,
-                "status": run.status,
-                # Stored turns are replayed to a READER, including turns recorded
-                # before the audience boundary existed, so the filter runs here on
-                # plain dicts rather than trusting what was written.
-                "notices": [
-                    reader_notice_dict(n) for n in ((content.notices if content else None) or [])
-                    if (n or {}).get("audience", "reader") != "author"
-                ],
-                "citations": (content.citations if content else None) or [],
-                "run_id": run.id,
-                "rating": run.rating,
-            })
-    return out
-
-
-def history_turns(db: Session, thread: AgentFlowChatThread, limit: int = 12) -> list[dict]:
-    """The last few turns, in the `{role, content}` shape the envelope wants."""
-    rows = transcript(db, thread, limit=limit)
-    return [
-        {"role": r["role"], "content": r["content"]}
-        for r in rows
-        if r.get("content")
-    ]

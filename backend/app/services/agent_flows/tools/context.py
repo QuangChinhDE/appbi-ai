@@ -284,6 +284,11 @@ class ToolError(Exception):
         self.code = code
 
 
+class DataReadForbidden(ToolError):
+    """A chart-data read from a context that may not read business data (a Flow
+    running as an AI Chat extension)."""
+
+
 @dataclass
 class ToolContext:
     db: Session
@@ -406,6 +411,11 @@ class ToolContext:
     #: The most tokens one tool RESULT may carry, from the binding. None
     #: falls back to the registry default. Set per run, like the row cap.
     max_result_tokens: int | None = None
+    #: SET WHEN THE FLOW RUNS AS AN EXTENSION OF AN AI CHAT TURN (services/chat/
+    #: extension.py). Business numbers in Chat come from the Data Core through GQS
+    #: under the asker's identity, never from a Flow: ChartService reads with no
+    #: principal, so from here it is refused before any scope or cache is consulted.
+    data_reads_forbidden: bool = False
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -800,6 +810,13 @@ def _fetch_chart_data(
 
     Returns ``{columns: list[str], rows: list[list], filters_applied: list[dict]}``.
     """
+    if getattr(ctx, "data_reads_forbidden", False):
+        raise DataReadForbidden(
+            "Trong AI Chat, số liệu do lõi dữ liệu đọc qua quyền của người hỏi; luồng hỗ trợ không đọc "
+            "dữ liệu biểu đồ (In AI Chat, business data is read by the data core under the asker's "
+            "rights; a supporting flow does not read chart data).",
+            code="data_read_forbidden",
+        )
     ctx.assert_chart_in_scope(chart_id)
     # Before every cache: an entry read while the scope WAS known must not answer
     # a context whose scope is not (SEC-05).

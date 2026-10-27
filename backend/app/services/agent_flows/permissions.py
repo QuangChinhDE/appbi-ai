@@ -156,6 +156,29 @@ def active_delegations(db: Session, brain_key: str, user: Any) -> dict[str, set[
     return out
 
 
+def extension_scope(db: Session, brain_row: AgentBrainVersion, brain: Brain, caller: Any) -> dict[str, list]:
+    """The ceiling of a flow running as an AI CHAT EXTENSION (dispatch.run_as_extension).
+
+    Narrower than `run_scope` on purpose (unified chat contract, ADR-1):
+
+        documents   attached by the flow  ∩  its owner may read NOW  ∩  the CALLER
+                    may read THEMSELVES - no `agent_flow_delegations`: in Chat a flow
+                    never lends its author's reading rights to the person asking
+        datasets    none - business data comes from the Data Core through GQS
+        metrics     none - a metric's numbers are data too
+
+    Fails closed: an owner or caller that cannot be resolved yields nothing.
+    """
+    empty: dict[str, list] = {"doc_ids": [], "dataset_ids": [], "metric_names": []}
+    owner = _resolve_owner(db, brain_row)
+    if owner is None or caller is None:
+        return empty
+    allowed = attachable_documents(db, owner) & attachable_documents(db, caller)
+    docs = [int(s.ref) for s in brain.bound_sources()
+            if s.source == "document" and str(s.ref).isdigit() and int(s.ref) in allowed]
+    return {**empty, "doc_ids": sorted(set(docs))}
+
+
 def run_scope(
     db: Session,
     brain_row: AgentBrainVersion,

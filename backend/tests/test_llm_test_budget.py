@@ -116,7 +116,7 @@ def test_inert_without_a_budget(monkeypatch):
 
 def test_the_planner_replays_a_recorded_output_without_calling_a_model(tmp_path, monkeypatch):
     from app.core.config import settings
-    from app.services.analyst import planner
+    from app.services.data_core import planner
     from tests.test_analyst_planner import _explore
 
     path = tmp_path / "replay.jsonl"

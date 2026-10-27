@@ -230,7 +230,7 @@ def test_the_report_prompt_is_untouched_by_default():
 
 
 def test_a_chat_turn_is_given_a_base_prompt_at_all():
-    """It was given NONE. `chat_api` calls `run_for_chat_thread` without one, so
+    """It was given NONE. The retired Flow chat ran its turns without one, so
     `base_system_prompt` defaulted to "" and the citation contract, the
     answer-in-the-viewer's-language rule and the analysis guardrails were all
     absent — on the surface with the least other structure holding an answer down.

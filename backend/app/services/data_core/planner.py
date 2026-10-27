@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from app.services.analyst.catalog import CatalogExplore, is_time
+from app.services.data_core.catalog import CatalogExplore, is_time
 
 GRAINS = ("day", "week", "month", "quarter", "year")
 OPERATORS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "starts_with", "ends_with",
@@ -57,6 +57,8 @@ class Clarify:
 @dataclass
 class Unsupported:
     reason: str
+    #: `model_unavailable` when no model answered (a failure, not a refusal)
+    code: str = "unsupported"
 
 
 SYSTEM = (
@@ -176,7 +178,7 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
                     LLMClient.complete_json(prompt, system=system, max_tokens=max_tokens, strong=strong))
     raw = complete(build_prompt(question, catalog, previous, chosen), system=SYSTEM, max_tokens=900)
     if raw is None:
-        return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.")
+        return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.", code="model_unavailable")
     return _hold_to_choice(validate(raw, catalog), chosen)
 
 
@@ -211,7 +213,7 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                 # số"), a pick re-asked the question and the model asked again. A plain
                 # option that names exactly ONE metric of this catalog (one Dataset) is
                 # made pickable like a structured one; ambiguous text stays plain.
-                from app.services.analyst.grounding import fold  # local: grounding imports this module
+                from app.services.data_core.grounding import fold  # local: grounding imports this module
 
                 hits = [(c, f) for c in sorted(catalog, key=lambda c: c.explore_id) for f in c.fields
                         if f.kind == "measure" and fold(f.label) == fold(label)]
@@ -328,9 +330,9 @@ def validate(raw: Any, catalog: list[CatalogExplore]):
                 continue  # not a catalog ref (a label, a placeholder): no claim either way
         else:
             ref = None
-            from app.services.analyst.grounding import is_function_phrase
+            from app.services.data_core.grounding import is_function_phrase
 
-            from app.services.analyst.grounding import syllables as _syl
+            from app.services.data_core.grounding import syllables as _syl
 
             if is_function_phrase(phrase, has_time=bool(grains) or any(
                     c.get("operator") == "date_range" for c in filters.values()),

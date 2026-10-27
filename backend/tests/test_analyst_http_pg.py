@@ -1,18 +1,19 @@
-"""AppBI Analyst (M2) over HTTP on real Postgres: the first GQS consumer.
+"""The Data Core of AI Chat over HTTP on real Postgres (built as the AI Analyst).
 
-Real app, real auth, real routing, real Governed Query Service, the real
-durable ledger (as the app role) and real Postgres. The ONLY stand-in is the
-language model: a fixed planner returns the JSON a model would. Real-model
-behaviour is evaluated separately (and reported NOT VERIFIED when not run).
+Real app, real auth, real routing, the real `/api/v1/chat` turn route, real
+Governed Query Service, the real durable ledger (as the app role) and real
+Postgres. The ONLY stand-in is the language model: a fixed planner returns the
+JSON a model would. Real-model behaviour is evaluated separately (and reported
+NOT VERIFIED when not run).
 
 Numbers are checked against an independent oracle: plain SQL over the source
 table, not the engine.
 
-Locked here:
+Locked here (unchanged since the Analyst; only the route moved to the one Chat):
   * a person with `explore` gets an answer whose rows equal the oracle, with
-    evidence, a ledger row (surface analyst, run = the turn) and a chart draft;
+    evidence, a ledger row (surface chat, run = the turn) and a chart draft;
   * a person with only `view` on the Dataset sees no source and gets no rows;
-    a person without the module gets 403; a revoked grant is honoured next turn;
+    a person without the `chat` module gets 403; a revoked grant is honoured next turn;
   * a plan naming a field outside the catalog, or another explore, is
     `unsupported` and nothing reaches the ledger;
   * the response carries no SQL text;
@@ -43,7 +44,7 @@ def _planner(world, *, view=None, explore=None, dims=("region", "order_date"), g
            "time_grains": {f"{v}.order_date": grain} if "order_date" in dims else {},
            "interpretation": "Doanh thu theo vùng theo tháng",
            # what a real model returns: each question phrase -> the ref it names
-           # (services/analyst/grounding.py only believes phrases that are in the question)
+           # (services/data_core/grounding.py only believes phrases that are in the question)
            "covered": {"doanh thu": f"{v}.revenue", "chậm": f"{v}.revenue", "vùng": f"{v}.region",
                        "các vùng": f"{v}.region", "miền bắc": f"{v}.region", "theo tháng": f"{v}.order_date"}}
     raw["covered"] = {k: r for k, r in raw["covered"].items()
@@ -55,9 +56,9 @@ def _planner(world, *, view=None, explore=None, dims=("region", "order_date"), g
 
 @pytest.fixture()
 def model(monkeypatch):
-    from app.api import analyst as api
+    from app.services.chat import orchestrator
 
-    deps = api._analyst_deps()
+    deps = orchestrator.core_deps()
 
     def use(fn):
         monkeypatch.setattr(deps, "complete", fn)
@@ -67,17 +68,53 @@ def model(monkeypatch):
 
 def _grant_module(db, *who):  # noqa: F811
     for p in who:
-        set_permissions(db, p, datasets="edit", explore_charts="view", analyst="view")
+        set_permissions(db, p, datasets="edit", explore_charts="view", chat="view")
 
 
-@pytest.fixture(autouse=True)
-def pilot(monkeypatch, world):  # noqa: F811
-    """Every person in the world is on the pilot allowlist unless a test says otherwise."""
-    from app.core.config import settings
+# ── the one Chat turn route, read the way these tests read the Data Core ─────
 
-    emails = [p.email for p in world.values() if hasattr(p, "email") and hasattr(p, "headers")]
-    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", ",".join(e.upper() for e in emails))
-    return emails
+class _R:
+    """A turn's outcome: HTTP status, and the Data Core's response (`envelope.data`)
+    with the envelope, turn id and conversation id beside it."""
+
+    def __init__(self, status_code: int, body, text: str = ""):
+        self.status_code = status_code
+        self._body = body
+        self.text = text or json.dumps(body, ensure_ascii=False, default=str)
+
+    def json(self):
+        return self._body
+
+
+def sse_events(text: str) -> list[dict]:
+    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")]
+
+
+def new_conversation(client, who, **body):
+    return client.post("/api/v1/chat/conversations", headers=who.headers, json=body)
+
+
+def ask(client, who, body: dict, conv=None, key=None) -> _R:
+    """Ask in `conv` (a new conversation when None) through the one turn route."""
+    body = dict(body)
+    body.pop("turn_id", None)  # the server names every turn
+    assert "previous_plan" not in body, "a follow-up's context is the conversation's, never the request's"
+    follow = conv is not None
+    if conv is None:
+        r = new_conversation(client, who)
+        if r.status_code != 201:
+            return _R(r.status_code, r.json() if r.content else None, r.text)
+        conv = r.json()["id"]
+    r = client.post(f"/api/v1/chat/conversations/{conv}/turns", headers=who.headers,
+                    json={"idempotency_key": key or uuid.uuid4().hex, "follow_up": follow, **body})
+    if r.status_code != 200:
+        return _R(r.status_code, r.json() if r.content else None, r.text)
+    final = next(e for e in sse_events(r.text) if e["type"] == "final")
+    envelope = final["envelope"]
+    data = dict(envelope.get("data") or {"status": envelope["status"], "code": envelope.get("code"),
+                                         "message": envelope.get("message")})
+    data.update({"envelope": envelope, "turn_id": final["turn_id"], "conversation_id": conv})
+    return _R(200, data, r.text)
 
 
 def _ledger_rows(run_id):
@@ -89,11 +126,10 @@ def _ledger_rows(run_id):
 def test_an_answer_equals_the_oracle_with_evidence(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    turn = uuid.uuid4().hex
-    r = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                    json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?", "turn_id": turn})
+    r = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"})
     assert r.status_code == 200, r.text
     body = r.json()
+    turn = body["turn_id"]
     assert body["status"] == "answered", body
     with sa.create_engine(_owner_url()).connect() as c:
         oracle = {(reg, m.strftime("%Y-%m")): float(s) for reg, m, s in c.execute(sa.text(
@@ -107,26 +143,27 @@ def test_an_answer_equals_the_oracle_with_evidence(client, db, world, model):  #
     assert ev["query_id"] and ev["rows_returned"] == len(oracle) and ev["filters_dropped"] == []
     assert body["chart_draft"]["chart_type"] == "LINE"
     assert body["chart_draft"]["config"]["roleConfig"]["breakdown"] == f"{v}.region"
-    assert [(s, surf) for s, surf, _ in _ledger_rows(turn)] == [("ok", "analyst")]
+    assert [(s, surf) for s, surf, _ in _ledger_rows(turn)] == [("ok", "chat")]
+    assert body["envelope"]["status"] == "answered" and body["envelope"]["supporting"] is None
     assert "select " not in json.dumps(body).lower(), "SQL text reached the response"
 
 
 def test_view_only_sees_no_source_and_gets_no_rows(client, db, world, model):  # noqa: F811
     _grant_module(db, world["viewer"])
     model(_planner(world))
-    assert client.get("/api/v1/analyst/catalog", headers=world["viewer"].headers).json()["sources"] == [] or all(
+    assert client.get("/api/v1/chat/catalog", headers=world["viewer"].headers).json()["sources"] == [] or all(
         s["explore_id"] not in (world["explore"].id, world["slow_explore"].id)
-        for s in client.get("/api/v1/analyst/catalog", headers=world["viewer"].headers).json()["sources"])
-    turn = uuid.uuid4().hex
-    body = client.post("/api/v1/analyst/ask", headers=world["viewer"].headers,
-                       json={"question": "Doanh thu theo vùng?", "turn_id": turn}).json()
+        for s in client.get("/api/v1/chat/catalog", headers=world["viewer"].headers).json()["sources"])
+    body = ask(client, world["viewer"], {"question": "Doanh thu theo vùng?"}).json()
+    turn = body["turn_id"]
     assert body["status"] == "unsupported" and "rows" not in body
+    assert body["envelope"]["status"] == "refused" and body["envelope"]["code"] == "unsupported"
     assert _ledger_rows(turn) == []
 
 
 def test_without_the_module_it_is_403(client, world, model):  # noqa: F811
     model(_planner(world))
-    r = client.post("/api/v1/analyst/ask", headers=world["stranger"].headers, json={"question": "Doanh thu?"})
+    r = ask(client, world["stranger"], {"question": "Doanh thu?"})
     assert r.status_code == 403
 
 
@@ -135,12 +172,12 @@ def test_a_revoked_grant_is_honoured_on_the_next_turn(client, db, world, model):
 
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"})
+    first = ask(client, world["analyst"], {"question": "Doanh thu?"})
     assert first.json()["status"] == "answered"
     db.query(DatasetGrant).filter(DatasetGrant.dataset_id == world["ds"].id,
                                   DatasetGrant.user_id == world["analyst"].id).delete()
     db.commit()
-    again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"})
+    again = ask(client, world["analyst"], {"question": "Doanh thu?"})
     assert again.json()["status"] == "unsupported" and "rows" not in again.json()
 
 
@@ -156,49 +193,58 @@ def test_an_invalid_plan_is_unsupported_and_runs_nothing(client, db, world, mode
     v = world["v"]
     fixed = json.loads(json.dumps(bad).replace("{v}", v))
     model(_planner(world, extra=fixed))
-    turn = uuid.uuid4().hex
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu?", "turn_id": turn}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu?"}).json()
     assert body["status"] == "unsupported", body
-    assert _ledger_rows(turn) == []
+    assert _ledger_rows(body["turn_id"]) == []
 
 
 def test_a_clarification_is_passed_to_the_person(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(lambda *a, **k: {"status": "clarify", "question": "Doanh thu gộp hay thuần?", "options": ["Gộp", "Thuần"]})
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu?"}).json()
     assert body["status"] == "clarify" and body["options"] == ["Gộp", "Thuần"]
 
 
-def test_cancel_is_the_owners_only_and_stops_the_turn(client, db, world, model):  # noqa: F811
+def _running_turn(who, timeout=20.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with sa.create_engine(_owner_url()).connect() as c:
+            turn = c.execute(sa.text("SELECT turn_id FROM chat_turns WHERE asked_by = :u AND status = 'running'"),
+                             {"u": str(who.id)}).scalar()
+        if turn and any(s == "running" for s, _, _ in _ledger_rows(turn)):
+            return turn
+        time.sleep(0.1)
+    raise AssertionError("no running turn")
+
+
+def test_cancel_is_the_askers_only_and_stops_the_turn(client, db, world, model):  # noqa: F811
     _grant_module(db, world["owner"], world["analyst"])
     model(_planner(world, view=world["slow_view"].name, explore=world["slow_explore"], dims=()))
-    turn = uuid.uuid4().hex
     box = {}
 
     def run():
-        box["r"] = client.post("/api/v1/analyst/ask", headers=world["owner"].headers,
-                               json={"question": "Doanh thu (chậm)?", "turn_id": turn})
+        box["r"] = ask(client, world["owner"], {"question": "Doanh thu (chậm)?"})
 
     th = threading.Thread(target=run, daemon=True)
     th.start()
-    deadline = time.time() + 20
-    while time.time() < deadline and not any(s == "running" for s, _, _ in _ledger_rows(turn)):
-        time.sleep(0.1)
-    other = client.post(f"/api/v1/analyst/turns/{turn}/cancel", headers=world["analyst"].headers)
-    assert other.json() == {"cancel_requested": 0}
-    mine = client.post(f"/api/v1/analyst/turns/{turn}/cancel", headers=world["owner"].headers)
-    assert mine.json() == {"cancel_requested": 1}
-    th.join(timeout=30)
+    turn = _running_turn(world["owner"])
+    other = client.post(f"/api/v1/chat/turns/{turn}/cancel", headers=world["analyst"].headers)
+    assert other.status_code == 404, "someone else's turn is not theirs to stop, nor an oracle"
+    mine = client.post(f"/api/v1/chat/turns/{turn}/cancel", headers=world["owner"].headers)
+    assert mine.json() == {"cancelled": True, "status": "cancelled"}
+    th.join(timeout=60)
     body = box["r"].json()
-    assert body["status"] == "refused" and body["code"] == "cancelled", body
+    assert body["envelope"]["status"] == "cancelled" and body["envelope"]["data"] is None, body
     assert [s for s, _, _ in _ledger_rows(turn)] == ["cancelled"]
+    again = client.post(f"/api/v1/chat/turns/{turn}/cancel", headers=world["owner"].headers)
+    assert again.json() == {"cancelled": False, "status": "cancelled"}, "a turn ends exactly once"
 
 
-def test_a_turn_id_must_be_plain_hex(client, db, world):  # noqa: F811
+def test_an_unknown_turn_cannot_be_cancelled(client, db, world):  # noqa: F811
     _grant_module(db, world["analyst"])
-    r = client.post("/api/v1/analyst/turns/not_a_turn/cancel", headers=world["analyst"].headers)
-    assert r.status_code == 422
+    assert client.post("/api/v1/chat/turns/not_a_turn/cancel", headers=world["analyst"].headers).status_code == 404
+    assert client.post(f"/api/v1/chat/turns/{uuid.uuid4().hex}/cancel",
+                       headers=world["analyst"].headers).status_code == 404
 
 
 def test_a_consent_is_issued_to_the_caller_only(client, db, world, consent_on):  # noqa: F811
@@ -206,7 +252,7 @@ def test_a_consent_is_issued_to_the_caller_only(client, db, world, consent_on): 
 
     _grant_module(db, world["analyst"])
     fp = "a" * 64
-    r = client.post("/api/v1/analyst/consents", headers=world["analyst"].headers,
+    r = client.post("/api/v1/chat/consents", headers=world["analyst"].headers,
                     json={"query_fingerprint": fp, "fields": ["x.region"]})
     token = r.json()["drop_consent"]
     assert consent.verify(token, user_id=world["analyst"].id, query_fp=fp, dropped_fields=["x.region"])
@@ -216,73 +262,78 @@ def test_a_consent_is_issued_to_the_caller_only(client, db, world, consent_on): 
 
 def test_a_follow_up_stays_on_the_previous_source(client, db, world, model):  # noqa: F811
     """Real-model browser run: "and by quarter?" jumped to another dataset. A
-    follow-up is held to the previous explore; a plan elsewhere is not run."""
+    follow-up is held to the previous explore - the CONVERSATION's previous answer,
+    read on the server; a plan elsewhere is not run."""
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu?"}).json()
     assert first["status"] == "answered"
+    conv = first["conversation_id"]
     model(_planner(world, view=world["slow_view"].name, explore=world["slow_explore"], dims=()))
-    turn = uuid.uuid4().hex
-    follow = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                         json={"question": "Còn theo quý?", "turn_id": turn, "previous_plan": first["plan"]}).json()
+    follow = ask(client, world["analyst"], {"question": "Còn theo quý?"}, conv=conv).json()
     assert follow["status"] == "unsupported", follow
-    assert _ledger_rows(turn) == []
+    assert _ledger_rows(follow["turn_id"]) == []
     model(_planner(world, grain="quarter"))
-    again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Còn theo quý?", "previous_plan": first["plan"]}).json()
+    again = ask(client, world["analyst"], {"question": "Còn theo quý?"}, conv=conv).json()
     assert again["status"] == "answered" and again["plan"]["explore_id"] == world["explore"].id
 
 
-# ── PO gate 4: a dedicated, fail-closed pilot permission ─────────────────────
+# ── who may ask: the `chat` module, and per Dataset the EXPLORE relation ──────
 
 def _ask(client, who):  # noqa: F811
-    return client.post("/api/v1/analyst/ask", headers=who.headers, json={"question": "Doanh thu theo vùng?"})
+    return ask(client, who, {"question": "Doanh thu theo vùng?"})
 
 
-def test_explore_without_the_analyst_permission_is_403(client, db, world, model):  # noqa: F811
+def test_without_the_chat_module_it_is_403(client, db, world, model):  # noqa: F811
     set_permissions(db, world["analyst"], datasets="edit", explore_charts="full")
     model(_planner(world))
     assert _ask(client, world["analyst"]).status_code == 403
-    assert client.get("/api/v1/analyst/catalog", headers=world["analyst"].headers).status_code == 403
+    assert client.get("/api/v1/chat/catalog", headers=world["analyst"].headers).status_code == 403
 
 
-def test_the_analyst_permission_without_explore_is_403(client, db, world, model):  # noqa: F811
-    set_permissions(db, world["analyst"], datasets="edit", analyst="view")
+def test_chat_alone_answers_from_the_persons_explore_grant(client, db, world, model):  # noqa: F811
+    """ADR-4/5: `chat: view` is the only module gate; the DATA gate is the Dataset's
+    EXPLORE relation, decided by GQS on every read. No Analyst, Explore-module or
+    Flow permission is needed - and none is granted to anybody without EXPLORE."""
+    set_permissions(db, world["analyst"], datasets="edit", chat="view")
     model(_planner(world))
-    assert _ask(client, world["analyst"]).status_code == 403
+    body = _ask(client, world["analyst"]).json()
+    assert body["status"] == "answered" and body["can_save"] is False
+    set_permissions(db, world["viewer"], datasets="edit", chat="view")
+    viewer = _ask(client, world["viewer"]).json()
+    assert viewer["status"] == "unsupported" and "rows" not in viewer
 
 
-def test_a_set_allowlist_restricts_and_an_empty_one_leaves_it_to_the_module_permission(client, db, world, model, monkeypatch):  # noqa: F811
-    """Official module (2026-10-26): the allowlist is an optional EXTRA restriction.
-    Empty = the `analyst` module permission decides; it never admits someone without it."""
+def test_the_emergency_switch_stops_new_turns_and_never_reroutes(client, db, world, model, monkeypatch):  # noqa: F811
     from app.core.config import settings
 
     _grant_module(db, world["analyst"])
     model(_planner(world))
+    first = _ask(client, world["analyst"]).json()
+    monkeypatch.setattr(settings, "AI_CHAT_ENABLED", False)
+    r = ask(client, world["analyst"], {"question": "Doanh thu theo vùng?"}, conv=first["conversation_id"])
+    assert r.status_code == 503 and "rows" not in r.text
+    history = client.get(f"/api/v1/chat/conversations/{first['conversation_id']}", headers=world["analyst"].headers)
+    assert history.status_code == 200 and len(history.json()["turns"]) == 1
+    monkeypatch.setattr(settings, "AI_CHAT_ENABLED", True)
     assert _ask(client, world["analyst"]).json()["status"] == "answered"
-    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "someone-else@x.test")
-    r = _ask(client, world["analyst"])
-    assert r.status_code == 403 and "rows" not in r.text
-    monkeypatch.setattr(settings, "ANALYST_PILOT_ALLOWLIST", "")
-    assert _ask(client, world["analyst"]).json()["status"] == "answered"
-    assert _ask(client, world["stranger"]).status_code == 403   # no module permission: still nothing
 
 
-def test_revoking_the_analyst_permission_applies_to_the_next_request(client, db, world, model):  # noqa: F811
+def test_revoking_the_chat_permission_applies_to_the_next_request(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_planner(world))
     assert _ask(client, world["analyst"]).json()["status"] == "answered"
-    set_permissions(db, world["analyst"], datasets="edit", explore_charts="view", analyst="none")
+    set_permissions(db, world["analyst"], datasets="edit", explore_charts="view", chat="none")
     assert _ask(client, world["analyst"]).status_code == 403
     turn = uuid.uuid4().hex
-    assert client.post(f"/api/v1/analyst/turns/{turn}/cancel", headers=world["analyst"].headers).status_code == 403
+    assert client.post(f"/api/v1/chat/turns/{turn}/cancel", headers=world["analyst"].headers).status_code == 403
 
 
-def test_no_preset_but_admin_grants_the_analyst():
+def test_presets_carry_chat_and_no_analyst_module():
     from app.api.permissions import PRESETS
 
-    assert PRESETS["admin"].get("analyst") == "full"
-    assert all(PRESETS[p].get("analyst", "none") == "none" for p in ("editor", "viewer", "minimal"))
+    assert PRESETS["admin"].get("chat") == "full"
+    assert all("analyst" not in p for p in PRESETS.values())
 
 
 # ── PO gate 5: accepting a dropped filter re-runs the SAME validated plan ──────
@@ -300,26 +351,23 @@ def test_accepting_a_dropped_filter_is_off_by_default(client, db, world, model, 
     _grant_module(db, world["analyst"])
     v = world["v"]
     model(_planner(world, dims=("order_date",), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}}}))
-    refused = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                          json={"question": "Doanh thu miền Bắc theo tháng?"}).json()
+    refused = ask(client, world["analyst"], {"question": "Doanh thu miền Bắc theo tháng?"}).json()
     assert refused["code"] == "filter_would_drop" and refused["consent_available"] is False
     d = refused["detail"]
-    r = client.post("/api/v1/analyst/consents", headers=world["analyst"].headers,
+    r = client.post("/api/v1/chat/consents", headers=world["analyst"].headers,
                     json={"query_fingerprint": d["query_fingerprint"], "fields": [x["field"] for x in d["dropped"]]})
     assert r.status_code == 403
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "x", "drop_consent": "v1.a.b", "consented_plan": refused["plan"]}).json()
+    body = ask(client, world["analyst"], {"question": "x", "drop_consent": "v1.a.b", "consented_plan": refused["plan"]}).json()
     assert body["status"] == "unsupported" and "rows" not in body
 
 
 def _drop_turn(client, world, model):  # noqa: F811
     v = world["v"]
     model(_planner(world, dims=("order_date",), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}}}))
-    refused = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                          json={"question": "Doanh thu miền Bắc theo tháng?"}).json()
+    refused = ask(client, world["analyst"], {"question": "Doanh thu miền Bắc theo tháng?"}).json()
     assert refused["status"] == "refused" and refused["code"] == "filter_would_drop", refused
     d = refused["detail"]
-    token = client.post("/api/v1/analyst/consents", headers=world["analyst"].headers,
+    token = client.post("/api/v1/chat/consents", headers=world["analyst"].headers,
                         json={"query_fingerprint": d["query_fingerprint"],
                               "fields": [x["field"] for x in d["dropped"]]}).json()["drop_consent"]
     return refused, token
@@ -333,16 +381,13 @@ def test_an_accepted_drop_runs_the_refused_plan_without_asking_the_model(client,
     _grant_module(db, world["analyst"])
     refused, token = _drop_turn(client, world, model)
     model(_never_called)
-    turn = uuid.uuid4().hex
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu miền Bắc theo tháng?", "turn_id": turn,
-                             "drop_consent": token, "consented_plan": refused["plan"]}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu miền Bắc theo tháng?",
+                                          "drop_consent": token, "consented_plan": refused["plan"]}).json()
     assert body["status"] == "answered", body
     dropped = body["evidence"]["filters_dropped"]
     assert [x["field"] for x in dropped] == [one_drop] and all(x["accepted_by_user"] for x in dropped)
     # the same consent cannot be spent twice
-    again = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu miền Bắc theo tháng?", "drop_consent": token,
+    again = ask(client, world["analyst"], {"question": "Doanh thu miền Bắc theo tháng?", "drop_consent": token,
                               "consented_plan": refused["plan"]}).json()
     assert again["status"] == "refused" and "rows" not in again
 
@@ -353,8 +398,7 @@ def test_a_changed_plan_cannot_spend_the_consent(client, db, world, model, one_d
     model(_never_called)
     wider = {**refused["plan"], "dimensions": [f"{world['v']}.order_date", f"{world['v']}.region"],
              "time_grains": {f"{world['v']}.order_date": "month"}}
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "x", "drop_consent": token, "consented_plan": wider}).json()
+    body = ask(client, world["analyst"], {"question": "x", "drop_consent": token, "consented_plan": wider}).json()
     assert body["status"] == "refused" and body["code"] == "consent_invalid" and "rows" not in body, body
 
 
@@ -364,8 +408,7 @@ def test_a_plan_outside_the_catalog_is_refused_even_with_a_consent(client, db, w
     model(_never_called)
     for bad in ({**refused["plan"], "explore_id": 999999999},
                 {**refused["plan"], "measures": ["other_view.secret"]}):
-        body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                           json={"question": "x", "drop_consent": token, "consented_plan": bad}).json()
+        body = ask(client, world["analyst"], {"question": "x", "drop_consent": token, "consented_plan": bad}).json()
         assert body["status"] == "unsupported" and "rows" not in body, body
 
 
@@ -378,8 +421,7 @@ def test_a_consented_plan_after_the_grant_is_revoked_returns_nothing(client, db,
     db.query(DatasetGrant).filter(DatasetGrant.dataset_id == world["ds"].id,
                                   DatasetGrant.user_id == world["analyst"].id).delete()
     db.commit()
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "x", "drop_consent": token, "consented_plan": refused["plan"]}).json()
+    body = ask(client, world["analyst"], {"question": "x", "drop_consent": token, "consented_plan": refused["plan"]}).json()
     assert body["status"] == "unsupported" and "rows" not in body
 
 
@@ -387,12 +429,11 @@ def test_another_persons_consent_is_refused(client, db, world, model, one_drop, 
     _grant_module(db, world["analyst"], world["owner"])
     refused, _mine = _drop_turn(client, world, model)
     d = refused["detail"]
-    owners = client.post("/api/v1/analyst/consents", headers=world["owner"].headers,
+    owners = client.post("/api/v1/chat/consents", headers=world["owner"].headers,
                          json={"query_fingerprint": d["query_fingerprint"],
                                "fields": [x["field"] for x in d["dropped"]]}).json()["drop_consent"]
     model(_never_called)
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "x", "drop_consent": owners, "consented_plan": refused["plan"]}).json()
+    body = ask(client, world["analyst"], {"question": "x", "drop_consent": owners, "consented_plan": refused["plan"]}).json()
     assert body["status"] == "refused" and body["code"] == "consent_invalid"
 
 
@@ -400,8 +441,7 @@ def test_a_plan_without_a_consent_is_not_a_way_around_the_model(client, db, worl
     _grant_module(db, world["analyst"])
     model(_never_called)
     plan = {"explore_id": world["explore"].id, "dimensions": [], "measures": [f"{world['v']}.revenue"]}
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "x", "consented_plan": plan}).json()
+    body = ask(client, world["analyst"], {"question": "x", "consented_plan": plan}).json()
     assert body["status"] == "unsupported" and "rows" not in body
 
 
@@ -410,20 +450,17 @@ def test_a_plan_without_a_consent_is_not_a_way_around_the_model(client, db, worl
 def test_a_chosen_source_pins_the_turn_and_an_unavailable_one_is_refused(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    ok = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                     json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?",
+    ok = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?",
                            "dataset_id": world["ds"].id}).json()
     assert ok["status"] == "answered", ok
-    other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu theo vùng?", "dataset_id": 987654321}).json()
+    other = ask(client, world["analyst"], {"question": "Doanh thu theo vùng?", "dataset_id": 987654321}).json()
     assert other["status"] == "unsupported" and "rows" not in other
 
 
 def test_the_save_button_is_offered_only_to_someone_the_chart_api_lets_save(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])   # explore_charts: view -> may not save
     model(_planner(world))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()
     assert body["status"] == "answered" and body["can_save"] is False
     r = client.post("/api/v1/charts/", headers=world["analyst"].headers, json=body["chart_draft"])
     assert r.status_code == 403  # the API agrees with what the page was told
@@ -434,25 +471,24 @@ def test_the_save_button_is_offered_only_to_someone_the_chart_api_lets_save(clie
 def test_a_person_rates_their_own_answer_and_only_their_own(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"], world["owner"])
     model(_planner(world))
-    turn = uuid.uuid4().hex
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?", "turn_id": turn}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()
     assert body["status"] == "answered"
-    ok = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
-                     json={"turn_id": turn, "verdict": "down", "comment": "sai vùng"})
+    turn = body["turn_id"]
+    ok = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["analyst"].headers,
+                     json={"verdict": "down", "comment": "sai vùng"})
     assert ok.status_code == 201, ok.text
     with sa.create_engine(_owner_url()).connect() as c:
-        row = c.execute(sa.text("SELECT verdict, comment, user_id FROM analyst_feedback WHERE turn_id = :t"),
+        row = c.execute(sa.text("SELECT verdict, comment, user_id FROM chat_feedback WHERE turn_id = :t"),
                         {"t": turn}).one()
     assert row[0] == "down" and row[1] == "sai vùng" and str(row[2]) == str(world["analyst"].id)
-    other = client.post("/api/v1/analyst/feedback", headers=world["owner"].headers,
-                        json={"turn_id": turn, "verdict": "up"})
+    other = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["owner"].headers,
+                        json={"verdict": "up"})
     assert other.status_code == 404                          # not the owner's turn
-    bad = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
-                      json={"turn_id": turn, "verdict": "maybe"})
+    bad = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["analyst"].headers,
+                      json={"verdict": "maybe"})
     assert bad.status_code == 422
-    stranger = client.post("/api/v1/analyst/feedback", headers=world["stranger"].headers,
-                           json={"turn_id": turn, "verdict": "up"})
+    stranger = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["stranger"].headers,
+                           json={"verdict": "up"})
     assert stranger.status_code == 403
 
 
@@ -473,12 +509,11 @@ def test_a_value_clarification_names_its_field_and_a_pick_is_answered(client, db
     _grant_module(db, world["analyst"])
     model(_atlantis(world))
     v = world["v"]
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu vùng Atlantis"}).json()
     assert first["status"] == "clarify" and set(first["options"]) == {"Bắc", "Nam", "Trung"}, first
     assert first["choice_field"] == f"{v}.region"
     model(_never_called)  # the pick re-runs the shown plan; the model is not asked again
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+    body = ask(client, world["analyst"], {
         "question": "Doanh thu vùng Atlantis — Nam",
         "value_choice": {"plan": first["plan"], "field": first["choice_field"], "value": "Nam"}}).json()
     assert body["status"] == "answered", body
@@ -489,10 +524,9 @@ def test_a_value_clarification_names_its_field_and_a_pick_is_answered(client, db
 def test_a_picked_value_not_in_the_data_is_offered_again_not_queried_as_zero(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_atlantis(world))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu vùng Atlantis"}).json()
     model(_never_called)
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+    body = ask(client, world["analyst"], {
         "question": "x", "value_choice": {"plan": first["plan"], "field": first["choice_field"], "value": "Mars"}}).json()
     assert body["status"] == "clarify" and "rows" not in body
 
@@ -500,15 +534,13 @@ def test_a_picked_value_not_in_the_data_is_offered_again_not_queried_as_zero(cli
 def test_a_pick_cannot_change_another_field_or_leave_the_catalog(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_atlantis(world))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu vùng Atlantis"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu vùng Atlantis"}).json()
     model(_never_called)
     v = world["v"]
     for choice in ({"plan": first["plan"], "field": f"{v}.order_date", "value": "Nam"},  # not a filter of the plan
                    {"plan": {**first["plan"], "explore_id": 987654321}, "field": f"{v}.region", "value": "Nam"},
                    {"plan": first["plan"], "field": f"{v}.region", "value": ""}):
-        body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                           json={"question": "x", "value_choice": choice}).json()
+        body = ask(client, world["analyst"], {"question": "x", "value_choice": choice}).json()
         assert body["status"] == "unsupported" and "rows" not in body, (choice, body)
 
 
@@ -518,11 +550,10 @@ def test_a_pick_for_an_excluded_value_stays_an_exclusion(client, db, world, mode
     model(_planner(world, dims=("region",), extra={
         "filters": {f"{v}.region": {"operator": "ne", "value": "Atlantis"}},
         "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region", "không tính vùng Atlantis": f"{v}.region"}}))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu theo vùng không tính vùng Atlantis"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu theo vùng không tính vùng Atlantis"}).json()
     assert first["status"] == "clarify" and first["choice_field"] == f"{v}.region", first
     model(_never_called)
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={
+    body = ask(client, world["analyst"], {
         "question": "x", "value_choice": {"plan": first["plan"], "field": f"{v}.region", "value": "Nam"}}).json()
     assert body["status"] == "answered", body
     assert body["plan"]["filters"] == {f"{v}.region": {"operator": "ne", "value": "Nam"}}
@@ -537,8 +568,7 @@ def test_top_n_returns_exactly_n_groups_in_order_and_names_them(client, db, worl
     _grant_module(db, world["analyst"])
     v = world["v"]
     model(_planner(world, dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Top 2 vùng có doanh thu cao nhất"}).json()
+    body = ask(client, world["analyst"], {"question": "Top 2 vùng có doanh thu cao nhất"}).json()
     assert body["status"] == "answered", body
     col = {c["role"]: c["name"] for c in body["columns"]}
     assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"]          # oracle: Bắc 150, Nam 30, Trung 20
@@ -546,8 +576,7 @@ def test_top_n_returns_exactly_n_groups_in_order_and_names_them(client, db, worl
     # no tie at the cut, one metric, one breakdown: the chart's LIMIT gives the same rows
     assert body["chart_draft"]["config"]["styleConfig"]["dataLimit"] == 2
     assert "Bắc" in body["answer"]["headline"] and "Trung" not in body["answer"]["headline"]
-    low = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                      json={"question": "1 vùng có doanh thu thấp nhất"}).json()
+    low = ask(client, world["analyst"], {"question": "1 vùng có doanh thu thấp nhất"}).json()
     assert [r[col["dimension"]] for r in low["rows"]] == ["Trung"], low
 
 
@@ -556,8 +585,7 @@ def test_a_plain_breakdown_reads_in_ranking_order(client, db, world, model):  # 
     v = world["v"]
     model(_planner(world, dims=("region",), extra={"sorts": [{"field": f"{v}.region", "direction": "asc"}],
                                                    "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu theo vùng"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu theo vùng"}).json()
     col = {c["role"]: c["name"] for c in body["columns"]}
     assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam", "Trung"]  # by value, as the headline ranks
 
@@ -573,8 +601,7 @@ def test_a_real_value_written_on_the_wrong_field_moves_to_the_field_that_has_it(
     v = world["v"]
     model(_planner(world, dims=(), extra={"filters": {f"{v}.has_phone": {"operator": "eq", "value": "Nam"}},
                                           "covered": {"doanh thu": f"{v}.revenue", "Nam": f"{v}.has_phone"}}))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu của Nam"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu của Nam"}).json()
     assert body["status"] == "answered", body
     assert body["plan"]["filters"] == {f"{v}.region": {"operator": "eq", "value": "Nam"}}
     assert _revenue_of(body) == [30.0]
@@ -586,14 +613,12 @@ def test_a_value_the_question_never_says_is_re_resolved_from_its_words_or_refuse
     # the model wrote a code ("N-02") for "vùng Nam": re-resolved from the question's words
     model(_planner(world, dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "N-02"}},
                                           "covered": {"doanh thu": f"{v}.revenue", "vùng Nam": f"{v}.region"}}))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu vùng Nam"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu vùng Nam"}).json()
     assert body["status"] == "answered" and _revenue_of(body) == [30.0], body
     # adversarial: the question names no real value at all -> refused, never another value's number
     model(_planner(world, dims=(), extra={"filters": {f"{v}.region": {"operator": "eq", "value": "Bắc"}},
                                           "covered": {"doanh thu": f"{v}.revenue"}}))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu vùng Atlantis"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu vùng Atlantis"}).json()
     assert body["status"] != "answered" and "rows" not in body, body
 
 
@@ -630,11 +655,10 @@ Q_BEST = "Vùng nào tốt nhất?"
 def test_a_metric_pick_is_answered_with_exactly_that_metric_as_a_ranking(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_clarify_then(world, _region_plan(world)))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+    first = ask(client, world["analyst"], {"question": Q_BEST}).json()
     assert first["status"] == "clarify", first
     assert [c["label"] for c in first["choices"]] == ["Doanh thu", "Số đơn"]   # the out-of-catalog option is not pickable
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": Q_BEST, "choice_token": first["choices"][0]["token"]}).json()
+    body = ask(client, world["analyst"], {"question": Q_BEST, "choice_token": first["choices"][0]["token"]}).json()
     assert body["status"] == "answered", body
     v = world["v"]
     assert body["plan"]["measures"] == [f"{v}.revenue"]
@@ -645,13 +669,13 @@ def test_a_metric_pick_is_answered_with_exactly_that_metric_as_a_ranking(client,
 def test_a_forged_foreign_or_misdirected_choice_is_refused(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"], world["viewer"])
     model(_clarify_then(world, _region_plan(world)))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+    first = ask(client, world["analyst"], {"question": Q_BEST}).json()
     token = first["choices"][0]["token"]
     body, mac = token.rsplit(".", 1)
     for who, question, tok in ((world["analyst"], Q_BEST, body + "." + ("0" * len(mac))),   # tampered
                                (world["viewer"], Q_BEST, token),                          # another person
                                (world["analyst"], "Doanh thu theo vùng?", token)):       # another question
-        r = client.post("/api/v1/analyst/ask", headers=who.headers, json={"question": question, "choice_token": tok})
+        r = ask(client, who, {"question": question, "choice_token": tok})
         assert r.status_code in (200, 403), r.text
         if r.status_code == 200:
             assert r.json()["status"] == "unsupported" and "rows" not in r.json(), r.json()
@@ -660,32 +684,31 @@ def test_a_forged_foreign_or_misdirected_choice_is_refused(client, db, world, mo
 def test_an_expired_stale_or_revoked_choice_is_refused(client, db, world, model, monkeypatch):  # noqa: F811
     from app.models.dataset import DatasetGrant
     from app.models.semantic import SemanticView
-    from app.services.analyst import service as svc
+    from app.services.data_core import service as svc
 
     _grant_module(db, world["analyst"])
     model(_clarify_then(world, _region_plan(world)))
 
     def pick():
-        first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
+        first = ask(client, world["analyst"], {"question": Q_BEST}).json()
         return first["choices"][0]["token"]
 
-    def ask(tok):
-        return client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                           json={"question": Q_BEST, "choice_token": tok}).json()
+    def answer(tok):
+        return ask(client, world["analyst"], {"question": Q_BEST, "choice_token": tok}).json()
 
     monkeypatch.setattr(svc, "CHOICE_TTL_SECONDS", -1)
-    assert "hết hạn" in ask(pick())["message"]
+    assert "hết hạn" in answer(pick())["message"]
     monkeypatch.setattr(svc, "CHOICE_TTL_SECONDS", 900)
     tok = pick()
     view = db.query(SemanticView).filter(SemanticView.name == world["v"]).one()
     view.measures = [{**m, "label": "Doanh thu gộp"} if m.get("name") == "revenue" else m for m in view.measures]
     db.commit()
-    assert "thay đổi" in ask(tok)["message"]                     # the catalog moved under the pick
+    assert "thay đổi" in answer(tok)["message"]                     # the catalog moved under the pick
     tok = pick()
     db.query(DatasetGrant).filter(DatasetGrant.dataset_id == world["ds"].id,
                                   DatasetGrant.user_id == world["analyst"].id).delete()
     db.commit()
-    gone = ask(tok)
+    gone = answer(tok)
     assert gone["status"] == "unsupported" and "rows" not in gone, gone
 
 
@@ -693,15 +716,14 @@ def test_asking_again_after_a_pick_is_not_a_loop(client, db, world, model):  # n
     _grant_module(db, world["analyst"])
     again = {"status": "clarify", "question": "?", "options": ["a", "b"]}
     model(_clarify_then(world, again))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": Q_BEST}).json()
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": Q_BEST, "choice_token": first["choices"][1]["token"]}).json()
+    first = ask(client, world["analyst"], {"question": Q_BEST}).json()
+    body = ask(client, world["analyst"], {"question": Q_BEST, "choice_token": first["choices"][1]["token"]}).json()
     assert body["status"] == "unsupported" and "rows" not in body
 
 
 def test_a_source_choice_token_pins_the_dataset_and_is_bound_to_the_person(client, db, world, model):  # noqa: F811
-    from app.services.analyst import service as svc
-    from app.services.analyst.catalog import discover
+    from app.services.data_core import service as svc
+    from app.services.data_core.catalog import discover
     from app.services.governed_query import AuthorizationContext, EffectivePrincipal, SurfaceCeiling
 
     _grant_module(db, world["analyst"])
@@ -709,7 +731,7 @@ def test_a_source_choice_token_pins_the_dataset_and_is_bound_to_the_person(clien
     from app.models.user import User
 
     user = db.get(User, u.id)
-    authz = AuthorizationContext(db=db, principal=EffectivePrincipal.for_user(user, surface="analyst", request_id="t"),
+    authz = AuthorizationContext(db=db, principal=EffectivePrincipal.for_user(user, surface="chat", request_id="t"),
                                  user=user, ceiling=SurfaceCeiling.of(None))
     cat = discover(authz)
     tok = svc.sign_choice(user_id=str(u.id), question="Doanh thu?", catalog=cat, dataset_id=world["ds"].id)
@@ -723,13 +745,12 @@ def test_a_source_choice_token_pins_the_dataset_and_is_bound_to_the_person(clien
 
 def test_a_filtered_answer_saved_as_a_chart_gives_the_same_rows_on_reopen(client, db, world, model):  # noqa: F811
     owner = world["owner"]
-    set_permissions(db, owner, datasets="edit", explore_charts="edit", analyst="view")
+    set_permissions(db, owner, datasets="edit", explore_charts="edit", chat="view")
     v = world["v"]
     model(_planner(world, dims=("region",), extra={
         "filters": {f"{v}.region": {"operator": "ne", "value": "Trung"}},
         "covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region", "không tính vùng Trung": f"{v}.region"}}))
-    body = client.post("/api/v1/analyst/ask", headers=owner.headers,
-                       json={"question": "Doanh thu theo vùng không tính vùng Trung"}).json()
+    body = ask(client, owner, {"question": "Doanh thu theo vùng không tính vùng Trung"}).json()
     assert body["status"] == "answered" and body["chart_draft"], body.get("chart_draft_unavailable")
     want = {r[c["name"]]: float(r[next(x["name"] for x in body["columns"] if x["role"] == "measure")])
             for r in body["rows"] for c in body["columns"] if c["role"] == "dimension"}
@@ -749,16 +770,15 @@ def test_a_filtered_answer_saved_as_a_chart_gives_the_same_rows_on_reopen(client
 def test_feedback_records_what_was_wrong_and_refuses_an_unknown_reason(client, db, world, model):  # noqa: F811
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    turn = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
-    ok = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
-                     json={"turn_id": turn, "verdict": "down", "reason": "wrong_filter", "comment": "thiếu năm"})
+    turn = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
+    ok = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["analyst"].headers,
+                     json={"verdict": "down", "reason": "wrong_filter", "comment": "thiếu năm"})
     assert ok.status_code == 201, ok.text
-    bad = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
-                      json={"turn_id": turn, "verdict": "down", "reason": "anything"})
+    bad = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["analyst"].headers,
+                      json={"verdict": "down", "reason": "anything"})
     assert bad.status_code == 422
     with sa.create_engine(_owner_url()).connect() as c:
-        assert c.execute(sa.text("SELECT reason FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
+        assert c.execute(sa.text("SELECT reason FROM chat_feedback WHERE turn_id = :t"), {"t": turn}).scalar()             == "wrong_filter"
 
 
 def test_feedback_accepts_every_preview_category_with_turn_and_build(client, db, world, model, monkeypatch):  # noqa: F811
@@ -766,16 +786,15 @@ def test_feedback_accepts_every_preview_category_with_turn_and_build(client, db,
     monkeypatch.setenv("APPBI_BUILD_SHA", "abc1234")
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    turn = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
+    turn = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()["turn_id"]
     reasons = ["correct", "wrong_metric", "wrong_dataset", "wrong_filter", "incorrect_number",
                "wrong_interpretation", "unsupported_but_answerable", "ux_issue", "wrong_metric_or_source"]
     for r in reasons:
-        res = client.post("/api/v1/analyst/feedback", headers=world["analyst"].headers,
-                          json={"turn_id": turn, "verdict": "up" if r == "correct" else "down", "reason": r})
+        res = client.post(f"/api/v1/chat/turns/{turn}/feedback", headers=world["analyst"].headers,
+                          json={"verdict": "up" if r == "correct" else "down", "reason": r})
         assert res.status_code == 201, (r, res.text)
     with sa.create_engine(_owner_url()).connect() as c:
-        rows = c.execute(sa.text("SELECT reason, rc_sha, turn_id FROM analyst_feedback WHERE turn_id = :t"), {"t": turn}).all()
+        rows = c.execute(sa.text("SELECT reason, rc_sha, turn_id FROM chat_feedback WHERE turn_id = :t"), {"t": turn}).all()
     assert sorted(r[0] for r in rows) == sorted(reasons)
     assert {r[1] for r in rows} == {"abc1234"} and {r[2] for r in rows} == {turn}
 
@@ -788,18 +807,16 @@ def test_a_follow_up_that_only_ranks_reuses_the_previous_plan_when_the_model_ref
     _grant_module(db, world["analyst"])
     v = world["v"]
     model(_planner(world, dims=("region",), extra={"covered": {"doanh thu": f"{v}.revenue", "vùng": f"{v}.region"}}))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Doanh thu theo vùng"}).json()
+    first = ask(client, world["analyst"], {"question": "Doanh thu theo vùng"}).json()
     assert first["status"] == "answered", first
     model(lambda *a, **k: {"status": "unsupported", "reason": "?"})
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                       json={"question": "Chỉ lấy top 2 thôi", "previous_plan": first["plan"]}).json()
+    conv = first["conversation_id"]
+    body = ask(client, world["analyst"], {"question": "Chỉ lấy top 2 thôi"}, conv=conv).json()
     assert body["status"] == "answered", body
     col = {c["role"]: c["name"] for c in body["columns"]}
     assert [r[col["dimension"]] for r in body["rows"]] == ["Bắc", "Nam"] and body["plan"]["limit"] == 2
     # a follow-up that says more than a ranking is NOT re-run from the previous plan
-    other = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers,
-                        json={"question": "Chỉ lấy top 2 sản phẩm lợi nhuận", "previous_plan": first["plan"]}).json()
+    other = ask(client, world["analyst"], {"question": "Chỉ lấy top 2 sản phẩm lợi nhuận"}, conv=conv).json()
     assert other["status"] != "answered" and "rows" not in other
 
 
@@ -821,7 +838,7 @@ def _numbers(rows):
 @pytest.mark.parametrize("case", ["kpi_filtered", "line_trend", "table_two_dims", "top_n_bar"])
 def test_a_saved_chart_reproduces_the_answer(client, db, world, model, case):  # noqa: F811
     owner = world["owner"]
-    set_permissions(db, owner, datasets="edit", explore_charts="edit", analyst="view")
+    set_permissions(db, owner, datasets="edit", explore_charts="edit", chat="view")
     v = world["v"]
     plans = {
         # (a date range needs a CERTIFIED date field, which this fixture's order_date is not:
@@ -836,7 +853,7 @@ def test_a_saved_chart_reproduces_the_answer(client, db, world, model, case):  #
     }
     kwargs, question, kind = plans[case]
     model(_planner(world, **kwargs))
-    body = client.post("/api/v1/analyst/ask", headers=owner.headers, json={"question": question}).json()
+    body = ask(client, owner, {"question": question}).json()
     assert body["status"] == "answered", body
     assert body["chart_draft"], body.get("chart_draft_unavailable")
     assert body["chart_draft"]["chart_type"] == kind
@@ -856,11 +873,11 @@ def test_a_person_over_the_daily_query_budget_is_refused_before_the_model_is_ask
     every question, yet each one still went to the paid model first - GQS only checks
     the budget after planning. The daily budget is a cost control: once it is spent,
     the turn is refused with the same reason and the model is not called."""
-    from app.api import analyst as api
+    from app.services.chat import orchestrator
 
     _grant_module(db, world["analyst"])
     model(_planner(world))
-    first = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"})
+    first = ask(client, world["analyst"], {"question": "Doanh thu?"})
     assert first.json()["status"] == "answered", first.json()
     with sa.create_engine(_owner_url()).connect() as c:
         used = int(c.execute(sa.text("SELECT count(*) FROM governed_query_executions WHERE user_id = :u "
@@ -868,11 +885,11 @@ def test_a_person_over_the_daily_query_budget_is_refused_before_the_model_is_ask
                              {"u": str(world["analyst"].id)}).scalar())
     import dataclasses
 
-    ledger = api._analyst_deps().ledger
+    ledger = orchestrator.core_deps().ledger
     monkeypatch.setattr(ledger, "budgets", dataclasses.replace(ledger.budgets, max_queries_per_user_day=used))
     calls = []
     model(lambda prompt, system=None, max_tokens=None: calls.append(1) or _planner(world)(prompt))
-    body = client.post("/api/v1/analyst/ask", headers=world["analyst"].headers, json={"question": "Doanh thu?"}).json()
+    body = ask(client, world["analyst"], {"question": "Doanh thu?"}).json()
     assert body["status"] == "refused" and body["code"] == "budget_exceeded" and "rows" not in body, body
     assert body["message"] == "Đã vượt hạn mức truy vấn được phép."
     assert calls == [], "the model was asked although the daily query budget was spent"

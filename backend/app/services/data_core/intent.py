@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional
 
-from app.services.analyst.grounding import fold
+from app.services.data_core.grounding import fold
 
 _PRON = r"(?:anh|chi|em|minh|toi|ban|to|cau|sep|ad|admin|moi nguoi|team|ca nha)"
 # "(anh chị) cho (em) hỏi", "giúp mình xem", "làm ơn cho tôi biết", "xin cho hỏi"

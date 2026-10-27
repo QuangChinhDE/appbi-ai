@@ -1,4 +1,4 @@
-"""The plan must answer THE QUESTION (services/analyst/grounding.py).
+"""The plan must answer THE QUESTION (services/data_core/grounding.py).
 
 Every case is a failure of the independent real-model holdout (2026-10-21, 40 new
 questions on a multi-fact rig, gpt-4o-mini), reduced to the plan the model
@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from app.services.analyst.catalog import CatalogExplore, CatalogField
-from app.services.analyst.grounding import fold, ground
-from app.services.analyst.planner import Plan
-from app.services.analyst.service import _check_filter_values
+from app.services.data_core.catalog import CatalogExplore, CatalogField
+from app.services.data_core.grounding import fold, ground
+from app.services.data_core.planner import Plan
+from app.services.data_core.service import _check_filter_values
 
 FIELDS = [
     CatalogField("o.order_count", "measure", "count_distinct", "Số đơn hàng"),
@@ -161,7 +161,7 @@ def test_no_or_several_matching_values_is_a_choice_for_the_person():
 
 
 def test_a_phrase_that_names_no_data_is_not_a_missing_field():
-    from app.services.analyst.grounding import is_function_phrase
+    from app.services.data_core.grounding import is_function_phrase
 
     assert is_function_phrase("biến động ra sao", has_time=True)
     assert is_function_phrase("tổng cộng", has_time=False)
@@ -205,7 +205,7 @@ def _ex(eid, base, refs, ds=1):
 
 
 def test_the_model_sees_one_entry_per_dataset():
-    from app.services.analyst.planner import prompt_catalog
+    from app.services.data_core.planner import prompt_catalog
 
     cat = [_ex(4, "c", ["c.region", "l.net_sales"]), _ex(6, "o", ["o.channel", "c.region", "l.net_sales"]),
            _ex(9, "m", ["m.spend_sales"], ds=2)]
@@ -213,7 +213,7 @@ def test_the_model_sees_one_entry_per_dataset():
 
 
 def test_the_plan_runs_from_the_explore_whose_base_owns_the_measure():
-    from app.services.analyst.planner import retarget
+    from app.services.data_core.planner import retarget
 
     cust = _ex(4, "c", ["c.region", "o.order_date", "l.net_sales"])
     lines = _ex(7, "l", ["c.region", "o.order_date", "l.net_sales", "p.category"])
@@ -238,7 +238,7 @@ def test_a_bridged_identifier_yields_to_the_field_the_question_names():
 
 
 def test_a_metric_another_dataset_names_word_for_word_is_a_choice():
-    from app.services.analyst.grounding import other_source_named
+    from app.services.data_core.grounding import other_source_named
 
     sales = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="Sales", dataset_table_id=1,
                            base_view="i", source_type="postgresql", label="Sales",
@@ -297,7 +297,7 @@ def test_a_value_that_exists_nowhere_is_a_choice_before_anything_runs():
 
 
 def test_naming_the_dataset_is_not_a_missing_field():
-    from app.services.analyst.grounding import is_function_phrase, syllables
+    from app.services.data_core.grounding import is_function_phrase, syllables
 
     assert is_function_phrase("slow archive", has_time=False, source_words=syllables("Rig Slow Archive"))
     p, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng trong Commerce")
@@ -434,7 +434,7 @@ def test_a_date_range_needs_a_year_and_is_not_also_a_breakdown_unless_asked():
 
 
 def test_a_period_phrase_the_model_left_unmapped_is_not_a_missing_field():
-    from app.services.analyst.grounding import is_function_phrase
+    from app.services.data_core.grounding import is_function_phrase
 
     assert is_function_phrase("Quý 1/2026", has_time=True)
     assert not is_function_phrase("Quý 1/2026", has_time=False)
@@ -443,7 +443,7 @@ def test_a_period_phrase_the_model_left_unmapped_is_not_a_missing_field():
 # ── sealed holdout set 7 (now a development set) ─────────────────────────────
 
 def test_a_question_about_the_future_is_refused_as_a_forecast():
-    from app.services.analyst.grounding import is_forecast
+    from app.services.data_core.grounding import is_forecast
 
     for q in ("Tháng sau chi phí marketing sẽ là bao nhiêu?", "Dự báo doanh số quý tới",
               "Doanh số dự kiến năm sau", "Số đơn hàng sắp tới"):
@@ -563,7 +563,7 @@ def test_a_whole_year_question_gets_the_whole_year():
 
 
 def test_a_narrower_period_is_left_as_planned():
-    from app.services.analyst.grounding import whole_year
+    from app.services.data_core.grounding import whole_year
     assert whole_year("Doanh số năm 2025 theo tháng") == 2025
     for q in ("Doanh số quý 1 năm 2025", "Doanh số tháng 3/2025", "Doanh số nửa đầu năm 2025",
               "Doanh số từ 2024 đến 2025", "Doanh số"):
@@ -631,7 +631,7 @@ def test_a_synonym_names_a_field_only_as_a_whole_phrase():
 def test_a_metric_named_by_generic_words_is_not_a_bridged_source():
     """Dev regression 2026-10-22: "Miền Trung có bao nhiêu đơn hàng" asked which source,
     because every word of "Số đơn hàng" is generic. It names the metric."""
-    from app.services.analyst.grounding import other_source_named
+    from app.services.data_core.grounding import other_source_named
 
     a = CatalogExplore(explore_id=1, model_id=1, dataset_id=1, dataset_name="Commerce", dataset_table_id=1,
                        base_view="o", source_type="postgresql", label="Commerce",
@@ -692,7 +692,7 @@ def test_a_yearless_period_after_a_multi_year_range_asks_which_year():
 
 
 def test_a_tie_at_the_top_n_cut_is_kept_never_an_arbitrary_winner():
-    from app.services.analyst.service import _ordered
+    from app.services.data_core.service import _ordered
 
     cols = [{"name": "c", "ref": "v.c", "role": "dimension"}, {"name": "m", "ref": "v.m", "role": "measure"}]
     rows = [{"c": "A", "m": 5}, {"c": "B", "m": 9}, {"c": "C", "m": 9}, {"c": "D", "m": None}]
@@ -738,7 +738,7 @@ def test_an_entity_word_of_a_view_the_plan_does_not_use_is_still_unexplained():
 def test_a_named_quarter_or_month_gets_the_whole_period():
     """Set 8 dev S8-008: "quý 4 năm 2025" was planned [2025-10-01, 2025-12-31), dropping
     the 31st - a wrong number. A named whole quarter or month is enforced exactly."""
-    from app.services.analyst.grounding import asked_period
+    from app.services.data_core.grounding import asked_period
 
     assert asked_period("Số lượng bán theo kênh bán trong quý 4 năm 2025") == ("2025-10-01", "2026-01-01")
     assert asked_period("Doanh số Q2/2026") == ("2026-04-01", "2026-07-01")

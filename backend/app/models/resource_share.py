@@ -40,8 +40,14 @@ class ResourceType(str, enum.Enum):
     AI_CREDENTIAL = "ai_credential"
     #: One AI Analyst conversation. Sharing it NEVER grants a Dataset: every read
     #: re-checks the viewer's own rights and redacts what they cannot read
-    #: (services/analyst/sessions.py).
+    #: (services/data_core/sessions.py).
     ANALYST_SESSION = "analyst_session"
+    #: ONE AI CHAT CONVERSATION (unified chat). Sharing it NEVER grants a Dataset or a
+    #: document: every read re-checks the viewer's own rights and redacts what they
+    #: cannot read (services/chat/conversations.py). CHAT_THREAD and ANALYST_SESSION
+    #: above are the two retired stores; their shares were copied here at the same
+    #: level by alembic 20261027_0001 and no new share of either can be made.
+    CHAT_CONVERSATION = "chat_conversation"
 
 
 class SharePermission(str, enum.Enum):

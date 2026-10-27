@@ -310,6 +310,30 @@ def install_guard() -> bool:
     return True
 
 
+def extension_replay_lookup(flow_key: str, question: str) -> Optional[dict]:
+    """The recorded output of an AI Chat extension flow (a FlowOutput reader dict)
+    for this flow and exact question, from AI_CHAT_EXTENSION_REPLAY_PATH, or None.
+    Replaces the flow's MODEL only: every gate before it and every validation after
+    it still runs. Refused in production."""
+    s = _settings()
+    path = str(getattr(s, "AI_CHAT_EXTENSION_REPLAY_PATH", "") or "")
+    if not path:
+        return None
+    if str(getattr(s, "ENVIRONMENT", "") or "").lower() == "production":
+        raise BudgetRefused("extension replay is not for production")
+    hit = None
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (row.get("flow_key") == flow_key and row.get("question") == question
+                    and isinstance(row.get("output"), dict)):
+                hit = row["output"]  # the last recording wins
+    return hit
+
+
 def replay_lookup(question: str, followup: bool, choice: Optional[str] = None) -> Optional[dict]:
     """The recorded planner output for this exact question (and follow-up-ness),
     from the replay file, or None. Refused in production."""

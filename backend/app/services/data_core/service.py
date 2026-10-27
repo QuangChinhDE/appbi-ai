@@ -1,8 +1,9 @@
-"""AppBI Analyst (M2 MVP): question -> discovery -> plan -> GQS -> verified answer.
+"""The Data Core of AI Chat: question -> discovery -> plan -> GQS -> verified answer.
 
-The first consumer of the Governed Query Service. It holds no query path of its
-own: every read is `GovernedQueryService.execute` with a request-bound
-principal on the `analyst` surface, the durable ledger as its audit sink, the
+(Built as the AI Analyst; since the unified chat it is the one data path of every
+Chat turn - services/chat/orchestrator.py owns the turn, this owns its numbers.)
+It holds no query path of its own: every read is `GovernedQueryService.execute`
+with a request-bound principal on the `chat` surface, the durable ledger as its audit sink, the
 server's budgets and the server's bounds. A refusal from GQS is shown as a
 refusal; nothing is answered around it.
 """
@@ -12,16 +13,16 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from app.services.analyst import narrative
-from app.services.analyst.catalog import datasets_named, discover
-from app.services.analyst.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
+from app.services.data_core import narrative
+from app.services.data_core.catalog import datasets_named, discover
+from app.services.data_core.planner import (_describe_filter, Clarify, Plan, Unsupported, describe_plan, plan as make_plan, retarget,
                                           validate)
 from app.services.governed_query.ledger import BudgetExceeded
 from app.services.governed_query.principal import GovernedRefusal
 
 
 @dataclass
-class AnalystDeps:
+class CoreDeps:
     """What a turn runs against; production builds it from settings."""
 
     ledger: Any
@@ -44,13 +45,16 @@ def ledger_from_settings():
     ))
 
 
-def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] = None,
+def ask(db, user, question: str, deps: CoreDeps, *, previous: Optional[dict] = None,
         drop_consent: Optional[str] = None, turn_id: Optional[str] = None,
         ceiling_dataset_ids: Optional[list[int]] = None, consented_plan: Optional[dict] = None,
         dataset_id: Optional[int] = None, value_choice: Optional[dict] = None,
-        choice_token: Optional[str] = None) -> dict:
-    """One turn. `ceiling_dataset_ids` scopes the Analyst to a set of Datasets
-    (a workspace); it can only NARROW what the person may read, never widen it."""
+        choice_token: Optional[str] = None, on_step: Optional[Callable[[dict], None]] = None,
+        should_stop: Optional[Callable[[], bool]] = None) -> dict:
+    """One turn. `ceiling_dataset_ids` scopes the Core to a set of Datasets (a
+    workspace); it can only NARROW what the person may read, never widen it.
+    `on_step` sees each progress step as it happens; `should_stop` is asked before
+    the model and before each governed read, and a True raises TurnStopped."""
     from app.core.config import settings
     from app.services.governed_query import (
         AuthorizationContext, EffectivePrincipal, GovernedQueryRequest, GovernedQueryService, QueryBounds,
@@ -64,10 +68,14 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     if not consent_enabled and (drop_consent or consented_plan is not None):
         return {"status": "unsupported", "message": "Máy chủ chưa bật chức năng chấp nhận bỏ bộ lọc."}
     turn_id = turn_id or uuid.uuid4().hex
-    principal = EffectivePrincipal.for_user(user, surface="analyst", request_id=turn_id)
+    principal = EffectivePrincipal.for_user(user, surface="chat", request_id=turn_id)
     authz = AuthorizationContext(db=db, principal=principal, user=user,
                                  ceiling=SurfaceCeiling.of(ceiling_dataset_ids))
-    steps = []
+    steps = _Steps(on_step)
+
+    def checkpoint():
+        if should_stop is not None and should_stop():
+            raise TurnStopped()
 
     catalog = discover(authz)
     chosen = None
@@ -129,6 +137,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
             return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
                     "message": refusal.message_vi, "detail": _safe_detail(refusal)}
+        checkpoint()
         named = datasets_named(catalog, question) if prev_explore is None and dataset_id is None else set()
         if named and len(named) < len({c.dataset_id for c in catalog}):
             # the person named these Datasets' metrics (or the Dataset): the planner
@@ -152,11 +161,12 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
         return {"status": "clarify", "turn_id": turn_id, "steps": steps, "message": outcome.question,
                 "options": outcome.options, "choices": [c for c in choices if c["token"]]}
     if isinstance(outcome, Unsupported):
-        return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason}
+        return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": outcome.reason,
+                "code": outcome.code}
     p: Plan = retarget(outcome, full_catalog)
     if consented_plan is None and value_choice is None:
         # The plan must answer THE QUESTION, not just use permitted fields.
-        from app.services.analyst.grounding import ground
+        from app.services.data_core.grounding import ground
 
         carried = [*(previous or {}).get("dimensions", []), *(previous or {}).get("measures", []),
                    *((previous or {}).get("filters") or {}).keys()] if isinstance(previous, dict) else []
@@ -167,8 +177,8 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                                                                                used, settings, turn_id, deps))
         if p is None:
             return {"status": "unsupported", "turn_id": turn_id, "steps": steps, "message": why}
-        from app.services.analyst.grounding import other_source_named
-        from app.services.analyst.planner import prompt_catalog
+        from app.services.data_core.grounding import other_source_named
+        from app.services.data_core.planner import prompt_catalog
 
         both = (other_source_named(p, question, prompt_catalog(full_catalog))
                 if prev_explore is None and dataset_id is None else [])
@@ -178,7 +188,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
             # its metric only through the model's bridge: plan again on that Dataset
             # (holdout set 6: "doanh số" answered from another source's "Revenue").
             return ask(db, user, question, deps, turn_id=turn_id, ceiling_dataset_ids=ceiling_dataset_ids,
-                       dataset_id=next(iter(verbatim)))
+                       dataset_id=next(iter(verbatim)), on_step=on_step, should_stop=should_stop)
         if both:
             for o in both[:6]:
                 o["token"] = sign_choice(user_id=str(user.id), question=question, catalog=full_catalog,
@@ -206,6 +216,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                         plan.sorts or [{"field": t, "direction": "asc"} for t in plan.time_grains],
                         plan.time_grains, int(settings.ANALYST_MAX_ROWS))
 
+    checkpoint()
     gqs = GovernedQueryService(authz, audit=deps.ledger, cancel_registry=deps.registry)
     try:
         if p.filters and consented_plan is None:
@@ -238,6 +249,7 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
                 steps.append({"step": "verify", "detail": "Giá trị bộ lọc được khớp với dữ liệu: " + "; ".join(
                     f"{labels_of(p).get(r, r)} = {c['value']}" for r, c in checked.filters.items())})
             p = checked
+        checkpoint()
         result = gqs.execute(main_request(p))
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
@@ -297,6 +309,26 @@ def ask(db, user, question: str, deps: AnalystDeps, *, previous: Optional[dict] 
     }
 
 
+class TurnStopped(Exception):
+    """The asker stopped the turn (services/chat/orchestrator.cancel)."""
+
+
+class _Steps(list):
+    """The steps list of a turn, reporting each step as it is appended."""
+
+    def __init__(self, on_step=None):
+        super().__init__()
+        self._on_step = on_step
+
+    def append(self, step):  # noqa: D401 - list.append
+        super().append(step)
+        if self._on_step is not None:
+            try:
+                self._on_step(step)
+            except Exception:  # noqa: BLE001 - progress is best effort, the answer is not
+                pass
+
+
 def draft_title(question: str, now=None) -> str:
     """A chart name is unique per owner; the same question asked twice must still
     be savable twice (acceptance run: the second save was refused as a duplicate)."""
@@ -311,8 +343,8 @@ def _find_value_filter(authz, principal, p: Plan, question: str, unexplained: se
     """(ref, real value) when exactly one text field of the explore has a real value
     whose words are in the question and cover an unexplained word; else None.
     Each field's values are read through GQS (this person, ledgered, bounded)."""
-    from app.services.analyst.catalog import is_identifier
-    from app.services.analyst.grounding import fold, syllables
+    from app.services.data_core.catalog import is_identifier
+    from app.services.data_core.grounding import fold, syllables
     from app.services.governed_query import (GovernedQueryRequest, GovernedQueryService, QueryBounds,
                                              RelationRef, SemanticAsk)
 
@@ -494,8 +526,8 @@ def verify_choice(token: str, *, user_id: str, question: str, catalog):
 def _rank_previous(question: str, previous: dict, catalog):
     """The previous plan when the follow-up says nothing but a ranking ("chỉ lấy top 2
     thôi", "xếp từ cao xuống thấp"), else None."""
-    from app.services.analyst.grounding import _STOP, syllables
-    from app.services.analyst.intent import extract
+    from app.services.data_core.grounding import _STOP, syllables
+    from app.services.data_core.intent import extract
 
     it = extract(question, followup=True)
     if not it.ranking or (syllables(it.content) - _STOP) or len(previous.get("dimensions") or []) != 1:
@@ -510,8 +542,8 @@ def _relocate_values(p: Plan, values_of) -> Optional[Plan]:
     (operator kept), or None. Each field read is governed and bounded."""
     from dataclasses import replace as _replace
 
-    from app.services.analyst.catalog import is_identifier
-    from app.services.analyst.grounding import fold
+    from app.services.data_core.catalog import is_identifier
+    from app.services.data_core.grounding import fold
 
     def real(ref) -> set:
         try:
@@ -547,7 +579,7 @@ def _relocate_values(p: Plan, values_of) -> Optional[Plan]:
 
 def _unmatched_filter(p: Plan, real: list) -> Optional[str]:
     """The text filter whose value is not one of `real` (the values offered)."""
-    from app.services.analyst.grounding import fold
+    from app.services.data_core.grounding import fold
 
     folded = {fold(str(x)).strip() for x in real}
     for ref, cond in p.filters.items():
@@ -582,7 +614,7 @@ def _check_filter_values(p: Plan, values_of, search_of=None):
     value matches none or several). Non-text and other operators pass unchanged."""
     from dataclasses import replace as _replace
 
-    from app.services.analyst.grounding import fold
+    from app.services.data_core.grounding import fold
 
     new_filters, options = {}, []
     for ref, cond in p.filters.items():
