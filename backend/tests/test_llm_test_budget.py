@@ -28,6 +28,16 @@ def budget(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "ENVIRONMENT", "test", raising=False)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test", raising=False)
     monkeypatch.setattr(settings, "GEMINI_API_KEY", "g-test", raising=False)
+    # every paid call first reserves in the Model Gateway's ledger (ai_runtime/gateway.py,
+    # fail-closed without one); this test cap is checked in addition, never instead
+    import sqlalchemy as sa
+    from app.models.ai_runtime import AiUsageLedger
+    from app.services.ai_runtime import gateway
+
+    engine = sa.create_engine("sqlite://", poolclass=sa.pool.StaticPool,
+                              connect_args={"check_same_thread": False})
+    AiUsageLedger.__table__.create(engine)
+    monkeypatch.setattr(gateway, "_engine", lambda: engine)
     return ledger
 
 
@@ -62,6 +72,10 @@ def test_a_call_is_reserved_then_settled_with_the_providers_tokens(budget, monke
 def test_no_call_when_the_worst_case_does_not_fit(budget, monkeypatch):
     calls = []
     monkeypatch.setattr(llm_client.httpx, "post", lambda *a, **k: calls.append(1) or _Resp({}))
+    # the Model Gateway would clamp 20,000 to its own output cap first (16,384 = 0.0098);
+    # lifted here so this test still exercises the TEST cap's own worst-case rule
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "AI_MAX_OUTPUT_TOKENS_PER_CALL", 100_000, raising=False)
     # 0.01 USD cap; 20,000 output tokens at 0.60/M = 0.012 > cap
     assert llm_client.LLMClient.complete_json("p", system="s", max_tokens=20000) is None
     assert calls == []                                   # nothing sent, and no fallback to Gemini
