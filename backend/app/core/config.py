@@ -259,12 +259,23 @@ class Settings(BaseSettings):
     # on real traffic without ever rejecting a viewer; flip to "block" once the
     # log is clean. "off" disables it entirely.
     INTELLIGENCE_GUARD_MODE: str = "log"          # off | log | block
-    # Spend ceilings for the PUBLIC chat, enforced per shared link per rolling
-    # 24h / 1h. Only bind when the ORG's key pays (appearance_config.ai_bot_key);
-    # a viewer using their own key is metered but never blocked on cost.
-    # 0 = unlimited (the pre-v2 behaviour).
+    # Spend ceilings for the PUBLIC Dashboard AI Bot, per shared link per rolling
+    # 24h / 1h. A link's own `ai_bot_budget_usd_per_day` wins when > 0; a link is
+    # never unlimited, and no header a viewer sends changes which ceiling applies
+    # (services/dashboard_ai_bot/budget.py).
     AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
+    # THE Model Gateway (services/ai_runtime/gateway.py): every paid model call -
+    # AI Chat, the public bot, an Agent Flow add-on, any other feature - reserves
+    # its worst case against these ceilings first (rolling 24h, fail closed).
+    AI_GLOBAL_USD_PER_DAY: float = 25.0
+    AI_USER_USD_PER_DAY: float = 2.0
+    AI_MAX_MODEL_CALLS_PER_TURN: int = 8
+    AI_MAX_USD_PER_TURN: float = 0.5
+    AI_MAX_OUTPUT_TOKENS_PER_CALL: int = 8192
+    AI_MAX_INPUT_TOKENS_PER_CALL: int = 120000
+    # Agent Flow add-on calls one turn may make (the Core decides; never recursive).
+    AI_MAX_EXTENSION_CALLS_PER_TURN: int = 1
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
     # ON by default. Verification is fail-closed, so an empty ledger would mean

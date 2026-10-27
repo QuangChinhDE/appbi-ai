@@ -55,6 +55,7 @@ from app.models.agent_flow_chat_thread import AgentFlowChatThread  # noqa: F401 
 from app.models.chat_conversation import ChatConversation, ChatExtensionInvocation, ChatFeedback, ChatTurn  # noqa: E402,F401
 from app.models.agent_flow_delegation import AgentFlowDelegation  # noqa: F401
 from app.models.ai_provider_credential import AiProviderCredential
+from app.models.ai_runtime import AiUsageLedger, PublicAnswerTurn  # noqa: E402,F401
 from app.models.manual_source_asset import ManualSourceAsset
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of

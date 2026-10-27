@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from app.services.agent_flows import roles as _roles_mod
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Optional
 
 from app.services.agent_flows.contract import AgentNode
 from app.services.agent_flows.envelope import Answer, Notice
@@ -1503,8 +1503,33 @@ async def _stream(
             kwargs["reasoning_effort"] = s["reasoning_effort"]
     else:
         kwargs["strict"] = True
-    async for ev in fn(**kwargs):
-        yield ev
+    # THE SAME POLICY AS EVERY OTHER PAID CALL (services/ai_runtime/gateway.py): the
+    # step's worst case is reserved against the global, user, link and turn
+    # ceilings before the request, its output is clamped to the policy cap, and
+    # its reported usage settles it. A refusal is raised before anything is sent;
+    # an add-on that cannot run leaves the Core's answer standing.
+    import json as _json
+
+    from app.services.ai_runtime import gateway
+
+    res = gateway.authorize(prov, model or "", system_prompt,
+                            _json.dumps(messages, ensure_ascii=False, default=str)[:400_000],
+                            kwargs.get("max_tokens") or 2048)
+    kwargs["max_tokens"] = res.max_tokens
+    usage: dict = {}
+    failed: Optional[str] = None
+    try:
+        async for ev in fn(**kwargs):
+            if ev.type == "usage" and isinstance(ev.extra, dict):
+                for k, v in ev.extra.items():
+                    if isinstance(v, (int, float)) and k.endswith("tokens"):
+                        usage[k] = usage.get(k, 0) + v
+            yield ev
+    except BaseException as ex:  # a stop (GeneratorExit / cancel) is settled too
+        failed = type(ex).__name__
+        raise
+    finally:
+        gateway.settle(res, usage or None, error=failed)
 
 
 SPECS = [
