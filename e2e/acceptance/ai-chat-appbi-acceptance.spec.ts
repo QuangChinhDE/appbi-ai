@@ -27,6 +27,17 @@ const NOT_AVAILABLE = /conversation not available|không mở được cuộc tr
 let convUrl = '';
 let addOnUrl = '';
 
+/** The share dialog's own search (scoped to a resource you may share; never a directory dump). */
+async function shareableViewer(owner: Awaited<ReturnType<typeof api>>, conversationId: number) {
+  const email = `qa-chat-viewer@${DOMAIN}`;
+  const r = await owner.ctx.get('/api/v1/users/shareable', { headers: owner.headers,
+    params: { resource_type: 'chat_conversation', resource_id: String(conversationId), q: email } });
+  expect(r.status(), await r.text()).toBe(200);
+  const viewer = ((await r.json()) as { id: string; email: string }[]).find((u) => u.email === email);
+  expect(viewer, 'the QA viewer is found by the share search').toBeTruthy();
+  return viewer!;
+}
+
 async function newConversation(page: Page) {
   await page.getByTestId('chat-new').click();
   await expect(page).toHaveURL(/\/chat$/);
@@ -179,9 +190,8 @@ test('R6 · feedback on an answer is recorded; switching between conversations s
 // ── sharing never shares the data ─────────────────────────────────────────────
 test('R7 · shared with someone who may not read the source: questions only, no numbers on the wire; revoke closes it', async ({ page }, info) => {
   const owner = await api();
-  const users = await (await owner.ctx.get('/api/v1/users/shareable', { headers: owner.headers })).json();
-  const viewer = (users as { id: string; email: string }[]).find((u) => u.email === `qa-chat-viewer@${DOMAIN}`)!;
   const cid = Number(convUrl.split('/').pop());
+  const viewer = await shareableViewer(owner, cid);
   await login(page, 'qa-chat-owner');
   await page.goto(convUrl);
   await page.getByTestId('chat-conversation-share').click();
@@ -282,8 +292,7 @@ test('R11 · the add-on fails: the data answer stands, the reason is said', asyn
 test('R12 · a reader who cannot open the cited document does not see it', async ({ page }, info) => {
   const owner = await api();
   const cid = Number(addOnUrl.split('/').pop());
-  const users = await (await owner.ctx.get('/api/v1/users/shareable', { headers: owner.headers })).json();
-  const viewer = (users as { id: string; email: string }[]).find((u) => u.email === `qa-chat-viewer@${DOMAIN}`)!;
+  const viewer = await shareableViewer(owner, cid);
   expect((await owner.ctx.post(`/api/v1/shares/chat_conversation/${cid}`, { headers: owner.headers,
     data: { user_id: viewer.id, permission: 'view' } })).status()).toBe(201);       // precondition: shared at view
   await login(page, 'qa-chat-viewer');

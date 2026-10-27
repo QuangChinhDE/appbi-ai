@@ -31,12 +31,15 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
   const d = await owner.ctx.post('/api/v1/dashboards/', { headers: owner.headers, data: { name: `QA unified chat BI ${Date.now()}` } });
   expect(d.status(), await d.text()).toBeLessThan(400);
   const dash = await d.json();
+  // the tile shows custom title, else the chart's configured title, else its name (tile-title rule)
+  const detail = await (await owner.ctx.get(`/api/v1/charts/${chart!.id}`, { headers: owner.headers })).json();
+  const tileTitle: string = detail?.config?.styleConfig?.chartTitle || detail?.config?.title || chart!.name;
   const add = await owner.ctx.post(`/api/v1/dashboards/${dash.id}/charts`, { headers: owner.headers,
     data: { chart_id: chart!.id, layout: { x: 0, y: 0, w: 12, h: 8 } } });
   expect(add.status(), await add.text()).toBeLessThan(400);
   await login(page, 'qa-chat-owner');
   await page.goto(`/dashboards/${dash.id}`);
-  await expect(page.getByText(chart!.name).first()).toBeVisible();
+  await expect(page.getByText(tileTitle).first()).toBeVisible();
   await expect(page.locator('.recharts-bar-rectangle, .recharts-line-curve, table').first()).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(2000);
   await shot(page, info, 'B2a-dashboard');
@@ -61,7 +64,7 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
     } catch { /* not JSON */ }
   });
   await pub.goto(`${BASE}/d/${link.token}`);
-  await expect(pub.getByText(chart!.name).first()).toBeVisible({ timeout: 60_000 });
+  await expect(pub.getByText(tileTitle).first()).toBeVisible({ timeout: 60_000 });
   await pub.waitForTimeout(1500);
   await pub.screenshot({ path: info.outputPath('B2b-public.png'), fullPage: true });
   expect(authed, 'the public page made a signed-in call').toEqual([]);
@@ -69,7 +72,7 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
   const del = await owner.ctx.delete(`/api/v1/dashboards/${dash.id}/public-links/${link.id}`, { headers: owner.headers });
   expect(del.status(), await del.text()).toBeLessThan(400);
   await pub.goto(`${BASE}/d/${link.token}`);
-  await expect(pub.getByText(chart!.name)).toHaveCount(0);
+  await expect(pub.getByText(tileTitle)).toHaveCount(0);
   await pub.screenshot({ path: info.outputPath('B2c-revoked.png'), fullPage: true });
   const p2 = await anon.newPage();
   await p2.goto(`${BASE}/dashboards/${dash.id}`);
