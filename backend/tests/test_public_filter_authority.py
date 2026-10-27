@@ -738,3 +738,90 @@ def test_the_ai_is_told_only_disclosable_filters_and_caches_by_page_scope():
     unbounded = SimpleNamespace(public_filters=[], excluded_columns=None, page_scope_by_chart={})
     assert chart_cache_identity(bounded, 7) != chart_cache_identity(unbounded, 7), \
         "a pack read without a page scope would answer a viewer bound by one"
+
+
+# ── A report slicer with custom page scope filters only the pages it is set to ─
+#
+# Builder rule (dashboards/[id]/page.tsx slicerFiltersPage, public-page-filters.ts
+# slicerFiltersOnPage): scope 'custom' constrains a page only when
+# pageScope[page].filter is true; 'all'/unset constrains every page. The public
+# path used to apply EVERY stored slicer to every chart, so a slicer switched off
+# for a page (often over another table) reached that page's charts and the engine
+# refused them: 400 "Filter không áp được" on most tiles of the link.
+
+STAFF = {"field": "staff", "semanticField": "t1.staff", "datasetId": 1,
+         "operator": "in", "value": ["An"], "label": "Nhân sự"}
+SCOPE = {"field": "scope", "semanticField": "t1.scope", "datasetId": 1,
+         "operator": "in", "value": ["HN"], "label": "Phạm vi"}
+PERIOD = {"field": "period", "semanticField": "t1.period", "datasetId": 1,
+          "operator": "in", "value": ["2026-10"], "label": "Kỳ"}
+
+
+def _scoped_slicers():
+    return [
+        {**PERIOD, "scope": "all"},
+        {**SCOPE, "scope": "custom", "pageScope": {"p1": {"filter": True, "visible": True},
+                                                   "p2": {"filter": True, "visible": False}}},
+        {**STAFF, "scope": "custom", "pageScope": {"p1": {"filter": True, "visible": True},
+                                                   "p2": {"filter": False, "visible": False}}},
+    ]
+
+
+def _fields(merged):
+    return sorted(f["field"] for f in merged)
+
+
+def test_a_custom_scope_slicer_does_not_filter_a_page_it_is_switched_off_for():
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p2"])) == ["period", "scope"]
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p1"])) == ["period", "scope", "staff"]
+
+
+def test_a_custom_scope_slicer_without_an_entry_for_the_page_does_not_filter_it():
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=[{**STAFF, "scope": "custom", "pageScope": {"p1": {"filter": True}}}])
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p2"])) == []
+
+
+def test_a_chart_on_several_pages_keeps_a_slicer_any_of_them_applies():
+    # No page named → every page of the chart bounds it (never wider than any).
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p1", "p2"])) == [
+        "period", "scope", "staff"]
+
+
+def test_the_public_ai_reads_each_chart_with_the_slicers_of_its_own_page(monkeypatch):
+    # Same bug on the AI path: one filter list for every chart carried the
+    # switched-off slicer to the p2 chart, which the engine refused.
+    from app.services.agent_flows.tools import context as ctx_mod
+    from app.services.agent_flows.tools.context import ToolContext
+    from app.services.dashboard_ai_bot.thinking.tools import chart_cache_identity
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    monkeypatch.setattr(public_api, "_viewer_allowed", lambda *_a, **_k: (set(), set()))
+    monkeypatch.setattr(public_api, "_public_page_scope_by_chart", lambda *_a, **_k: {})
+    monkeypatch.setattr(ToolContext, "from_dashboard", classmethod(lambda cls, **kw: cls(
+        db=None, dashboard=None, public_filters=kw["public_filters"],
+        public_filters_by_chart=kw["public_filters_by_chart"])))
+    ctx = public_api._public_link_tool_context(None, dash, [], {})
+    seen: dict[int, list] = {}
+    monkeypatch.setattr(ctx_mod.ChartService, "get_chart_data", staticmethod(
+        lambda _db, cid, extra_filters=None, **_k: seen.__setitem__(cid, extra_filters) or {"data": [{"v": 1}]}))
+    monkeypatch.setattr(ToolContext, "assert_chart_in_scope", lambda self, cid: None)
+    ctx_mod._fetch_chart_data(ctx, 7)   # on p1
+    ctx_mod._fetch_chart_data(ctx, 8)   # on p2
+    assert _fields(seen[7]) == ["period", "scope", "staff"]
+    assert _fields(seen[8]) == ["period", "scope"], seen[8]
+    # A cached result of one chart's filter set never answers the other's.
+    assert chart_cache_identity(ctx, 7) != chart_cache_identity(ctx, 8)
+
+
+def test_a_report_without_custom_scope_slicers_builds_no_per_chart_sets(monkeypatch):
+    from app.services.agent_flows.tools.context import ToolContext
+    dash = _dash(slicers_config=[{**PERIOD, "scope": "all"}])
+    monkeypatch.setattr(public_api, "_viewer_allowed", lambda *_a, **_k: (set(), set()))
+    monkeypatch.setattr(public_api, "_public_page_scope_by_chart", lambda *_a, **_k: {})
+    monkeypatch.setattr(ToolContext, "from_dashboard", classmethod(lambda cls, **kw: kw))
+    assert public_api._public_link_tool_context(None, dash, [], {})["public_filters_by_chart"] == {}

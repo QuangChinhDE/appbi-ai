@@ -345,6 +345,10 @@ class ToolContext:
     #: (public links: `public._public_page_scope_by_chart`). Applied at the one
     #: fetch boundary below, so no tool reads a chart wider than its page.
     page_scope_by_chart: dict[int, list[dict]] = field(default_factory=dict)
+    #: Public links: per chart, the filters of the page(s) it is on when they
+    #: differ from `public_filters` (a custom-scope slicer filters only its
+    #: pages). A chart not listed reads `public_filters`.
+    public_filters_by_chart: dict[int, list[dict]] = field(default_factory=dict)
     #: Public links: ``(exposed qualified refs, bare control fields)`` — the
     #: fields the served report exposes (`public._viewer_allowed`). A filter the
     #: MODEL adds may name only those; None = not a public context (no rule).
@@ -418,6 +422,7 @@ class ToolContext:
         actor_type: str = "public_session",
         actor_ref: str | None = None,
         page_scope_by_chart: dict[int, list[dict]] | None = None,
+        public_filters_by_chart: dict[int, list[dict]] | None = None,
         exposed_fields: tuple | None = None,
         snapshot_ttl_minutes: int | None = None,
     ) -> "ToolContext":
@@ -496,6 +501,7 @@ class ToolContext:
             ai_scope_unavailable=scope_unavailable,
             served_table_ids=served_tables,
             page_scope_by_chart=dict(page_scope_by_chart or {}),
+            public_filters_by_chart=dict(public_filters_by_chart or {}),
             exposed_fields=exposed_fields,
             snapshot_ttl_minutes=snapshot_ttl_minutes,
         )
@@ -811,7 +817,8 @@ def _fetch_chart_data(
         )
 
     merged: list[dict] = []
-    for f in ctx.public_filters:
+    _by_chart = getattr(ctx, "public_filters_by_chart", None) or {}
+    for f in _by_chart.get(chart_id, ctx.public_filters):
         if isinstance(f, dict):
             merged.append(dict(f))
     # On a public link a filter the MODEL adds is held to the viewer's rule: only
