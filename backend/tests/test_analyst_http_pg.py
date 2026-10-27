@@ -897,3 +897,25 @@ def test_a_person_over_the_daily_query_budget_is_refused_before_the_model_is_ask
     assert body["status"] == "refused" and body["code"] == "budget_exceeded" and "rows" not in body, body
     assert body["message"] == "Đã vượt hạn mức truy vấn được phép."
     assert calls == [], "the model was asked although the daily query budget was spent"
+
+
+def test_a_source_the_core_cannot_reach_is_a_plain_failure_never_a_crash(client, db, world, model, monkeypatch):  # noqa: F811
+    """Real stack, 2026-10-27: the Olist source pointed at a private address and the outbound
+    policy refused it; the turn ended `internal_error` with "Có lỗi khi xử lý câu hỏi". A
+    source that refuses or cannot be reached is a FACT about the source: `failed /
+    source_unavailable`, said plainly, nothing shown as data, the turn stored once."""
+    from app.services.datasource_service import DataSourceConnectionService
+    from app.services.source_network_policy import SourceNetworkPolicyError
+
+    def refused(*a, **k):
+        raise SourceNetworkPolicyError("Destination is a private network address.")
+
+    _grant_module(db, world["analyst"])
+    model(_planner(world))
+    monkeypatch.setattr(DataSourceConnectionService, "execute_query", staticmethod(refused))
+    body = ask(client, world["analyst"], {"question": "Doanh thu các vùng theo tháng gần đây thay đổi thế nào?"}).json()
+    env = body["envelope"]
+    assert (env["status"], env["code"]) == ("failed", "source_unavailable"), env
+    assert "nguồn dữ liệu" in env["message"] and "rows" not in json.dumps(env)
+    stored = client.get(f"/api/v1/chat/conversations/{body['conversation_id']}", headers=world["analyst"].headers).json()
+    assert [t["status"] for t in stored["turns"]] == ["failed"]

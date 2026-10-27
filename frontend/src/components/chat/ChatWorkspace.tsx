@@ -180,6 +180,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
         }
       }
       setUseFlowNow(false);
+      // the server names a new conversation after its first question: say the same here
+      setConv((cur) => (cur && !cur.title ? { ...cur, title: text.split(/\s+/).join(' ').slice(0, 120) } : cur));
       refreshList();
     } catch (err) {
       if (abort.signal.aborted) {

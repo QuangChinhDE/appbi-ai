@@ -164,6 +164,23 @@ def is_running(turn_id: str) -> bool:
         db.close()
 
 
+SOURCE_UNAVAILABLE = ("Không đọc được nguồn dữ liệu của câu hỏi này: nguồn đang bị chặn theo chính sách kết nối "
+                      "hoặc không kết nối được. Hãy báo quản trị viên của nguồn dữ liệu.")
+
+#: Driver / connector packages whose exceptions mean "the source could not be reached or
+#: refused the read" - a fact about the source, not a bug in the turn.
+_SOURCE_MODULES = ("psycopg", "psycopg2", "pymysql", "MySQLdb", "google.", "google_", "duckdb", "sqlalchemy.exc")
+
+
+def _is_source_error(ex: BaseException) -> bool:
+    from app.services.source_network_policy import SourceNetworkPolicyError
+
+    if isinstance(ex, SourceNetworkPolicyError):
+        return True
+    mod = type(ex).__module__ or ""
+    return any(mod == m.rstrip(".") or mod.startswith(m) for m in _SOURCE_MODULES)
+
+
 def _core(turn_id: str, user_id: Any, conversation_id: int, req: TurnRequest,
           on_step: Callable[[dict], None]) -> tuple[dict, list, list]:
     """The Data Core, in a worker thread with its own session. Returns the envelope
@@ -189,6 +206,11 @@ def _core(turn_id: str, user_id: Any, conversation_id: int, req: TurnRequest,
                        should_stop=lambda: not is_running(turn_id))
         except TurnStopped:
             return env.cancelled(), [], []
+        except Exception as ex:  # noqa: BLE001 - classified below, re-raised when it is not the source's
+            if _is_source_error(ex):
+                logger.warning("[chat] source unavailable for turn %s: %s", turn_id, type(ex).__name__)
+                return env.failed("source_unavailable", SOURCE_UNAVAILABLE), [], []
+            raise
         e = env.from_core(core)
         e["data"]["consent_available"] = bool(core.get("consent_available")) and bool(
             getattr(settings, "ANALYST_DROP_CONSENT_ENABLED", False))
