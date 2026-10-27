@@ -124,7 +124,9 @@ jobs:
             tests/test_analyst_intent_obligations.py \
             tests/test_analyst_intent.py \
             tests/test_llm_test_budget.py \
-            tests/test_intelligence_gqs_core.py
+            tests/test_intelligence_gqs_core.py \
+            tests/test_unified_chat_architecture.py \
+            tests/test_chat_extension.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
       #
@@ -763,7 +765,6 @@ jobs:
       GOVERN_ENABLED: "true"
       WORKBOARDS_ENABLED: "true"
       OBSERVABILITY_ENABLED: "true"
-      ANALYST_ENABLED: "true"
       AUTHZ_PG_REQUIRED: "1"
       AUTHZ_PG_OWNER_URL: "postgresql://appbi:appbi@localhost:5432/appbi"
       AUTHZ_PG_APP_URL: "postgresql://appbi_app:appbi_app@localhost:5432/appbi"
@@ -842,6 +843,8 @@ jobs:
             tests/test_intelligence_gqs_ledger_pg.py \
             tests/test_analyst_http_pg.py \
             tests/test_analyst_sessions_http_pg.py \
+            tests/test_chat_extension_http_pg.py \
+            tests/test_chat_legacy_import_pg.py \
             tests/test_intelligence_gqs_mysql_fullpath_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
             --junitxml=/tmp/authz-pg.xml

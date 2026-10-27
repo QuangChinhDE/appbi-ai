@@ -1,3 +1,5 @@
+> **SUPERSEDED (2026-10-27)** by [the unified AI Chat contract](../unified-ai-chat/contract.md). AppBI has one AI Chat; the data core answers, and an Agent Flow is an optional extension. This document is kept as historical design evidence, not as current authority.
+
 # Agent Flow + AI Chat rework — implementation plan
 
 **ALL PHASES ARE IMPLEMENTED** on `feat/agent-flow-chat-rework`. The table below

@@ -540,6 +540,10 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_intelligence_gqs_ledger_pg.py
 !backend/tests/test_analyst_http_pg.py
 !backend/tests/test_analyst_sessions_http_pg.py
+!backend/tests/test_unified_chat_architecture.py
+!backend/tests/test_chat_extension.py
+!backend/tests/test_chat_extension_http_pg.py
+!backend/tests/test_chat_legacy_import_pg.py
 !backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py
 !backend/tests/test_analyst_narrative.py
 !backend/tests/test_analyst_planner.py

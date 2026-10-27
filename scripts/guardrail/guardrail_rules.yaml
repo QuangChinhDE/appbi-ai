@@ -558,26 +558,38 @@ features:
     required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
                      intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_mysql_fullpath, intelligence_gqs_bigquery, intelligence_security_ledger]
 
-  - id: analyst
-    label: "AppBI Analyst (M2 MVP): discovery, planner, verified answer - the first GQS consumer"
-    files: [backend/app/services/analyst/**, backend/app/api/analyst.py]
-    keywords: [analyst, "ai analyst", discovery, planner, "chart draft"]
+  # THE ONE AI CHAT (docs/features/unified-ai-chat/contract.md, 2026-10-27). One
+  # conversation surface, one data authority (the Data Core through GQS under the
+  # asker's identity), one turn lifecycle, one envelope; an Agent Flow is an optional
+  # extension that returns validated evidence. test_unified_chat_architecture fails on
+  # a second answering route, a Flow required to ask, a Flow data read, a second
+  # conversation store or a user-facing Analyst toggle.
+  - id: ai_chat
+    label: "AI Chat: one chat, the governed Data Core (built as the Analyst), optional Agent Flow extension"
+    files:
+      - backend/app/services/data_core/**
+      - backend/app/services/chat/**
+      - backend/app/api/chat.py
+      - backend/app/models/chat_conversation.py
+      - backend/alembic/versions/20261027_0001_unified_chat.py
+      - frontend/src/components/chat/**
+      - frontend/src/lib/api/chat.ts
+      - frontend/src/app/(main)/chat/**
+      - frontend/src/app/(main)/analyst/**
+    keywords: ["ai chat", analyst, "ai analyst", "data core", discovery, planner, "chart draft", conversation,
+               conversations, "chat extension", "extension flow", "unified chat"]
     invariants: []
-    required_tests: [analyst_http_pg, analyst_sessions_http_pg, analyst_narrative, analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
+    required_tests: [unified_chat_architecture, analyst_http_pg, analyst_sessions_http_pg, chat_extension,
+                     chat_extension_http_pg, chat_legacy_import_pg, direct_chat_contract, analyst_narrative,
+                     analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg]
 
+  # Since the unified AI Chat this is only the door: which flows can run with no
+  # report (and so may be an AI Chat extension). The chat itself is `ai_chat`.
   - id: direct_chat
-    label: "Direct Chat (reader surface of Agent Flow)"
+    label: "Agent Flow without a report: the AI Chat extension door"
     files:
       - backend/app/services/agent_flows/direct_chat.py
-      - backend/app/modules/agent_flows/chat_api.py
-      - frontend/src/lib/directChat.ts
-      - frontend/src/components/chat/**
-      # Chat renders its answers through the shared component too — see the note
-      # on the same path under `agent_flows`.
-      - frontend/src/components/dashboards/AnswerBlocks.tsx
-    keywords: ["direct chat", "ai chat", "chat thread", "chat threads", assistant,
-               assistants, conversation, conversations, "thread access",
-               "thread sharing", "chat surface", "chat brain", "chat brains"]
+    keywords: ["direct chat", "chat brain", "chat brains", "chat surface", "chat eligibility"]
     invariants: [agent_flow_answer_parity]
     required_tests: [direct_chat_contract, direct_chat_module_floor]
 
@@ -662,14 +674,28 @@ tests:
   analyst_catalog_reach:
     run: "pytest backend/tests/test_analyst_catalog_reach.py"
     locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"
+  unified_chat_architecture:
+    run: "pytest backend/tests/test_unified_chat_architecture.py"
+    locks: "the unified AI Chat contract, executable: no /analyst or /agent-flows/chat route even with every flag on; the one turn route needs no Flow; no analyst module, no ANALYST_ENABLED/allowlist setting or build flag; no Flow runner owns a signed-in turn; the chat Core imports no ChartService/Flow tool/dashboard bot; an extension context cannot reach ChartService; only services/chat writes turns; no runtime use of the retired stores; one chat in the sidebar, no retired module imported, sending never requires a Flow"
+  chat_extension:
+    run: "pytest backend/tests/test_chat_extension.py"
+    locks: "ext.v1 as pure functions: a flow is invoked only for an explicit request, a document question or a non-data question - never a plain data question, a clarification, a failure or a cancel; only document citations inside the ceiling survive; flow metric/table/chart blocks are dropped; a finding needs a document; figures the core did not verify are listed, the text kept verbatim; injected document text changes nothing; the five terminal states; documents never override a data refusal; the stored copy carries no capability"
+  chat_extension_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chat_extension_http_pg.py"
+    locks: "Agent Flow as an optional AI Chat extension over HTTP on real Postgres: no flow needed; a data question never runs the bound flow; an explicit request returns the oracle-equal data AND cited documents side by side; a document question is answered from documents only; the ceiling is the asker's own documents and no data (a delegation does not widen it); unshared/exception/invalid/timeout leave the core answer whole with a notice; cancel during the flow ends the turn once; a cited document is redacted for a reader who cannot open it, shown when they can, hidden again when revoked; only a flow shared with the owner can be bound"
+  chat_legacy_import_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chat_legacy_import_pg.py"
+    locks: "alembic 20261027_0001 on real Postgres: every legacy conversation, turn, share and rating imported once (idempotent, reconciled), authors/timestamps/turn ids kept, statuses mapped, a pruned flow run kept and marked, shares at the same level, an orphan share counted; imported answers never more visible than before; module access carried, never widened; old links resolve only for readers"
   analyst_http_pg:
     requires: postgres
     run: "pytest backend/tests/test_analyst_http_pg.py"
-    locks: "the Analyst over HTTP on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface analyst, run = turn) and a chart draft; view-only sees no source and gets no rows; no module -> 403; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
+    locks: "the Data Core through the one AI Chat turn route (built as the Analyst) on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface chat, run = turn) and a chart draft; view-only sees no source and gets no rows; no chat module -> 403; chat alone answers from the person's EXPLORE grant; the emergency switch stops new turns (503) and never reroutes; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
   analyst_sessions_http_pg:
     requires: postgres
     run: "pytest backend/tests/test_analyst_sessions_http_pg.py"
-    locks: "AI Analyst sessions on real Postgres: a session keeps its oracle-equal answer across a reload; sharing via /shares needs analyst>=edit; a recipient (user, team, or analyst:full oversight) without EXPLORE on the Dataset sees the question and redacted, never rows/evidence/numbers; a revoked Dataset grant redacts the owner's own stored answer; a view recipient cannot ask, an edit recipient asks as themselves; share revoke and team removal apply next request; no access is 404 for foreign and unknown ids alike; rename/delete are the owner's; the follow-up plan comes from the session, never the request"
+    locks: "AI Chat conversations on real Postgres: a conversation keeps its oracle-equal answer across a reload; sharing via /shares needs chat>=edit; a recipient (user, team, or chat:full oversight) without EXPLORE on the Dataset sees the question and redacted, never rows/evidence/numbers; a revoked Dataset grant redacts the owner's own stored answer; a view recipient cannot ask, an edit recipient asks as themselves; share revoke and team removal apply next request; no access is 404 for foreign and unknown ids alike; rename/delete are the owner's; the follow-up plan comes from the conversation, never the request; a retried submit (same idempotency key) is one turn, one ledger read, one model call, and nobody else can reuse its key"
   intelligence_gqs_mysql_fullpath:
     requires: postgres+mysql
     run: "pytest backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py"
@@ -733,7 +759,7 @@ tests:
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py backend/tests/test_notice_audience_boundary.py backend/tests/test_reader_capability_boundary.py backend/tests/test_reader_diagnostics_are_product_facing.py"
-    locks: "chat thread access levels, read-only shares, the chat surface's chart scope, and that a reader - including an anonymous one on a public link - is told WHY a step failed without being shown the tool id, chart id or raw column the author's trace keeps"
+    locks: "conversation access levels (a share never lends the flow or the data), read-only shares, the chat surface's chart scope, imported flow history replayed through the reader filter, and that a reader - including an anonymous one on a public link - is told WHY a step failed without being shown the tool id, chart id or raw column the author's trace keeps"
 
   # ── Provider-neutral SDLC protection layer (from demo) ──────────────────────
   agent_sdlc_meta:

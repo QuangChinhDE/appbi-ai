@@ -39,16 +39,32 @@ not a product fix.
 | Flag | Default | Gates |
 |---|---|---|
 | `WORKBOARDS_ENABLED` | `False` | `modules/workboards` — api, webhook_api, workspace_admin_api |
-| `METADATA_CATALOG_ENABLED` | `False` | `modules/metadata_catalog` **and** `modules/agent_flows` (api + chat_api) |
+| `METADATA_CATALOG_ENABLED` | `False` | `modules/metadata_catalog` **and** `modules/agent_flows` (Studio api, credentials) |
 | `GOVERN_ENABLED` | `True` | Intelligence modules; effective only when the catalog flag is on |
 | `OBSERVABILITY_ENABLED` | `True` | `api/observability.py` |
 | `PDF_EXPORT_ENABLED` | `False` | server-side render |
 
 So: a new endpoint on a flagged module must be registered **inside that flag's block**, or
 it silently does not exist. And an endpoint that 404s may simply be a flag that is off —
-check the flag before hunting for a routing bug. Registration order matters too:
-`agent_flows.chat_api` is mounted after the studio router so `/agent-flows/chat/*` is not
-swallowed by an `/agent-flows/{id}` route above it.
+check the flag before hunting for a routing bug. `api/chat.py` (AI Chat) is the exception
+on purpose: always mounted, its `AI_CHAT_ENABLED` switch is checked per turn (503).
+
+## AI Chat: one chat, one data authority (docs/features/unified-ai-chat/contract.md)
+
+- A signed-in person asks in ONE place: `api/chat.py` → `services/chat/orchestrator.py`.
+  Do not add another answering route (an "Analyst", a Flow chat, a per-module bot for
+  signed-in users) - `tests/test_unified_chat_architecture.py` fails on it.
+- Business numbers come ONLY from `services/data_core` through GQS under the asker's
+  `EffectivePrincipal`. Nothing in `services/chat` or `services/data_core` may import
+  ChartService, the Flow tools or the dashboard bot.
+- An Agent Flow is an optional extension (`services/chat/extension.py`,
+  `dispatch.run_as_extension`): no data reads (`data_reads_forbidden`), no delegation,
+  documents the ASKER may read, one call per turn, validated before display. A Flow
+  never writes the answer and never publishes a figure.
+- A turn has one terminal state written once (`conversations.finish`); only
+  `services/chat` writes `chat_turns`.
+- A stored answer is a footprint, not a grant: every read redacts what the reader cannot
+  read now (Datasets, fields, documents). Keep footprints complete when you add a source.
 
 ## Authorization
 
