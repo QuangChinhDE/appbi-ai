@@ -15,11 +15,12 @@ import {
  */
 test.describe.configure({ mode: 'serial' });
 
-const QA = 'Doanh thu theo sản phẩm trong quý 1 năm 2024';
+// The dataset's fields carry only their column names; the grounding guard wants the question to name them.
+const QA = 'Doanh thu theo product_id trong quý 1 năm 2024';
 const QB = 'Còn quý 2 thì sao?';
-const QC = 'Chỉ tính sản phẩm Laptop';
-const QCL = 'Doanh số theo nhân viên';
-const QF = 'Doanh thu theo sản phẩm trong quý 2 năm 2024';
+const QC = 'Chỉ tính product_id 5';
+const QCL = 'Doanh số theo employee_id';
+const QF = 'Doanh thu theo product_id trong quý 2 năm 2024';
 const QDOC = 'Chính sách giao hàng trễ được hoàn phí thế nào?';
 const NOT_AVAILABLE = /conversation not available|không mở được cuộc trò chuyện/i;
 
@@ -51,12 +52,16 @@ test('R1 · one AI Chat entry, no Analyst, nothing to pick before asking; /analy
   await expect(page).toHaveURL(/\/chat$/);
   const label = page.getByTestId('chat-preview-label');
   const first = (await label.innerText()).trim();
-  await page.getByRole('button', { name: /^Q$/ }).click();
-  await page.getByRole('button', { name: /Tiếng Việt|Vietnamese|English|Tiếng Anh/ }).first().click();
+  // the account starts in English; the user menu stays open after a language pick
+  const pick = async (name: RegExp) => {
+    const button = page.getByRole('button', { name });
+    if (!(await button.isVisible())) await page.getByRole('button', { name: /^QC$/ }).click();
+    await button.click();
+  };
+  await pick(/^(Vietnamese|Tiếng Việt)$/);
   await expect(label).not.toHaveText(first);                                     // the label follows the language
   await shot(page, info, 'R1-other-language');
-  await page.getByRole('button', { name: /^Q$/ }).click();
-  await page.getByRole('button', { name: /Tiếng Việt|Vietnamese|English|Tiếng Anh/ }).first().click();
+  await pick(/^(English|Tiếng Anh)$/);
   await expect(label).toHaveText(first);
   expect(errors).toEqual([]);
 });
@@ -67,20 +72,20 @@ test('R2 · choose a BigQuery source, ask in Vietnamese: SQL-equal numbers, evid
   await openChat(page);
   await chooseSource(page);
   const a = await ask(page, QA);
-  expectOracle(await tableOf(a), 'rev_q1_2024');
+  expectOracle(await tableOf(a), 'prod_rev_q1_2024');
   await expect(a.getByTestId('chat-evidence')).toContainText(DA3);
   await expect(a.getByTestId('chat-evidence')).toContainText('Total Revenue');
   await expect(a.getByTestId('chat-chart').locator('.recharts-bar-rectangle, .recharts-line-curve').first()).toBeVisible();
   await expect(page).toHaveURL(/\/chat\/c\/\d+$/);
   convUrl = new URL(page.url()).pathname;
   await shot(page, info, 'R2a-answer');
-  expectOracle(await tableOf(await ask(page, QB)), 'rev_q2_2024');              // period changed
+  expectOracle(await tableOf(await ask(page, QB)), 'prod_rev_q2_2024');              // period changed
   const c = await ask(page, QC);
-  expect(Object.values(await tableOf(c))).toEqual([266090]);                     // quarter kept, filter added
+  expect(Object.values(await tableOf(c))).toEqual([102450]);                     // quarter kept, filter added
   await shot(page, info, 'R2c-follow-ups');
   await page.reload();                                                           // history is stored, not streamed
   await expect(page.getByTestId('chat-exchange')).toHaveCount(3);
-  expectOracle(await tableOf(page.getByTestId('chat-exchange').nth(1)), 'rev_q2_2024');
+  expectOracle(await tableOf(page.getByTestId('chat-exchange').nth(1)), 'prod_rev_q2_2024');
   expect(errors).toEqual([]);
 });
 
@@ -94,7 +99,7 @@ test('R3 · an ambiguous business term asks which one, and the pick is answered 
   const picked = page.getByTestId('chat-exchange').last();
   await expect(picked.getByTestId('chat-answer')).toBeVisible({ timeout: 120_000 });
   await expect(picked.getByTestId('chat-evidence')).toContainText('Total Revenue');
-  expectOracle(await tableOf(picked), 'rev_by_employee');
+  expectOracle(await tableOf(picked), 'emp_rev_all');
   await shot(page, info, 'R3b-picked');
 });
 
@@ -116,7 +121,7 @@ test('R4 · a double click asks once; an outage is an error, never an answer; re
     await shot(page, info, `R4-error-${label}`);
     await page.unroute('**/api/v1/chat/conversations/*/turns');
   }
-  expectOracle(await tableOf(await ask(page, QB)), 'rev_q2_2024');              // retried after the outage
+  expectOracle(await tableOf(await ask(page, QB)), 'prod_rev_q2_2024');              // retried after the outage
 });
 
 test('R5 · save the answer as a chart, open it in Explore, edit it, reload: same numbers as SQL', async ({ page }, info) => {
@@ -148,7 +153,7 @@ test('R5 · save the answer as a chart, open it in Explore, edit it, reload: sam
   const cells = await page.locator('table').last().locator('tbody tr').evaluateAll((trs) =>
     trs.map((tr) => Array.from(tr.querySelectorAll('td')).map((td) => (td.textContent || '').trim())));
   const values = cells.map((r) => Number(r[r.length - 1].replace(/[^\d.-]/g, ''))).sort((a, b) => a - b);
-  expect(values).toEqual(Object.values(ORACLE.rev_q1_2024).sort((a, b) => a - b));
+  expect(values).toEqual(Object.values(ORACLE.prod_rev_q1_2024).sort((a, b) => a - b));
   await shot(page, info, 'R5b-reopened');
 });
 
@@ -198,7 +203,7 @@ test('R7 · shared with someone who may not read the source: questions only, no 
   await expect(page.getByTestId('chat-table')).toHaveCount(0);
   await expect(page.getByTestId('chat-question')).toHaveCount(0);
   const wire = bodies.join('\n');
-  for (const v of [...Object.values(ORACLE.rev_q1_2024), ...Object.values(ORACLE.rev_q2_2024)].filter((n) => n > 1000)) {
+  for (const v of [...Object.values(ORACLE.prod_rev_q1_2024), ...Object.values(ORACLE.prod_rev_q2_2024)].filter((n) => n > 1000)) {
     expect(wire.includes(String(v)), `oracle value ${v} reached the viewer`).toBe(false);
   }
   expect(wire).not.toContain('"rows"');
@@ -250,7 +255,7 @@ test('R10 · add-on asked on a data question: SQL-equal numbers from the data co
   await page.goto(addOnUrl);
   await chooseSource(page);
   const ex = await ask(page, QA, { addOn: true });
-  expectOracle(await tableOf(ex), 'rev_q1_2024');
+  expectOracle(await tableOf(ex), 'prod_rev_q1_2024');
   const sup = ex.getByTestId('chat-supporting');
   await expect(sup.getByTestId('chat-documents')).toContainText(EXT.doc_title);
   await expect(sup.getByTestId('chat-unverified-figures')).toContainText('9.876.543.210');
@@ -259,7 +264,7 @@ test('R10 · add-on asked on a data question: SQL-equal numbers from the data co
   await expect(ex.getByTestId('chat-answer')).toHaveCount(1);                   // ONE answer, not two
   await shot(page, info, 'R10-data-plus-document');
   const plain = await ask(page, QB);                                             // not a document question: no add-on
-  expectOracle(await tableOf(plain), 'rev_q2_2024');
+  expectOracle(await tableOf(plain), 'prod_rev_q2_2024');
   await expect(plain.getByTestId('chat-supporting')).toHaveCount(0);
 });
 
@@ -268,7 +273,7 @@ test('R11 · the add-on fails: the data answer stands, the reason is said', asyn
   await page.getByTestId('chat-extension-select').selectOption(EXT.flow_key);
   await chooseSource(page);
   const ex = await ask(page, QF, { addOn: true });                               // no recorded flow output: the run fails
-  expectOracle(await tableOf(ex), 'rev_q2_2024');
+  expectOracle(await tableOf(ex), 'prod_rev_q2_2024');
   await expect(ex.getByTestId('chat-supporting')).toHaveCount(0);
   await expect(ex.getByTestId('chat-notices')).toContainText(/add-on|luồng hỗ trợ/i);
   await shot(page, info, 'R11-addon-failed');

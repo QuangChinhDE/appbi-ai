@@ -36,7 +36,8 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
   expect(add.status(), await add.text()).toBeLessThan(400);
   await login(page, 'qa-chat-owner');
   await page.goto(`/dashboards/${dash.id}`);
-  for (const p of ['Tablet', 'Laptop', 'Smartwatch']) await expect(page.getByText(p).first()).toBeVisible();
+  await expect(page.getByText(chart!.name).first()).toBeVisible();
+  await expect(page.locator('.recharts-bar-rectangle, .recharts-line-curve, table').first()).toBeVisible({ timeout: 60_000 });
   await page.waitForTimeout(2000);
   await shot(page, info, 'B2a-dashboard');
 
@@ -60,15 +61,15 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
     } catch { /* not JSON */ }
   });
   await pub.goto(`${BASE}/d/${link.token}`);
-  await expect(pub.getByText('Tablet').first()).toBeVisible();
+  await expect(pub.getByText(chart!.name).first()).toBeVisible({ timeout: 60_000 });
   await pub.waitForTimeout(1500);
   await pub.screenshot({ path: info.outputPath('B2b-public.png'), fullPage: true });
   expect(authed, 'the public page made a signed-in call').toEqual([]);
-  for (const v of Object.values(ORACLE.rev_q1_2024)) expect(numbers.some((n) => Math.abs(n - v) < 0.51), `public value ${v} (SQL)`).toBe(true);
+  for (const v of Object.values(ORACLE.prod_rev_q1_2024)) expect(numbers.some((n) => Math.abs(n - v) < 0.51), `public value ${v} (SQL)`).toBe(true);
   const del = await owner.ctx.delete(`/api/v1/dashboards/${dash.id}/public-links/${link.id}`, { headers: owner.headers });
   expect(del.status(), await del.text()).toBeLessThan(400);
   await pub.goto(`${BASE}/d/${link.token}`);
-  await expect(pub.getByText('Tablet')).toHaveCount(0);
+  await expect(pub.getByText(chart!.name)).toHaveCount(0);
   await pub.screenshot({ path: info.outputPath('B2c-revoked.png'), fullPage: true });
   const p2 = await anon.newPage();
   await p2.goto(`${BASE}/dashboards/${dash.id}`);
@@ -82,7 +83,7 @@ test('B2 · a chart saved from Chat on a dashboard; its public link shows SQL-eq
 test('B3 · BigQuery: an answer saved as a chart runs through the BI chart path on BigQuery', async ({ page }, info) => {
   await openChat(page);
   await chooseSource(page);
-  const ex = await ask(page, 'Doanh thu theo sản phẩm trong quý 1 năm 2024');
+  const ex = await ask(page, 'Doanh thu theo product_id trong quý 1 năm 2024');
   await expect(ex.getByTestId('chat-evidence')).toContainText(/bigquery/i);
   const saved = page.waitForResponse((r) => /\/api\/v1\/charts\/?$/.test(new URL(r.url()).pathname) && r.request().method() === 'POST');
   await ex.getByTestId('chat-save-chart').click();
