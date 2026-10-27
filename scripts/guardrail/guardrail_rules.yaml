@@ -1024,8 +1024,11 @@ invariants:
 
   - id: agent_flow_answer_parity
     label: "The answer envelope has one renderer; no surface flattens blocks privately"
+    # Unified AI Chat (2026-10-27): the Flow-first ConversationView.tsx was retired;
+    # the one chat renders its turns - the add-on's supporting evidence included -
+    # in ChatTurnView.tsx, so the guard follows the renderer, not the old file name.
     scope: ["frontend/src/components/agent-flows/TestChat.tsx",
-            "frontend/src/components/chat/ConversationView.tsx",
+            "frontend/src/components/chat/ChatTurnView.tsx",
             "frontend/src/components/dashboards/AnswerBlocks.tsx"]
     # SINGLE LINE, because a diff only carries the lines that CHANGED. The first
     # attempt keyed on the full idiom `=> b.markdown).filter`, which spans two
@@ -1039,7 +1042,7 @@ invariants:
     added_patterns: ['\.map\(\s*\(?\s*\w+\s*\)?\s*=>\s*\w+\.markdown\s*\)']
     severity: high
     message: >
-      Studio, Direct Chat and the dashboard bot read the same blocks. A surface that
+      Studio, AI Chat and the dashboard bot read the same blocks. A surface that
       flattens them to `.markdown` shows its author a degraded copy of what the reader
       gets — measured: a valid `metric` answer rendered as an em-dash while the run
       reported `ok` and raised no notice.
