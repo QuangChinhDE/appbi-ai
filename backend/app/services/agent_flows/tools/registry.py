@@ -562,6 +562,7 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
                 getattr(ctx, "public_filters", []),
                 # A result read under one page scope never answers another.
                 sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items()),
+                sorted((str(k), v) for k, v in (getattr(ctx, "public_filters_by_chart", None) or {}).items()),
                 _authorization_identity(ctx),
                 # WHAT THE TURN RESOLVED CHANGES WHAT A BODY RETURNS. With no
                 # `measure` argument, a row tool measures the turn's asked measure,
