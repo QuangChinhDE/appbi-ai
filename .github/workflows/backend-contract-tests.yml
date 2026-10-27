@@ -126,7 +126,8 @@ jobs:
             tests/test_llm_test_budget.py \
             tests/test_intelligence_gqs_core.py \
             tests/test_unified_chat_architecture.py \
-            tests/test_chat_extension.py
+            tests/test_chat_extension.py \
+            tests/test_sse_streams_unbuffered.py
 
       # WHAT THE ANALYST IS SHOWN AS EVIDENCE, AND WHAT A METRIC MEANS.
       #

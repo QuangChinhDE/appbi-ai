@@ -81,7 +81,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const liveRef = useRef<{ turnId?: string; abort: AbortController } | null>(null);
+  const liveRef = useRef<{ turnId?: string; abort: AbortController; stopRequested?: boolean } | null>(null);
 
   const readOnly = !!conv && !conv.can_ask;
   const flowKey = conv ? conv.extension_flow_key : (pendingFlow || null);
@@ -141,6 +141,20 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
   const patchLast = (fn: (ex: Exchange) => Exchange) =>
     setHistory((h) => (h.length ? [...h.slice(0, -1), fn(h[h.length - 1])] : h));
 
+  const stopTurn = useCallback(async (turnId: string, abort: AbortController) => {
+    try {
+      // The server ends the turn now, whatever stage it is in (planning, the governed
+      // read, or the add-on), and says whether it did: a turn that had already
+      // finished keeps its answer, and the stream delivers it - the page never shows
+      // "cancelled" for a turn the server answered.
+      const r = await chatApi.cancel(turnId);
+      if (r.cancelled) abort.abort();
+      else setCancelling(false);
+    } catch {
+      setCancelling(false);
+    }
+  }, []);
+
   const ask = useCallback(async (q: string, opts: AskOpts = {}) => {
     const text = q.trim();
     if (!text || busy || readOnly) return;
@@ -169,8 +183,11 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       };
       for await (const ev of chatApi.ask(id, body, abort.signal)) {
         if (ev.type === 'accepted') {
+          const stopRequested = liveRef.current?.stopRequested;
           liveRef.current = { turnId: ev.turn_id, abort };
           patchLast((ex) => ({ ...ex, turnId: ev.turn_id }));
+          // Stop was pressed before the server named the turn: stop it now
+          if (stopRequested) stopTurn(ev.turn_id, abort);
         } else if (ev.type === 'status' && ev.detail) {
           patchLast((ex) => ({ ...ex, progress: [...(ex.progress || []), ev.detail] }));
         } else if (ev.type === 'extension' && ev.state === 'started') {
@@ -198,24 +215,16 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       setBusy(false);
       setCancelling(false);
     }
-  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, sourceId, refreshList, t, flowName]);
+  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, sourceId, refreshList, t, flowName, stopTurn]);
 
   const cancel = useCallback(async () => {
     const live = liveRef.current;
-    if (!live?.turnId) return;
+    if (!live) return;
     setCancelling(true);
-    try {
-      // The server ends the turn now, whatever stage it is in (planning, the governed
-      // read, or the add-on), and says whether it did: a turn that had already
-      // finished keeps its answer, and the stream delivers it - the page never shows
-      // "cancelled" for a turn the server answered.
-      const r = await chatApi.cancel(live.turnId);
-      if (r.cancelled) live.abort.abort();
-      else setCancelling(false);
-    } catch {
-      setCancelling(false);
-    }
-  }, []);
+    // the turn is not named yet: remember the press, the `accepted` event acts on it
+    if (!live.turnId) { live.stopRequested = true; return; }
+    await stopTurn(live.turnId, live.abort);
+  }, [stopTurn]);
 
   const acceptDrop = useCallback(async (ex: Exchange) => {
     const d = dataOf(ex)?.detail;
