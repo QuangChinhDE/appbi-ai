@@ -392,14 +392,26 @@ def _augment_with_slicer_fields(
     }
     models: dict[int, dict] = {}
     augmented = list(base)
+    raw_keys = {str(c.get("key")) for c in base if isinstance(c, dict) and c.get("key")}
     for slc in slicers:
         if not isinstance(slc, dict):
             continue
         dataset_id = slc.get("datasetId")
-        if not isinstance(dataset_id, int):
-            continue
         refs = _public_filter_semantic_refs(slc)
-        if not refs:
+        if not isinstance(dataset_id, int) or not refs:
+            # An imported report's slicer names a raw column ({field: "Kỳ"}, no
+            # dataset, no view.field) - the tiles filter by it per chart base view,
+            # but its dropdown had no values (customer demo 2026-10-28). Resolve it
+            # the way the engine does, over the PUBLISHED charts only; the slicer
+            # config is never rewritten (forcing a semanticField onto a report-wide
+            # slicer would drop it on charts of other views, ADR #79).
+            raw = str(slc.get("field") or "").strip()
+            if not raw or "." in raw or raw in raw_keys:
+                continue
+            column = _resolve_raw_slicer_field(db, dash, raw, models)
+            if column:
+                raw_keys.add(raw)
+                augmented.append(column)
             continue
         semantic_field = refs[0]
         key = (dataset_id, semantic_field)
@@ -417,6 +429,36 @@ def _augment_with_slicer_fields(
         column["sharedAcrossDataset"] = True
         augmented.append(column)
     return augmented
+
+
+def _resolve_raw_slicer_field(db: Session, dash: Dashboard, raw: str, models: dict[int, dict]) -> dict | None:
+    """The filter column of a raw-column slicer: the published charts whose binding
+    takes that plain field (`chart_service._plain_field_is_supported_by_binding`:
+    its `fieldMap` key, or `<baseView>.<field>` among its fields), the semantic ref
+    most of them read it through. Keyed by the RAW field, so the public filter bar
+    matches the slicer (`getFilterKey`) and asks the distinct values of that ref."""
+    coverage: dict[tuple[int, str], set[int]] = {}
+    for dc in dash.dashboard_charts or []:
+        cfg = dc.chart.config if getattr(dc, "chart", None) is not None else None
+        binding = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
+        if not isinstance(binding, dict) or not isinstance(binding.get("datasetId"), int):
+            continue
+        ref = (binding.get("fieldMap") or {}).get(raw)
+        base_view = str(binding.get("baseViewName") or "").strip()
+        known = {str(v) for v in [*(binding.get("dimensionFields") or []), *(binding.get("reachableFields") or [])]}
+        if not ref and base_view and f"{base_view}.{raw}" in known:
+            ref = f"{base_view}.{raw}"
+        if isinstance(ref, str) and "." in ref:
+            coverage.setdefault((binding["datasetId"], ref), set()).add(dc.chart_id)
+    if not coverage:
+        return None
+    (dataset_id, ref), charts = max(coverage.items(), key=lambda kv: (len(kv[1]), kv[0][1]))
+    column = _resolve_semantic_field_metadata(db, dataset_id, ref, dataset_models=models)
+    if not column:
+        return None
+    total = len(dash.dashboard_charts or [])
+    return {**column, "key": raw, "chartCoverage": len(charts), "datasetChartCount": total,
+            "sharedAcrossDataset": len(charts) == total}
 
 
 def _build_public_filter_fields(
@@ -577,6 +619,14 @@ def _sanitize_public_viewer_filters(
     }
     if not allowed_fields:
         return []
+    # a raw-column slicer's pick ({field: "Kỳ"}) cascades through the ref its column
+    # was resolved to (`_resolve_raw_slicer_field`) - only that, only on that dataset
+    raw_to_ref = {
+        str(item.get("key")): str(item.get("semanticField"))
+        for item in public_filter_fields
+        if item.get("datasetId") == dataset_id and item.get("semanticField")
+        and item.get("key") and "." not in str(item.get("key"))
+    }
 
     sanitized: list[dict] = []
     for filter_condition in viewer_filters:
@@ -587,7 +637,7 @@ def _sanitize_public_viewer_filters(
         matched_field = next(
             (ref for ref in _public_filter_semantic_refs(filter_condition) if ref in allowed_fields),
             None,
-        )
+        ) or raw_to_ref.get(str(filter_condition.get("field") or "").strip())
         if not matched_field:
             continue
 
