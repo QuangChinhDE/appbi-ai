@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 
-import { ask, chooseSource, DA3_UNCERTIFIED, expectOracle, OUTCOME, openChat, shot, tableOf, watch } from './ai-chat-appbi.helpers';
+import {
+  ask, chooseSource, DA3_UNCERTIFIED, ensureModel, expectOracle, OUTCOME, openChat, shot, tableOf, watch,
+} from './ai-chat-appbi.helpers';
 
 /**
  * Unified AI Chat on the REAL AppBI stack (appbi-ai, localhost:3000) with the REAL model, under
@@ -60,6 +62,7 @@ test('L2 · an ambiguous business term is clarified or answered from a named sou
 test('L3 · Stop while the model is planning ends the turn as cancelled, and a reload says the same', async ({ page }, info) => {
   await openChat(page);
   await chooseSource(page);
+  await ensureModel(page);
   await page.getByTestId('chat-question').fill(QE);
   await page.getByTestId('chat-ask').click();
   await expect(page.getByTestId('chat-running')).toBeVisible();
@@ -74,6 +77,7 @@ test('L3 · Stop while the model is planning ends the turn as cancelled, and a r
 test('L4 · refresh during a running turn: the turn is recovered and ends in its real state', async ({ page }, info) => {
   await openChat(page);
   await chooseSource(page);
+  await ensureModel(page);
   await page.getByTestId('chat-question').fill(QF);
   const accepted = page.waitForResponse((r) => r.url().includes('/turns') && r.request().method() === 'POST');
   await page.getByTestId('chat-ask').click();
@@ -89,6 +93,7 @@ test('L4 · refresh during a running turn: the turn is recovered and ends in its
 test('L5 · leave during a running turn and come back: the answer is there', async ({ page }, info) => {
   await openChat(page);
   await chooseSource(page);
+  await ensureModel(page);
   await page.getByTestId('chat-question').fill(QA);
   const accepted = page.waitForResponse((r) => r.url().includes('/turns') && r.request().method() === 'POST');
   await page.getByTestId('chat-ask').click();
