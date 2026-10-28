@@ -245,6 +245,34 @@ def _words(text: str) -> set[str]:
     return {w for w in _fold(text).split() if len(w) > 2 and w not in _STOP and not w.isdigit()}
 
 
+_COMPARES = re.compile(r"(chưa đạt|không đạt|đạt|vượt|hụt|thiếu|so với|thấp hơn|cao hơn|"
+                       r"achiev|below|above|short of|exceed|versus|vs\.?)", re.IGNORECASE)
+
+
+def drop_target_comparisons(text: str, guide: Optional[PublisherGuide]) -> str:
+    """Remove a sentence that sets a publisher target against a figure, when the code
+    did not (the answer's scope is not the target's). Live 2026-10-28: told not to, the
+    model still compared the West region with the company target. A sentence that only
+    states the target stays."""
+    if not guide or not guide.targets:
+        return text
+    from app.services.chat.extension import _FIGURE, _as_number
+
+    values = {float(t.value) for t in guide.targets}
+    kept = []
+    for line in (text or "").split("\n"):
+        out = []
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            figures = {_as_number(m.group(0)) for m in _FIGURE.finditer(sentence)}
+            if figures & values and _COMPARES.search(sentence):
+                continue
+            out.append(sentence)
+        joined = " ".join(s for s in out if s.strip())
+        if joined.strip() and joined.strip() not in ("-", "*", "•"):
+            kept.append(joined)
+    return "\n".join(kept).strip()
+
+
 def states_a_cause(text: str) -> bool:
     """The text says why (a causal marker that is not a mere "therefore")."""
     for sentence in re.split(r"(?<=[.!?])\s+|\n", text or ""):

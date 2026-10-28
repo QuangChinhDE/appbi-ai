@@ -314,6 +314,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
                 with gateway.billing(bill):
                     analysis = guided_analysis.analyse(
                         scope, question=req.question, instructions=instructions, guide=guide,
+                        target_applies=target is not None,
                         previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id)
                         if follow_up else None,
                         core_answer=_core_answer(req.question, e) if evaluate else None)

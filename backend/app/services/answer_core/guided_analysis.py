@@ -317,7 +317,7 @@ def _figures_in(text: str) -> set[float]:
 
 
 def analyse(scope, *, question: str, instructions: Optional[str], previous_answer: Optional[dict] = None,
-            core_answer: Optional[dict] = None, guide=None,
+            core_answer: Optional[dict] = None, guide=None, target_applies: bool = False,
             complete: Optional[Callable[..., Optional[dict]]] = None) -> Optional[dict]:
     """{text, charts, unverified_figures, used_notes} - or None when there is nothing to
     read or the model gave nothing usable (the Core's outcome then stands alone)."""
@@ -357,6 +357,8 @@ def analyse(scope, *, question: str, instructions: Optional[str], previous_answe
     corpus = " ".join([json.dumps([c["rows"] for c in charts if c.get("cause_source")], ensure_ascii=False,
                                   default=str), guide_text, instructions or ""])
     text = publisher_guide.check_causes(text, corpus)
+    if not target_applies:  # the code compared no target here: neither may the model
+        text = publisher_guide.drop_target_comparisons(text, guide)
     if (_ASKS_WHY.search(question or "") and publisher_guide.NO_CAUSE not in text
             and not publisher_guide.states_a_cause(text)):
         # asked "why" and no recorded cause was given: said, not left to be guessed

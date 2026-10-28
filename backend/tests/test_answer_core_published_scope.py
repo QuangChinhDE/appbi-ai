@@ -887,3 +887,16 @@ def test_asked_why_with_no_recorded_cause_says_so(scope):
     out = g.analyse(scope, question="Doanh thu Laptop thế nào?", instructions=None,
                     complete=lambda *a, **k: {"answer": "- Laptop đạt 150, cao nhất."})
     assert NO_CAUSE not in out["text"]
+
+
+def test_the_model_never_sets_a_target_against_a_figure_the_code_did_not():
+    """Live 2026-10-28 (Chrome, after the code stopped it): the model still wrote
+    "mục tiêu 12.000.000 … West chưa đạt". A sentence comparing a figure with a
+    publisher target goes when the code compared none; stating the target stays."""
+    from app.services.answer_core.publisher_guide import drop_target_comparisons, load
+
+    guide = load({"ai_bot_guide": {"targets": [{"ref": R, "value": 12000000}]}})
+    text = ("- West đạt 88.073.\n- Mục tiêu 12.000.000, cho thấy West chưa đạt mục tiêu.\n"
+            "- Mục tiêu doanh thu năm là 12.000.000.")
+    out = drop_target_comparisons(text, guide)
+    assert "chưa đạt" not in out and "West đạt 88.073." in out and "Mục tiêu doanh thu năm là 12.000.000." in out
