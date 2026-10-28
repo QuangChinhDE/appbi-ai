@@ -3,32 +3,33 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
- * PUBLIC READER BOUNDARY - deterministic, no model, no skip (release gate).
+ * PUBLIC READER BOUNDARY (release gate).
  *
  *   An anonymous public-link reader never receives internal execution, tool or
  *   system details - on the wire or on the page, with every detail panel open.
  *
- * Replaces the model-dependent half of agent-flow-v1-reader-golden.spec.ts:287
- * as the SECURITY gate. A real turn runs in CI with no LLM credential because the
- * bound flow is MODEL-FREE: two `tool` steps (no model decides anything) and a
- * `set_var` answer. Everything is real - the owner creates/publishes/binds the
- * flow through the API, the anonymous browser asks through the public chat
- * endpoint, the dispatcher runs the flow, the registry enforces scope, and the
- * public serializer (agent_flows/wire.py + reader_diagnostics) is what is under
- * test. Nothing is mocked and nothing is injected into the DOM.
+ * REWRITTEN 2026-10-28 for the ONE Answer Core (ADR-3 revised; declared protection
+ * change, approved by the PO). The public bot is answered by the Core over the
+ * link's published report; a bound Agent Flow is only an optional DOCUMENTS add-on
+ * the Core may call, never the answerer. The previous version waited for a
+ * model-free flow's own answer to be shown to the reader - the architecture that
+ * was retired - and so can no longer pass.
  *
- * The run produces dangerous internals ON THE TRUSTED SIDE - proven by reading the
- * owner's own run trace below:
- *   step 1  get_chart_data on a chart OUTSIDE the binding's allowlist -> a real
- *           `chart_out_of_scope` refusal whose technical message names the tool
- *           id and the raw chart id;
- *   step 2  get_chart_data on an allowed chart whose datasource is unreachable ->
- *           a real execution failure (exception class in the technical message);
- *   node keys, the flow key, binding / execution internals of the run row.
- * The test then asserts that NONE of it reaches the reader.
+ * What is the same: the owner builds, publishes and binds a MODEL-FREE flow through
+ * the real API whose run produces dangerous internals (an out-of-scope chart read,
+ * a failing chart read, answer prose that echoes tool ids, error codes, a Traceback
+ * and an internal URL); the anonymous browser uses the real public surface; the
+ * same forbidden list is asserted on every public AI request/response and on the
+ * page with every detail open. Nothing is mocked.
  *
- * Fixture: backend/scripts/ci/seed_e2e_security.py (`reader`). The workflow
- * enrolls exactly that link in the reader pilot (AGENT_FLOW_PILOT_LINK_IDS).
+ * What depends on the deployment: a public turn needs the Core's model. With one,
+ * a DOCUMENT question runs the bound flow as the add-on and the trusted run is
+ * checked to really hold the internals. Without one (CI), the bot states it is not
+ * ready - that surface is held to the same list - and the add-on boundary is locked
+ * deterministically where it lives: backend/tests/test_chat_extension.py::
+ * test_an_add_on_output_that_echoes_internals_reaches_no_reader (same echo).
+ *
+ * Fixture: backend/scripts/ci/seed_e2e_security.py (`reader`).
  */
 const FIXTURE = process.env.E2E_SECURITY_FIXTURE
   || path.join(__dirname, '..', '..', '.auth', 'security.json');
@@ -57,9 +58,8 @@ test('an anonymous public reader receives no internal execution details, even wi
     const KEY = `sec_reader_${fx.run}_${Date.now().toString(36)}`;
     const ANSWER = `Câu trả lời xác định ${fx.run}.`;
     // ANSWER PROSE THAT REPEATS INTERNALS - the shape a model can produce after
-    // reading a tool result's technical message. Produced here deterministically
-    // by the answer step itself; the reader-text guard must remove all of it
-    // before the answer is stored and published, whoever wrote it.
+    // reading a tool result's technical message. Whoever wrote it, none of it may
+    // reach a reader.
     const ECHO = ` get_chart_data: chart_id ${r.chart_out} is not part of this dashboard (chart_out_of_scope, `
       + 'error_code, brain_key, answer_node). failed to load chart 1: ValueError. dataset_table_42 at '
       + 'http://localhost:8000/api/v1/internal. Traceback (most recent call last):\n  File "x.py", line 1, in f\n\nHết.';
@@ -87,11 +87,16 @@ test('an anonymous public reader receives no internal execution details, even wi
     });
     expect(bound.status(), await bound.text()).toBe(200);
 
-    // ── an anonymous browser asks through the real public surface ────────────
+    // ── an anonymous browser uses the real public surface ────────────────────
     const readerCtx = await browser.newContext({ storageState: { cookies: [], origins: [] } });
     const page: Page = await readerCtx.newPage();
     const aiWire: { url: string; body: string }[] = [];
+    const authed: string[] = [];
+    const keyHeaders: string[] = [];
     page.on('request', (req) => {
+      const h = req.headers();
+      if (req.url().includes('/api/') && h['authorization']) authed.push(req.url());
+      if (Object.keys(h).some((k) => k.toLowerCase().startsWith('x-user-ai-'))) keyHeaders.push(req.url());
       if (req.url().includes('/api/v1/public/') && /\/ai(\/|-)/.test(req.url()) && req.postData()) {
         aiWire.push({ url: `REQUEST ${req.method()} ${req.url()}`, body: req.postData() || '' });
       }
@@ -106,12 +111,24 @@ test('an anonymous public reader receives no internal execution details, even wi
 
     await page.goto(`/d/${r.token}`);
     await page.locator('button[aria-label*="AI"], button[title*="AI"]').first().click();
-    const box = page.locator('textarea').first();
-    await expect(box, 'the public assistant offered no chat box (is the flow bound?)').toBeVisible({ timeout: 30_000 });
-    await box.fill('Doanh thu là bao nhiêu?');
-    await box.press('Enter');
-    // the deterministic answer - the turn really ran (not blocked by the pilot)
-    await expect(page.getByText(ANSWER).first()).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByTestId('ai-bot-panel'), 'the public assistant did not open').toBeVisible({ timeout: 30_000 });
+    const status = await (await readerCtx.request.get(`${V1}/public/dashboards/${r.token}/ai/status`)).json();
+    let ranTurn = false;
+    if (status.ready) {
+      // a DOCUMENT question: the Core answers what the data can, then calls the
+      // bound flow as its add-on - the run that holds the internals
+      const box = page.getByTestId('ai-bot-input');
+      await box.fill('Chính sách hoàn phí vận chuyển như thế nào?');
+      await page.getByTestId('ai-bot-send').click();
+      await expect(page.getByTestId('ai-bot-exchange').first())
+        .not.toHaveAttribute('data-status', 'running', { timeout: 120_000 });
+      ranTurn = true;
+    } else {
+      // no model on this deployment: the bot says so plainly, and asks nothing of the reader
+      await expect(page.getByTestId('ai-bot-not-ready')).toBeVisible();
+      test.info().annotations.push({ type: 'no-model',
+        description: 'no public turn on this deployment; add-on boundary locked by test_chat_extension.py' });
+    }
 
     // EXPAND EVERYTHING THE READER CAN EXPAND, until nothing collapsed remains.
     for (let pass = 0; pass < 5; pass += 1) {
@@ -125,18 +142,18 @@ test('an anonymous public reader receives no internal execution details, even wi
     await Promise.all(pending);
     const dom = await page.locator('body').innerText();
 
-    // ── the trusted side DID produce the internals (else the test proves nothing)
-    const runs = await (await owner.get(`${V1}/agent-flows/brains/${KEY}/runs?hours=24`)).json();
-    const rows = runs.runs ?? runs.items ?? [];
-    expect(rows.length, 'no run was recorded for the public turn').toBeGreaterThan(0);
-    const runId = rows[0].run_id ?? rows[0].id;
-    const trusted = await (await owner.get(`${V1}/agent-flows/brains/${KEY}/runs/${runId}`)).text();
-    expect(trusted, 'the turn was blocked, not run (pilot enrollment?)').not.toMatch(/pilot_not_enrolled|reader_mode_off/);
-    expect(trusted).toContain('get_chart_data');
-    expect(trusted).toMatch(new RegExp(`chart_id ${r.chart_out} is not part of this dashboard`));
-    expect(trusted).toContain('ngoai_pham_vi');
-    // ...and the answer step really produced prose full of internals (raw, in the author's trace)
-    expect(trusted).toContain('Traceback (most recent call last)');
+    if (ranTurn) {
+      // ── the trusted side DID produce the internals (else the test proves nothing)
+      const runs = await (await owner.get(`${V1}/agent-flows/brains/${KEY}/runs?hours=24`)).json();
+      const rows = runs.runs ?? runs.items ?? [];
+      expect(rows.length, 'the add-on was not run for the document question').toBeGreaterThan(0);
+      const runId = rows[0].run_id ?? rows[0].id;
+      const trusted = await (await owner.get(`${V1}/agent-flows/brains/${KEY}/runs/${runId}`)).text();
+      expect(trusted).toContain('get_chart_data');
+      expect(trusted).toContain('ngoai_pham_vi');
+      expect(trusted).toContain('Traceback (most recent call last)');
+      expect(aiWire.some((w) => /\/ai\/answer/.test(w.url)), 'the turn itself was not captured').toBe(true);
+    }
 
     // ── nothing internal reaches the reader: WIRE, then PAGE ─────────────────
     const forbidden: (string | RegExp)[] = [
@@ -152,16 +169,17 @@ test('an anonymous public reader receives no internal execution details, even wi
       // internal hosts and execution metadata
       'localhost:', '127.0.0.1', 'warehouse.invalid', 'execution_path', 'not_executed', 'config_source',
       'owner_email', fx.users.owner.email,
+      // credentials of any kind
+      'ai_bot_key', 'credential_id', 'secret_enc',
     ];
     const hits = (text: string) => forbidden.filter((f) => (typeof f === 'string' ? text.includes(f) : f.test(text)));
 
-    // THE TURN (chat stream + its saved/restored session) gets the full list. Other
-    // public AI endpoints (e.g. the briefing guess) legitimately list the REPORT's
-    // own charts by id - those ids are public: the public dashboard payload and
-    // the chart-data URLs carry them - so only the chart-id rule is relaxed there.
-    const isTurn = (u: string) => /\/ai\/(agent|session)\//.test(u);
+    // THE TURN (the answer stream and its turn view) gets the full list. Other public
+    // AI endpoints may legitimately carry the REPORT's own chart ids - those are
+    // public (the dashboard payload and chart-data URLs carry them) - so only the
+    // chart-id rule is relaxed there.
+    const isTurn = (u: string) => /\/ai\/answer/.test(u);
     const publicChartIds = new Set<string | RegExp>(['chart_id', forbidden.find((f) => f instanceof RegExp)!]);
-    expect(aiWire.some((w) => /\/ai\/agent\/chat/.test(w.url)), 'the chat turn itself was not captured').toBe(true);
     for (const w of aiWire) {
       const found = hits(w.body).filter((f) => isTurn(w.url) || !publicChartIds.has(f));
       expect(found, `internal details on the public wire (${w.url})`).toEqual([]);
@@ -169,6 +187,8 @@ test('an anonymous public reader receives no internal execution details, even wi
     // the page: every forbidden value except the bare chart id (a page may show numbers)
     const domHits = hits(dom).filter((f) => typeof f === 'string');
     expect(domHits, 'internal details rendered to the anonymous reader').toEqual([]);
+    expect(authed, 'the public page made a signed-in call').toEqual([]);
+    expect(keyHeaders, 'the public page sent a provider key header').toEqual([]);
 
     await owner.delete(`${V1}/agent-flows/bindings/link/${r.link_id}`).catch(() => {});
     await readerCtx.close();
