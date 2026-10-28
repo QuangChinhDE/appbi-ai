@@ -346,6 +346,13 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
   );
 }
 
+/** A data timestamp as the viewer reads dates ("18/07/2026, 08:40"); anything else as is. */
+function asOfText(value: string, locale: string): string {
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? value
+    : d.toLocaleString(locale === 'vi' ? 'vi-VN' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' });
+}
+
 /** The assistant's launcher mark (the report bot's original look). */
 function BotIcon() {
   return (
@@ -488,7 +495,9 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
               {(ev.filters_withheld || 0) > 0 && (
                 <p>{t('dashboards.aiBot.core.filtersWithheld', { count: ev.filters_withheld || 0 })}</p>
               )}
-              {ev.freshness && ev.freshness !== 'live' && <p>{t('dashboards.aiBot.core.asOf', { asOf: ev.freshness })}</p>}
+              {ev.freshness && ev.freshness !== 'live' && (
+                <p>{t('dashboards.aiBot.core.asOf', { asOf: asOfText(ev.freshness, locale) })}</p>
+              )}
             </div>
           )}
         </div>

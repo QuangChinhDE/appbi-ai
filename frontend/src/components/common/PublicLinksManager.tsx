@@ -927,6 +927,7 @@ export function PublicLinksManager({
       // the encrypted store; leaving it untouched keeps it on save.
       ai_bot_credential_id: link.appearance_config?.ai_bot_credential_id,
       ai_bot_key_configured: link.appearance_config?.ai_bot_key_configured,
+      ai_bot_key_hint: link.appearance_config?.ai_bot_key_hint,
       ai_bot_budget_usd_per_day: link.appearance_config?.ai_bot_budget_usd_per_day,
       ai_bot_turns_per_hour: link.appearance_config?.ai_bot_turns_per_hour,
     });

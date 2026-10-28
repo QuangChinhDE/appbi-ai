@@ -787,3 +787,15 @@ def test_asking_what_a_chart_shows_is_framing_not_an_unanswered_part():
     assert why is None and ok.dimensions == ["c.segment"]
     ok, why = ground(_plan(["l.net_sales"], ["c.region"]), "Doanh số theo vùng nói lên những gì?")
     assert why is None
+
+
+def test_growth_over_a_period_column_is_explained_without_a_grain():
+    """Live public-bot run (real model): "Doanh thu tăng trưởng theo tháng thế nào?" was
+    planned by the calendar view's year_month with a placeholder grain the planner drops;
+    grouping by a period column is the time breakdown that explains "tăng trưởng"."""
+    period = CatalogField("o__order_date__date_dim.year_month", "dimension", "string", "Year month")
+    ex = CatalogExplore(1, None, 1, "Sales", None, "o", "postgresql", "x", [*FIELDS, period])
+    p = Plan(explore=ex, dimensions=[period.ref], measures=["l.net_sales"])
+    ok, why = ground(p, "Doanh số tăng trưởng theo tháng thế nào?",
+                     covered={"doanh số": "l.net_sales", "theo tháng": period.ref})
+    assert why is None and ok.dimensions == [period.ref]

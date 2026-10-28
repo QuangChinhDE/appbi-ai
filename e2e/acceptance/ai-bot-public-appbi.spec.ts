@@ -24,27 +24,32 @@ const OR = JSON.parse(fs.readFileSync(process.env.BOT_ORACLE_FILE || '', 'utf-8'
 test.describe.configure({ mode: 'serial' });
 
 /** PO 2026-10-28: a link's assistant runs on the model and API key its PUBLISHER supplies
- *  (no server default). Every QA link but "full" is given QA_MODEL and the QA key through
- *  the link API; "full" starts without one and P0 configures it through the editor UI. */
-test.beforeAll(async () => {
+ *  (no server default). `withoutKey` = the link's key and model are removed (P0 then
+ *  configures "full" through the editor UI); otherwise QA_MODEL and the QA key are set
+ *  through the link API. */
+async function configureLinks(withoutKey: string[] = []) {
   const owner = await api('qa-chat-owner');
   const listed = await owner.ctx.get(`/api/v1/dashboards/${FX.dashboard_id}/public-links`, { headers: owner.headers });
   expect(listed.status()).toBe(200);
   for (const link of (await listed.json()) as { id: number; name: string; appearance_config: Record<string, unknown> }[]) {
     if (!String(link.name).startsWith('QA Bot')) continue;
     const ac: Record<string, unknown> = { ...(link.appearance_config || {}) };
-    if (link.name === 'QA Bot · full') {
+    if (withoutKey.includes(link.name)) {
       ac.ai_bot_credential_id = null;
-      delete ac.ai_bot_model;
-    } else {
+      ac.ai_bot_model = null;
+    } else if (!ac.ai_bot_key_configured || ac.ai_bot_model !== QA_MODEL) {
       Object.assign(ac, { ai_bot_key: qaKey(), ai_bot_provider: 'openai', ai_bot_model: QA_MODEL });
+    } else {
+      continue;
     }
     const r = await owner.ctx.patch(`/api/v1/dashboards/${FX.dashboard_id}/public-links/${link.id}`,
                                     { headers: owner.headers, data: { appearance_config: ac } });
     expect(r.status(), `configure ${link.name}`).toBe(200);
   }
   await owner.ctx.dispose();
-});
+}
+
+test.beforeAll(async () => { await configureLinks(); });
 
 /** Every console error / page error / 5xx of the public page. */
 function watch(page: Page) {
@@ -109,6 +114,7 @@ async function shot(page: Page, info: import('@playwright/test').TestInfo, name:
 }
 
 test('P0 · the publisher pastes the API key and picks the model in the link editor; the bot becomes ready', async ({ page }, info) => {
+  await configureLinks(['QA Bot · full']);   // the publisher starts from nothing
   const key = qaKey();
   const leaked: string[] = [];
   page.on('response', (r) => {

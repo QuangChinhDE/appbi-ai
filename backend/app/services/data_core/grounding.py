@@ -70,6 +70,21 @@ def _field_words(field) -> set[str]:
 _GENERIC = {"so", "id", "ma", "hang", "don"}
 
 
+_PERIOD_NAMES = re.compile(r"(^|_)(year|month|quarter|week|day|date|yyyymm|year_month|year_quarter|year_week)$")
+
+
+def _is_period(field) -> bool:
+    """A breakdown that IS a period: a date field, or a calendar view's period column
+    ("2024-03" of `…__date_dim.year_month`) - grouping by it is a time breakdown even
+    without a grain (live public-bot run: the model wrote a placeholder grain)."""
+    from app.services.data_core.catalog import is_time
+
+    if is_time(field):
+        return True
+    view, _, name = str(field.ref).rpartition(".")
+    return view.endswith("__date_dim") or bool(_PERIOD_NAMES.search(name.lower()))
+
+
 def _mentioned(field, q: set[str], question_folded: str = "") -> bool:
     """The question names this field: its whole label (or a synonym) appears in it,
     or it shares a word that is not generic — "số", "hàng", "đơn" are in half the
@@ -625,7 +640,8 @@ def _ground(plan, question: str, *, carried: Iterable[str] = (), covered: dict |
         vals = cond.get("value") if isinstance(cond.get("value"), list) else [cond.get("value")]
         for v in vals:
             explained |= syllables(v)
-    if grains or any(c.get("operator") == "date_range" for c in filters.values()):
+    if grains or any(c.get("operator") == "date_range" for c in filters.values()) or any(
+            _is_period(by_ref[d]) for d in dims if d in by_ref):
         # a period the plan groups by or filters to explains the time words and numbers
         explained |= _TIME | {w for w in q if w.isdigit()} | {"den", "tu"}
     unexplained = q - explained
