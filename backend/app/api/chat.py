@@ -10,6 +10,7 @@ read, and every stored answer is re-checked against each reader
 (services/chat/conversations.py).
 
   GET    /chat/catalog                         what I may ask about; Flows I may add
+  GET    /chat/models                          models a conversation may run on; my pasted keys
   GET    /chat/conversations                   mine and shared with me
   POST   /chat/conversations                   start one (no Flow needed)
   GET    /chat/conversations/{id}              its turns, redacted for me
@@ -52,16 +53,38 @@ KEEPALIVE_EVERY = 8.0
 _TASKS: set[asyncio.Task] = set()
 
 
-class NewConversation(BaseModel):
+class _AiChoice(BaseModel):
+    #: the model and API key THIS conversation runs on (no server default). The key is
+    #: write-only: stored encrypted, never returned; `ai_credential_id` reuses one the
+    #: person pasted before.
+    ai_provider: Optional[str] = Field(None, max_length=20)
+    ai_model: Optional[str] = Field(None, max_length=80)
+    ai_api_key: Optional[str] = Field(None, max_length=400)
+    ai_credential_id: Optional[int] = None
+
+    def chooses_ai(self) -> bool:
+        return bool(self.ai_model or self.ai_api_key or self.ai_credential_id)
+
+
+class NewConversation(_AiChoice):
     title: Optional[str] = Field(None, max_length=255)
     #: optional: an Agent Flow to use as this conversation's extension
     extension_flow_key: Optional[str] = Field(None, max_length=64)
 
 
-class ConversationPatch(BaseModel):
+class ConversationPatch(_AiChoice):
     title: Optional[str] = Field(None, max_length=255)
     #: "" removes the extension; absent leaves it unchanged
     extension_flow_key: Optional[str] = Field(None, max_length=64)
+
+
+def _apply_ai(db: Session, user: User, c, body: _AiChoice) -> None:
+    try:
+        conversations.set_ai(db, user, c, provider=body.ai_provider, model=body.ai_model,
+                             api_key=body.ai_api_key, credential_id=body.ai_credential_id)
+    except conversations.AiChoiceRejected as ex:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(ex))
 
 
 class TurnBody(BaseModel):
@@ -146,7 +169,19 @@ def create_conversation(body: NewConversation, db: Session = Depends(get_db),
     if key:
         _usable_flow(db, user, key)
     c = conversations.create(db, user, body.title, key)
+    if body.chooses_ai():
+        _apply_ai(db, user, c, body)
+        db.commit()
     return conversations.conversation_view(db, user, c, "owner", None, with_turns=False)
+
+
+@router.get("/models")
+def ai_models(db: Session = Depends(get_db), user: User = Depends(can_chat)) -> dict[str, Any]:
+    """The models a conversation may run on, and the keys this person pasted before
+    (last characters only), to choose from."""
+    from app.services.ai_runtime import gateway
+
+    return {"providers": gateway.answer_models(), "my_keys": conversations.my_chat_keys(db, user)}
 
 
 @router.get("/conversations/{conversation_id}")
@@ -170,6 +205,8 @@ def patch_conversation(conversation_id: int, body: ConversationPatch, db: Sessio
         if key:
             _usable_flow(db, user, key)
         c.extension_flow_key = key
+    if body.chooses_ai():
+        _apply_ai(db, user, c, body)
     db.commit()
     return conversations.conversation_view(db, user, c, level, None, with_turns=False)
 

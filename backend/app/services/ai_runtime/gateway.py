@@ -90,6 +90,14 @@ class Credential:
     provider: str
     key: str = field(repr=False)
     ref: str = "server"
+    #: the model the person who supplied this key chose for it (AI Chat conversation,
+    #: public link); None = the provider's built-in model (server keys only)
+    model: Optional[str] = None
+
+
+#: Purposes whose model and key are SUPPLIED BY A PERSON (PO 2026-10-28): an AI Chat
+#: conversation's and a public link's. Such a call never falls back to the server's keys.
+USER_KEY_PURPOSES = frozenset({"chat", "public_core"})
 
 
 @dataclass(frozen=True)
@@ -99,8 +107,13 @@ class Billing:
     link_id: Optional[int] = None
     link_usd_per_day: Optional[float] = None
     turn_ref: Optional[str] = None
-    #: a key pinned for this turn (a link's own, from the encrypted store); None = the server's
+    #: a key pinned for this turn (a conversation's or a link's own, from the encrypted
+    #: store); None = the server's, which a USER_KEY_PURPOSES turn may not use
     credential: Optional[Credential] = None
+
+    @property
+    def needs_user_key(self) -> bool:
+        return self.purpose in USER_KEY_PURPOSES
 
 
 _current: contextvars.ContextVar[Optional[Billing]] = contextvars.ContextVar("ai_billing", default=None)
@@ -342,33 +355,73 @@ def server_credentials() -> list[Credential]:
     return out
 
 
-def link_credential(db, appearance_config: Optional[dict]) -> Optional[Credential]:
-    """A public link's own key, from the encrypted store - never from the link's JSON."""
-    cred_id = (appearance_config or {}).get("ai_bot_credential_id")
-    if not cred_id:
+def stored_credential(db, credential_id: Any, model: Optional[str] = None) -> Optional[Credential]:
+    """A key from the encrypted store (ai_provider_credentials) with the model chosen
+    for it. None when it is missing, deleted, unreadable or the model is not one the
+    Answer Core can call on that provider."""
+    if not credential_id:
         return None
     try:
         from app.core.crypto import decrypt_value
         from app.models.ai_provider_credential import AiProviderCredential
 
-        row = db.get(AiProviderCredential, int(cred_id))
+        row = db.get(AiProviderCredential, int(credential_id))
         if row is None or row.deleted_at is not None or not row.secret_enc:
+            return None
+        if model is not None and not answer_model_ok(str(row.provider), model):
             return None
         key = decrypt_value(row.secret_enc)
         if not key:
             return None
-        return Credential(provider=str(row.provider), key=str(key), ref=f"credential:{row.id}")
-    except Exception:  # noqa: BLE001 - an unreadable key is no key; the server's applies
-        logger.warning("[ai_runtime] link credential %s unreadable", cred_id)
+        return Credential(provider=str(row.provider), key=str(key), ref=f"credential:{row.id}",
+                          model=model or None)
+    except Exception:  # noqa: BLE001 - an unreadable key is no key
+        logger.warning("[ai_runtime] stored credential %s unreadable", credential_id)
         return None
 
 
+def link_credential(db, appearance_config: Optional[dict]) -> Optional[Credential]:
+    """A public link's own key and model - never from the link's JSON, never the server's."""
+    ac = appearance_config or {}
+    model = str(ac.get("ai_bot_model") or "").strip()
+    if not model:
+        return None
+    return stored_credential(db, ac.get("ai_bot_credential_id"), model)
+
+
 def readiness(db, appearance_config: Optional[dict] = None) -> dict:
-    """What a publisher may know: is a model ready, whose key pays. No secret."""
-    own = link_credential(db, appearance_config) if appearance_config else None
-    server = server_credentials()
+    """What a publisher may know: does this link have the key and model its owner
+    supplied. No secret; no server fallback (PO 2026-10-28)."""
+    ac = appearance_config or {}
+    own = link_credential(db, ac)
     if own is not None:
-        return {"ready": True, "provider": own.provider, "credential": "link"}
-    if server:
-        return {"ready": True, "provider": server[0].provider, "credential": "server"}
-    return {"ready": False, "provider": None, "credential": None}
+        return {"ready": True, "provider": own.provider, "model": own.model, "credential": "link"}
+    missing = "model" if ac.get("ai_bot_credential_id") and not str(ac.get("ai_bot_model") or "").strip() else "key"
+    return {"ready": False, "provider": None, "model": None, "credential": None, "missing": missing}
+
+
+# ── which models a person may choose ─────────────────────────────────────────
+
+#: the endpoints llm_client can call for a JSON answer
+_JSON_ENDPOINTS = {"openai": {"chat_completions", "responses"}, "anthropic": {"messages"},
+                   "gemini": {"openai_compat"}}
+
+
+def answer_models() -> list[dict]:
+    """The providers and models the Answer Core can run on, for a person to choose."""
+    from app.services.agent_flows import models_catalogue as cat
+
+    out = []
+    for prov, models in cat.MODELS.items():
+        offered = [{"model": m["model"], "label": m.get("label") or m["model"], "lifecycle": m.get("lifecycle"),
+                    "recommended": bool(m.get("recommended"))}
+                   for m in models if m.get("lifecycle") != "retired"
+                   and m.get("endpoint") in _JSON_ENDPOINTS.get(prov, set())]
+        if offered:
+            out.append({"provider": prov, "label": cat.LABELS.get(prov, prov), "models": offered})
+    return out
+
+
+def answer_model_ok(provider: str, model: str) -> bool:
+    return any(p["provider"] == provider and any(m["model"] == model for m in p["models"])
+               for p in answer_models())

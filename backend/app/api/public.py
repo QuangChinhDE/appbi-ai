@@ -1925,7 +1925,7 @@ def get_public_dashboard(
     # so `ai_bot_key_configured` now simply means "ready", kept for older clients.
     safe_appearance: dict = dict(appearance_config or {})
     for _k in ("ai_bot_key", "ai_bot_credential_id", "ai_bot_credential_migrated", "ai_bot_provider",
-               "ai_bot_model", "ai_bot_budget_usd_per_day", "ai_bot_turns_per_hour"):
+               "ai_bot_model", "ai_bot_key_hint", "ai_bot_budget_usd_per_day", "ai_bot_turns_per_hour"):
         safe_appearance.pop(_k, None)
     from app.services.ai_runtime import gateway as _gateway
 

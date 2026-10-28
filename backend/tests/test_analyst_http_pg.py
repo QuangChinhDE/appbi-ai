@@ -56,9 +56,18 @@ def _planner(world, *, view=None, explore=None, dims=("region", "order_date"), g
 
 @pytest.fixture()
 def model(monkeypatch):
-    from app.services.chat import orchestrator
+    from app.services.ai_runtime import gateway
+    from app.services.chat import conversations, orchestrator
 
     deps = orchestrator.core_deps()
+    # The planner model is replaced by `fn`, so these turns call no provider. Every
+    # conversation runs on the key and model its owner chose (PO 2026-10-28); here
+    # each one has them - the rule itself is locked by
+    # test_analyst_sessions_http_pg::test_a_conversation_without_its_own_key_and_model_does_not_ask.
+    monkeypatch.setattr(conversations, "ai_view", lambda db, c: {
+        "provider": "openai", "model": "gpt-4o-mini", "key_hint": "test", "credential_id": 0, "ready": True})
+    monkeypatch.setattr(gateway, "stored_credential", lambda db, cid, model=None: gateway.Credential(
+        provider="openai", key="sk-test-not-a-key", ref="credential:test", model="gpt-4o-mini"))
 
     def use(fn):
         monkeypatch.setattr(deps, "complete", fn)

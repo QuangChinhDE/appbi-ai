@@ -71,6 +71,48 @@ export async function api(who = 'qa-chat-owner') {
   return { ctx, headers };
 }
 
+/** The model the QA journeys choose, and the QA OpenAI key: a file outside every repo
+ *  (QA_OPENAI_KEY_FILE), read here only, never printed or written to a step title. */
+export const QA_MODEL = process.env.QA_CHAT_MODEL || 'gpt-4o-mini';
+
+export function qaKey(): string {
+  const key = fs.readFileSync(process.env.QA_OPENAI_KEY_FILE || '', 'utf-8').trim();
+  expect(key.length > 20, 'QA_OPENAI_KEY_FILE holds a key').toBe(true);
+  return key;
+}
+
+/** Put a secret into an input the way typing does (React sees an input event) without
+ *  the value appearing in a Playwright step title. */
+export async function fillSecret(target: Locator, value: string) {
+  await target.evaluate((el, v) => {
+    const input = el as HTMLInputElement;
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, v);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }, value);
+}
+
+/** PO 2026-10-28: every conversation runs on the model and key its owner chooses. A
+ *  new or not-yet-configured conversation is given QA_MODEL and the QA key - pasted the
+ *  first time, then the key pasted before is reused. */
+export async function ensureModel(page: Page) {
+  const panel = page.getByTestId('chat-model');
+  if (!(await panel.count()) || (await panel.getAttribute('data-ready')) === 'true') return;
+  if (!(await page.getByTestId('chat-model-key').count())) return;   // not this person's conversation
+  await page.getByTestId('chat-model-provider').selectOption('openai');
+  await page.getByTestId('chat-model-model').selectOption(QA_MODEL);
+  const reuse = page.getByTestId('chat-model-reuse');
+  if (await reuse.count()) {
+    await reuse.selectOption(String(await reuse.locator('option').nth(1).getAttribute('value')));
+  } else {
+    await fillSecret(page.getByTestId('chat-model-key'), qaKey());
+  }
+  const save = page.getByTestId('chat-model-save');
+  if (await save.count()) {
+    await save.click();
+    await expect(panel).toHaveAttribute('data-ready', 'true');
+  }
+}
+
 export async function shot(page: Page, info: TestInfo, name: string, fullPage = true) {
   const path = info.outputPath(`${name}.png`);
   await page.screenshot({ path, fullPage });
@@ -92,6 +134,7 @@ export async function chooseSource(page: Page, name = DA3) {
 /** Type a question and press Ask; wait for the NEW exchange's terminal outcome. */
 export async function ask(page: Page, q: string, opts: { addOn?: boolean; timeout?: number } = {}): Promise<Locator> {
   const before = await page.getByTestId('chat-exchange').count();
+  await ensureModel(page);
   if (opts.addOn) await page.getByTestId('chat-use-extension').check();
   await page.getByTestId('chat-question').fill(q);
   await page.getByTestId('chat-ask').click();

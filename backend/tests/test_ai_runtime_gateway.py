@@ -146,10 +146,96 @@ def test_the_llm_client_cannot_be_given_a_key_by_a_caller_and_raises_a_policy_re
     monkeypatch.setattr(llm_client.httpx, "post", lambda *a, **k: sent.append(a) or (_ for _ in ()).throw(
         AssertionError("no request may be sent")))
     monkeypatch.setattr(settings, "AI_MAX_USD_PER_TURN", 0.0000001, raising=False)
-    with gateway.billing(gateway.Billing(purpose="public_core", link_id=1, turn_ref="t3")):
+    # (a public turn runs on the link's pinned key and model: PO 2026-10-28)
+    link_key = gateway.Credential(provider="openai", key="sk-link", ref="credential:9", model="gpt-4o-mini")
+    with gateway.billing(gateway.Billing(purpose="public_core", link_id=1, turn_ref="t3", credential=link_key)):
         with pytest.raises(gateway.AiBudgetExceeded):
             llm_client.LLMClient.complete_json("question", max_tokens=500)
     assert sent == []
+
+
+@pytest.mark.parametrize("purpose", ["chat", "public_core"])
+def test_a_chat_or_public_turn_without_the_persons_key_never_uses_the_servers(ledger, monkeypatch, purpose):
+    """PO 2026-10-28: AI Chat and the public Dashboard AI Bot run on the key and model
+    a PERSON supplied (a conversation's, a link's). With none pinned the call is
+    refused before anything is sent - the server's keys are not a fallback."""
+    from app.core.config import settings
+    from app.services import llm_client
+    from app.services.ai_runtime import gateway
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test-server", raising=False)
+    sent = []
+    monkeypatch.setattr(llm_client.httpx, "post", lambda *a, **k: sent.append(a))
+    with gateway.billing(gateway.Billing(purpose=purpose, link_id=1, turn_ref="t9")):
+        with pytest.raises(gateway.NoCredential):
+            llm_client.LLMClient.complete_json("question", max_tokens=200)
+    assert sent == [] and _rows(ledger) == []
+
+
+def test_the_model_the_person_chose_is_the_model_called(ledger, monkeypatch):
+    from app.services import llm_client
+    from app.services.ai_runtime import gateway
+
+    seen = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"usage": {"prompt_tokens": 5, "completion_tokens": 3},
+                    "choices": [{"message": {"content": '{"ok": true}'}}]}
+
+    monkeypatch.setattr(llm_client.httpx, "post", lambda url, **k: seen.update(url=url, body=k["json"]) or _Resp())
+    mine = gateway.Credential(provider="openai", key="sk-mine", ref="credential:3", model="gpt-4.1")
+    with gateway.billing(gateway.Billing(purpose="chat", user_id="u", turn_ref="t10", credential=mine)):
+        assert llm_client.LLMClient.complete_json("q", max_tokens=100, strong=True) == {"ok": True}
+    assert seen["body"]["model"] == "gpt-4.1" and seen["url"].endswith("/chat/completions")
+
+
+def test_a_responses_api_model_is_called_on_the_responses_endpoint(ledger, monkeypatch):
+    """The GPT-6 family is served on the Responses API: JSON mode via text.format,
+    output read from the message items, usage settled in the ledger."""
+    from app.services import llm_client
+    from app.services.ai_runtime import gateway
+
+    seen = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"model": "gpt-6-luna", "usage": {"input_tokens": 50, "output_tokens": 20},
+                    "output": [{"type": "reasoning", "summary": []},
+                               {"type": "message", "content": [{"type": "output_text", "text": '{"status": "plan"}'}]}]}
+
+    monkeypatch.setattr(llm_client.httpx, "post", lambda url, **k: seen.update(url=url, body=k["json"]) or _Resp())
+    mine = gateway.Credential(provider="openai", key="sk-mine", ref="credential:3", model="gpt-6-luna")
+    with gateway.billing(gateway.Billing(purpose="chat", user_id="u", turn_ref="t11", credential=mine)):
+        assert llm_client.LLMClient.complete_json("q", system="Answer in JSON", max_tokens=100) == {"status": "plan"}
+    body = seen["body"]
+    assert seen["url"].endswith("/v1/responses") and body["model"] == "gpt-6-luna"
+    assert body["text"] == {"format": {"type": "json_object"}} and body["instructions"] == "Answer in JSON"
+    assert "max_tokens" not in body and "temperature" not in body
+    row = _rows(ledger)[-1]
+    assert row["status"] == "settled" and (row["input_tokens"], row["output_tokens"]) == (50, 20)
+
+
+def test_a_link_is_ready_only_with_its_own_key_and_model(ledger, monkeypatch):
+    """No server fallback: the server's key never makes a public link 'ready'."""
+    from app.core.config import settings
+    from app.services.ai_runtime import gateway
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "sk-test-server", raising=False)
+    assert gateway.readiness(None, {})["ready"] is False
+    monkeypatch.setattr(gateway, "stored_credential",
+                        lambda db, cid, model=None: gateway.Credential("openai", "k", f"credential:{cid}", model)
+                        if cid and model else None)
+    assert gateway.readiness(None, {"ai_bot_credential_id": 4})["missing"] == "model"
+    ready = gateway.readiness(None, {"ai_bot_credential_id": 4, "ai_bot_model": "gpt-4o-mini"})
+    assert ready["ready"] is True and ready["model"] == "gpt-4o-mini" and ready["credential"] == "link"
+    assert gateway.answer_model_ok("openai", "gpt-6-luna") and not gateway.answer_model_ok("openai", "nope")
 
 
 def test_a_pinned_link_credential_is_the_only_key_used(ledger, monkeypatch):

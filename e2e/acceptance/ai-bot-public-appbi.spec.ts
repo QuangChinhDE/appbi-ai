@@ -1,6 +1,8 @@
 import { expect, request, test, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 
+import { api, fillSecret, login, QA_MODEL, qaKey } from './ai-chat-appbi.helpers';
+
 /**
  * THE public Dashboard AI Bot on the REAL AppBI stack (Compose project appbi-ai,
  * http://localhost:3000), answered by the ONE Answer Core over the link's PUBLISHED
@@ -14,11 +16,35 @@ import fs from 'node:fs';
  */
 const BASE = process.env.E2E_BASE_URL || 'http://localhost:3000';
 const FX = JSON.parse(fs.readFileSync(process.env.BOT_FIXTURES_FILE || '', 'utf-8')) as {
-  token_full: string; token_locked: string; token_tiny?: string; locked_region: string; charts: Record<string, number>;
+  token_full: string; token_locked: string; token_tiny?: string; token_addon?: string; locked_region: string;
+  charts: Record<string, number>; dashboard_id: number;
 };
 const OR = JSON.parse(fs.readFileSync(process.env.BOT_ORACLE_FILE || '', 'utf-8')) as Record<string, any>;
 
 test.describe.configure({ mode: 'serial' });
+
+/** PO 2026-10-28: a link's assistant runs on the model and API key its PUBLISHER supplies
+ *  (no server default). Every QA link but "full" is given QA_MODEL and the QA key through
+ *  the link API; "full" starts without one and P0 configures it through the editor UI. */
+test.beforeAll(async () => {
+  const owner = await api('qa-chat-owner');
+  const listed = await owner.ctx.get(`/api/v1/dashboards/${FX.dashboard_id}/public-links`, { headers: owner.headers });
+  expect(listed.status()).toBe(200);
+  for (const link of (await listed.json()) as { id: number; name: string; appearance_config: Record<string, unknown> }[]) {
+    if (!String(link.name).startsWith('QA Bot')) continue;
+    const ac: Record<string, unknown> = { ...(link.appearance_config || {}) };
+    if (link.name === 'QA Bot · full') {
+      ac.ai_bot_credential_id = null;
+      delete ac.ai_bot_model;
+    } else {
+      Object.assign(ac, { ai_bot_key: qaKey(), ai_bot_provider: 'openai', ai_bot_model: QA_MODEL });
+    }
+    const r = await owner.ctx.patch(`/api/v1/dashboards/${FX.dashboard_id}/public-links/${link.id}`,
+                                    { headers: owner.headers, data: { appearance_config: ac } });
+    expect(r.status(), `configure ${link.name}`).toBe(200);
+  }
+  await owner.ctx.dispose();
+});
 
 /** Every console error / page error / 5xx of the public page. */
 function watch(page: Page) {
@@ -82,7 +108,51 @@ async function shot(page: Page, info: import('@playwright/test').TestInfo, name:
   await info.attach(name, { path, contentType: 'image/png' });
 }
 
-test('P1 · no setup: the bot answers the total from the published KPI (= SQL); no key, no authed call', async ({ page }, info) => {
+test('P0 · the publisher pastes the API key and picks the model in the link editor; the bot becomes ready', async ({ page }, info) => {
+  const key = qaKey();
+  const leaked: string[] = [];
+  page.on('response', (r) => {
+    if (r.url().includes('/api/')) r.text().then((b) => { if (b.includes(key)) leaked.push(r.url()); }).catch(() => {});
+  });
+  // a viewer first: no key and no model yet -> the bot says it is not ready
+  const viewer = await page.context().browser()!.newContext();
+  const vp = await viewer.newPage();
+  await vp.goto(`${BASE}/d/${FX.token_full}`);
+  await vp.getByTestId('ai-bot-open').click();
+  await expect(vp.getByTestId('ai-bot-not-ready')).toBeVisible();
+
+  await login(page, 'qa-chat-owner');
+  await page.goto(`${BASE}/dashboards/${FX.dashboard_id}`);
+  await page.waitForSelector('[data-dashboard-canvas-root] [data-tile-id]', { timeout: 60_000 });
+  await page.getByTestId('dashboard-more').click();
+  await page.getByTestId('dashboard-open-public-links').click();
+  await page.locator('[data-testid^="public-link-row-"]', { hasText: 'QA Bot · full' }).first().click();
+  await page.getByTestId('public-link-tab-aibot').click();
+  await expect(page.getByTestId('ai-bot-readiness').locator('[data-ready]')).toHaveAttribute('data-ready', 'false');
+  await page.getByTestId('ai-bot-model-key-provider').selectOption('openai');
+  await page.getByTestId('ai-bot-model-key-model').selectOption(QA_MODEL);
+  await fillSecret(page.getByTestId('ai-bot-model-key-key'), key);
+  await shot(page, info, 'P0-editor-filled');
+  await page.getByTestId('public-link-save').click();
+  // reopen: ready, the model named, the key shown only by its last characters
+  await page.locator('[data-testid^="public-link-row-"]', { hasText: 'QA Bot · full' }).first().click();
+  await page.getByTestId('public-link-tab-aibot').click();
+  await expect(page.getByTestId('ai-bot-readiness').locator('[data-ready]')).toHaveAttribute('data-ready', 'true',
+                                                                                             { timeout: 30_000 });
+  await expect(page.getByTestId('ai-bot-readiness')).toContainText(QA_MODEL);
+  await expect(page.getByTestId('ai-bot-model-key-key')).toHaveAttribute('placeholder', new RegExp(`…${key.slice(-4)}`));
+  await expect(page.getByTestId('ai-bot-model-key-key')).toHaveValue('');
+  await shot(page, info, 'P0-editor-ready');
+  // the viewer, again: the bot is ready
+  await vp.reload();
+  await vp.getByTestId('ai-bot-open').click();
+  await expect(vp.getByTestId('ai-bot-panel')).toBeVisible();
+  await expect(vp.getByTestId('ai-bot-not-ready')).toHaveCount(0);
+  await viewer.close();
+  expect(leaked, 'an API response carried the API key').toEqual([]);
+});
+
+test('P1 · the viewer brings no key: the bot answers the total from the published KPI (= SQL); no authed call', async ({ page }, info) => {
   const w = watch(page);
   await openBot(page);
   await expect(page.getByTestId('ai-bot-panel').getByText(/API key/i)).toHaveCount(0);

@@ -18,7 +18,7 @@
  * Public bundle rule: only the public client (`lib/api/public`) - no authed API.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FileText, MessageCircle, Plus, RotateCcw, Send, Square, ThumbsDown, ThumbsUp, X } from 'lucide-react';
+import { Bot, FileText, Plus, RotateCcw, Send, Square, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
 import {
@@ -248,25 +248,34 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="fixed bottom-5 right-5 z-40 flex h-12 items-center gap-2 rounded-full bg-brand px-4 text-small font-emphasis text-text-inverse shadow-linear-md hover:bg-brand-hover"
+          className="fixed bottom-5 right-5 z-50 flex h-11 w-11 items-center justify-center rounded-full shadow-lg transition-all hover:scale-105 active:scale-95"
+          style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)', boxShadow: '0 4px 16px rgba(6,182,212,0.45)' }}
           data-testid="ai-bot-open"
+          title={t('dashboards.aiBot.core.open')}
           aria-label={t('dashboards.aiBot.core.openAria')}
         >
-          <MessageCircle className="h-5 w-5" aria-hidden="true" />
-          <span className="hidden sm:inline">{t('dashboards.aiBot.core.open')}</span>
+          <BotIcon />
         </button>
       )}
       {open && (
+        // A SIDE PANEL IN THE LAYOUT, not an overlay (PO 2026-10-28, the earlier
+        // look): the report's flex row gives it its width and the report narrows
+        // beside it, so no chart is hidden behind the assistant. On a phone the
+        // panel takes the screen width minus a gutter: min(400px, 100vw - 24px).
         <section
-          role="dialog"
+          role="complementary"
           aria-label={t('dashboards.aiBot.core.title')}
           data-testid="ai-bot-panel"
-          className="fixed inset-0 z-50 flex flex-col bg-surface-1 sm:inset-auto sm:bottom-5 sm:right-5 sm:h-[min(640px,calc(100vh-40px))] sm:w-[420px] sm:rounded-xl sm:border sm:border-stroke-strong sm:shadow-linear-lg"
+          style={{ width: 'min(400px, calc(100vw - 24px))' }}
+          className="my-3 mr-1.5 flex min-w-0 flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm sm:mr-3"
         >
-          <header className="flex items-start gap-2 border-b border-stroke-subtle px-4 py-3">
-            <div className="min-w-0 flex-1">
-              <h2 className="truncate text-small font-strong text-text-primary">{t('dashboards.aiBot.core.title')}</h2>
-              <p className="truncate text-label text-text-tertiary">
+          <header className="flex flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))]/60 bg-gradient-to-b from-surface-2 to-surface-1 px-4 py-3">
+            <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-brand to-brand/70 text-white shadow-sm">
+              <Bot className="h-3.5 w-3.5" aria-hidden="true" />
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col leading-tight">
+              <h2 className="truncate text-caption font-strong text-text-primary">{t('dashboards.aiBot.core.title')}</h2>
+              <p className="truncate text-micro text-text-tertiary">
                 {dashboardName ? `${dashboardName} · ` : ''}{t('dashboards.aiBot.core.subtitle')}
               </p>
             </div>
@@ -334,6 +343,22 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
         </section>
       )}
     </>
+  );
+}
+
+/** The assistant's launcher mark (the report bot's original look). */
+function BotIcon() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <line x1="12" y1="2" x2="12" y2="5" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="2" r="1.1" fill="white" />
+      <rect x="3" y="5" width="18" height="13" rx="4" fill="white" fillOpacity="0.95" />
+      <circle cx="8.5" cy="11" r="1.6" fill="#06b6d4" />
+      <circle cx="15.5" cy="11" r="1.6" fill="#06b6d4" />
+      <path d="M9 14.5 Q12 16.5 15 14.5" stroke="#3b82f6" strokeWidth="1.4" strokeLinecap="round" fill="none" />
+      <rect x="1" y="9" width="2" height="4" rx="1" fill="white" fillOpacity="0.85" />
+      <rect x="21" y="9" width="2" height="4" rx="1" fill="white" fillOpacity="0.85" />
+    </svg>
   );
 }
 

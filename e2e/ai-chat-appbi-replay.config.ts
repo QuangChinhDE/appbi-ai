@@ -18,7 +18,8 @@ export default defineConfig({
   outputDir: '../.artifacts/ai-chat-appbi-replay/results',
   use: {
     baseURL: process.env.E2E_BASE_URL || 'http://localhost:3000',
-    trace: 'on',
+    // a real API key is pasted in these journeys (QA_OPENAI_KEY_FILE): no trace, which would keep it
+    trace: process.env.QA_OPENAI_KEY_FILE ? 'off' : 'on',
     video: 'on',
     screenshot: 'on',
     actionTimeout: 20_000,

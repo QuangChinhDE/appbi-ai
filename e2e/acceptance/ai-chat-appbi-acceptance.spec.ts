@@ -1,7 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import {
-  api, ask, chooseSource, DA3, DOMAIN, expectOracle, EXT, login, openChat, ORACLE, OUTCOME, shot, tableOf, watch,
+  api, ask, chooseSource, DA3, DOMAIN, ensureModel, expectOracle, EXT, login, openChat, ORACLE, OUTCOME, shot, tableOf,
+  watch,
 } from './ai-chat-appbi.helpers';
 
 /**
@@ -140,6 +141,7 @@ test('R3 · an ambiguous business term asks which one, and the pick is answered 
 test('R4 · a double click asks once; an outage is an error, never an answer; retry works; network loss is an error', async ({ page }, info) => {
   await openChat(page);
   await chooseSource(page);
+  await ensureModel(page);
   await page.getByTestId('chat-question').fill(QA);
   await page.getByTestId('chat-ask').dblclick();
   await expect(page.getByTestId('chat-exchange').first().locator(OUTCOME).first()).toBeVisible({ timeout: 120_000 });

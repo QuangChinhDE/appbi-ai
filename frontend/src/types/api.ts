@@ -714,6 +714,13 @@ export interface DashboardFilterField {
  * Retired fields (marked @deprecated) are still read from stored configs so old
  * links parse, but the runtime ignores them; the editor never writes new values.
  */
+/** A provider and the models the Answer Core can run on (AI Chat, public bot). */
+export interface AiModelProvider {
+  provider: 'openai' | 'anthropic' | 'gemini' | string;
+  label: string;
+  models: { model: string; label: string; lifecycle?: string | null; recommended?: boolean }[];
+}
+
 export interface PublicLinkAppearanceConfig {
   /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
@@ -792,6 +799,8 @@ export interface PublicLinkAppearanceConfig {
   ai_bot_credential_id?: number | null;
   /** Admin view: the link has its own key. Public view: the assistant is ready. */
   ai_bot_key_configured?: boolean;
+  /** The last characters of the link's stored key (admin only), to recognise it. */
+  ai_bot_key_hint?: string;
   /** Public view only: the assistant can answer now (model and budget available). */
   ai_bot_ready?: boolean;
   /** The link's USD ceiling per rolling 24h (> 0; empty = the server default). */

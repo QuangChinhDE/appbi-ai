@@ -112,6 +112,90 @@ def create(db: Session, user: Any, title: Optional[str] = None,
     return c
 
 
+class AiChoiceRejected(ValueError):
+    pass
+
+
+def set_ai(db: Session, user: Any, c: ChatConversation, *, provider: Optional[str], model: Optional[str],
+           api_key: Optional[str] = None, credential_id: Optional[int] = None) -> None:
+    """The key and model THIS conversation runs on (PO 2026-10-28: supplied by the
+    person, no server default). A pasted key goes to the encrypted store, owned by
+    the person; `credential_id` reuses a key they pasted before (theirs only). The
+    key is never returned - only its last characters."""
+    from app.core.crypto import encrypt_value
+    from app.models.ai_provider_credential import AiProviderCredential
+    from app.services.ai_runtime import gateway
+
+    from app.core.crypto import decrypt_value
+
+    model = (model or "").strip()
+    typed = (api_key or "").strip()
+    if typed:
+        provider = (provider or "").strip().lower()
+        if provider not in ("openai", "anthropic", "gemini"):
+            raise AiChoiceRejected("Nhà cung cấp không hợp lệ.")
+        if not model or not gateway.answer_model_ok(provider, model):
+            raise AiChoiceRejected(f"Model “{model[:60]}” không dùng được với API key {provider}.")
+        try:
+            secret_enc = encrypt_value(typed)
+        except Exception:  # noqa: BLE001
+            secret_enc = ""
+        if not str(secret_enc).startswith("_enc:"):
+            raise AiChoiceRejected("Máy chủ chưa cấu hình mã hoá nên không lưu được API key.")
+        name = f"AI Chat · {provider} · …{typed[-4:]}"
+        same = (db.query(AiProviderCredential)
+                .filter(AiProviderCredential.owner_id == user.id, AiProviderCredential.deleted_at.is_(None),
+                        AiProviderCredential.name.like(name + "%")).all())
+        cred = next((r for r in same if _decrypts_to(decrypt_value, r.secret_enc, typed)), None)
+        if cred is None:  # the same key pasted again is the same stored key
+            cred = AiProviderCredential(name=name if not same else f"{name} ({len(same) + 1})", provider=provider,
+                                        secret_enc=secret_enc, key_hint=typed[-4:], owner_id=user.id)
+            db.add(cred)
+            db.flush()
+    elif credential_id:
+        cred = db.get(AiProviderCredential, int(credential_id))
+        if cred is None or cred.deleted_at is not None or str(cred.owner_id) != str(user.id):
+            raise AiChoiceRejected("Chỉ dùng được API key do chính bạn đã dán.")
+    else:
+        cred = db.get(AiProviderCredential, int(c.ai_credential_id)) if c.ai_credential_id else None
+        if cred is None:
+            raise AiChoiceRejected("Hãy dán API key cho cuộc trò chuyện này.")
+    if not model or not gateway.answer_model_ok(str(cred.provider), model):
+        raise AiChoiceRejected(f"Model “{model[:60]}” không dùng được với API key {cred.provider}.")
+    c.ai_credential_id = int(cred.id)
+    c.ai_model = model
+
+
+def _decrypts_to(decrypt, secret_enc, typed: str) -> bool:
+    try:
+        return decrypt(secret_enc) == typed
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ai_view(db: Session, c: ChatConversation) -> dict:
+    """What anyone reading the conversation may know about its model: provider, model
+    and the key's last characters. Never the key."""
+    from app.models.ai_provider_credential import AiProviderCredential
+
+    cred = db.get(AiProviderCredential, int(c.ai_credential_id)) if c.ai_credential_id else None
+    live = cred is not None and cred.deleted_at is None
+    return {"provider": str(cred.provider) if live else None, "model": c.ai_model if live else None,
+            "key_hint": str(cred.key_hint or "")[-4:] if live else None,
+            "credential_id": c.ai_credential_id if live else None, "ready": bool(live and c.ai_model)}
+
+
+def my_chat_keys(db: Session, user: Any) -> list[dict]:
+    """Keys this person pasted into AI Chat before, to reuse in a new conversation."""
+    from app.models.ai_provider_credential import AiProviderCredential
+
+    rows = (db.query(AiProviderCredential)
+            .filter(AiProviderCredential.owner_id == user.id, AiProviderCredential.deleted_at.is_(None),
+                    AiProviderCredential.name.like("AI Chat · %"))
+            .order_by(AiProviderCredential.id.desc()).limit(20).all())
+    return [{"credential_id": r.id, "provider": r.provider, "key_hint": str(r.key_hint or "")[-4:]} for r in rows]
+
+
 def by_legacy(db: Session, user: Any, kind: str, legacy_id: int) -> Optional[ChatConversation]:
     """An imported conversation by its old id, when this person may read it."""
     c = (db.query(ChatConversation)
@@ -219,7 +303,8 @@ def conversation_view(db: Session, user: Any, c: ChatConversation, level: str, s
     out = {"id": c.id, "title": c.title, "access": level, "can_ask": can_ask(level),
            "is_owner": level == "owner", "extension_flow_key": c.extension_flow_key,
            "created_at": c.created_at.isoformat() if c.created_at else None,
-           "last_active_at": c.last_active_at.isoformat() if c.last_active_at else None}
+           "last_active_at": c.last_active_at.isoformat() if c.last_active_at else None,
+           "ai": ai_view(db, c)}
     if with_turns:
         expire_stale(db, c.id)
         turns = db.query(ChatTurn).filter(ChatTurn.conversation_id == c.id).order_by(ChatTurn.seq).all()

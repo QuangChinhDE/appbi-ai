@@ -8,6 +8,7 @@
  */
 import apiClient from '@/lib/api-client';
 import { parseSseStream } from '@/lib/api/sse';
+import type { AiModelProvider } from '@/types/api';
 
 export interface ChatSource {
   explore_id: number;
@@ -164,6 +165,25 @@ export interface ConversationSummary {
   extension_flow_key: string | null;
   created_at: string | null;
   last_active_at: string | null;
+  /** The model and key THIS conversation runs on (chosen by its owner; no server
+   *  default). The key itself is never returned - only its last characters. */
+  ai?: ConversationAi;
+}
+
+export interface ConversationAi {
+  provider: string | null;
+  model: string | null;
+  key_hint: string | null;
+  credential_id: number | null;
+  ready: boolean;
+}
+
+/** What a conversation may run on: write-only key, or a key the person pasted before. */
+export interface ConversationAiChoice {
+  ai_provider?: string;
+  ai_model?: string;
+  ai_api_key?: string;
+  ai_credential_id?: number | null;
 }
 
 /** A stored turn. `redacted`: the caller may not read its sources NOW (a share never
@@ -228,7 +248,7 @@ export const chatApi = {
     const response = await apiClient.get('/chat/conversations');
     return response.data.conversations;
   },
-  create: async (body: { title?: string | null; extension_flow_key?: string | null } = {}):
+  create: async (body: { title?: string | null; extension_flow_key?: string | null } & ConversationAiChoice = {}):
     Promise<ConversationSummary> => {
     const response = await apiClient.post('/chat/conversations', body);
     return response.data;
@@ -237,8 +257,15 @@ export const chatApi = {
     const response = await apiClient.get(`/chat/conversations/${id}`);
     return response.data;
   },
-  update: async (id: number, body: { title?: string; extension_flow_key?: string }): Promise<ConversationSummary> => {
+  update: async (id: number, body: { title?: string; extension_flow_key?: string } & ConversationAiChoice):
+    Promise<ConversationSummary> => {
     const response = await apiClient.patch(`/chat/conversations/${id}`, body);
+    return response.data;
+  },
+  /** The models a conversation may run on, and the keys I pasted before (last characters). */
+  models: async (): Promise<{ providers: AiModelProvider[];
+                              my_keys: { credential_id: number; provider: string; key_hint: string }[] }> => {
+    const response = await apiClient.get('/chat/models');
     return response.data;
   },
   remove: async (id: number): Promise<void> => {
@@ -279,7 +306,7 @@ export const chatApi = {
       let detail = `HTTP ${response.status}`;
       try {
         const json = await response.json();
-        detail = typeof json?.detail === 'string' ? json.detail : json?.detail?.code ?? detail;
+        detail = typeof json?.detail === 'string' ? json.detail : json?.detail?.message ?? json?.detail?.code ?? detail;
       } catch {
         /* a non-JSON error body is still an error */
       }

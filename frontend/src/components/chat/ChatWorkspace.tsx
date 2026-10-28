@@ -17,7 +17,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  BookOpen, ChevronDown, ChevronUp, Database, History, Loader2, Pencil, Plus, Send, Share2, Sparkles, Square, Trash2,
+  BookOpen, ChevronDown, ChevronUp, Cpu, Database, History, Loader2, Pencil, Plus, Send, Share2, Sparkles, Square,
+  Trash2,
 } from 'lucide-react';
 
 import { Badge } from '@/components/ui/Badge';
@@ -25,13 +26,15 @@ import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Input, Select, Textarea } from '@/components/ui/Input';
 import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { AiModelKeyPicker, type AiModelKeyValue } from '@/components/common/AiModelKeyPicker';
 import { ShareDialog } from '@/components/common/ShareDialog';
 import { ExchangeCard, errorText, type Exchange } from '@/components/chat/ChatTurnView';
 import { useI18n } from '@/providers/LanguageProvider';
 import {
-  chatApi, newIdempotencyKey, TurnRejected, type ChatExtensionOption, type ChatSource, type ConversationDetail,
-  type ConversationSummary, type CoreResponse, type TurnBody,
+  chatApi, newIdempotencyKey, TurnRejected, type ChatExtensionOption, type ChatSource, type ConversationAiChoice,
+  type ConversationDetail, type ConversationSummary, type CoreResponse, type TurnBody,
 } from '@/lib/api/chat';
+import type { AiModelProvider } from '@/types/api';
 
 const CARD = 'rounded-lg border border-stroke-strong bg-surface-1';
 
@@ -45,6 +48,17 @@ function toExchanges(detail: ConversationDetail): Exchange[] {
     question: t.question, envelope: t.envelope, status: t.status, turnId: t.turn_id, redacted: t.redacted,
     redactedReason: t.redacted_reason, askedAt: t.asked_at, askedByMe: t.asked_by_me,
   }));
+}
+
+type MyKey = { credential_id: number; provider: string; key_hint: string };
+type AiDraft = AiModelKeyValue & { credentialId: number | null };
+
+/** The draft as the API takes it; null when it does not name a model AND a key. */
+function aiChoice(d: AiDraft): ConversationAiChoice | null {
+  if (!d.model) return null;
+  if (d.apiKey.trim()) return { ai_provider: d.provider, ai_model: d.model, ai_api_key: d.apiKey.trim() };
+  if (d.credentialId) return { ai_provider: d.provider, ai_model: d.model, ai_credential_id: d.credentialId };
+  return null;
 }
 
 function dataOf(ex: Exchange): CoreResponse | null {
@@ -80,6 +94,12 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
   const [sharing, setSharing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  /** The model and API key a conversation runs on: chosen per conversation, no default. */
+  const [aiProviders, setAiProviders] = useState<AiModelProvider[]>([]);
+  const [myKeys, setMyKeys] = useState<MyKey[]>([]);
+  const [aiDraft, setAiDraft] = useState<AiDraft>({ provider: 'openai', model: '', apiKey: '', credentialId: null });
+  const [editingAi, setEditingAi] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const liveRef = useRef<{ turnId?: string; abort: AbortController; stopRequested?: boolean } | null>(null);
 
@@ -96,6 +116,37 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       .catch(() => setSources([]));
     refreshList();
   }, [refreshList, locale]);
+
+  useEffect(() => {
+    chatApi.models().then((m) => {
+      setAiProviders(m.providers || []);
+      setMyKeys(m.my_keys || []);
+      const first = m.providers?.[0];
+      const pick = first?.models.find((x) => x.recommended) ?? first?.models[0];
+      setAiDraft((d) => (d.model ? d : { ...d, provider: first?.provider ?? 'openai', model: pick?.model ?? '' }));
+    }).catch(() => setAiProviders([]));
+  }, []);
+
+  /** The conversation can ask now: its own model and key, or a complete draft for a new one. */
+  const aiReady = conv ? (!!conv.ai?.ready && !editingAi) : false;
+  const aiUsable = aiReady || !!aiChoice(aiDraft);
+
+  const saveAi = useCallback(async (): Promise<boolean> => {
+    const choice = aiChoice(aiDraft);
+    if (!choice || !currentId) return false;
+    try {
+      const s = await chatApi.update(currentId, choice);
+      setConv((cur) => (cur ? { ...cur, ai: s.ai } : cur));
+      setEditingAi(false);
+      setAiError(null);
+      setAiDraft((d) => ({ ...d, apiKey: '' }));
+      chatApi.models().then((m) => setMyKeys(m.my_keys || [])).catch(() => undefined);
+      return true;
+    } catch (err) {
+      setAiError(errorText(err));
+      return false;
+    }
+  }, [aiDraft, currentId]);
 
   // An old Flow-chat link (/chat?thread=N): open the conversation it became.
   useEffect(() => {
@@ -158,6 +209,10 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
   const ask = useCallback(async (q: string, opts: AskOpts = {}) => {
     const text = q.trim();
     if (!text || busy || readOnly) return;
+    if (!aiReady && !aiChoice(aiDraft)) {
+      setAiError(t('aichat.model.required'));
+      return;
+    }
     setBusy(true);
     setQuestion('');
     const abort = new AbortController();
@@ -167,12 +222,20 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
     try {
       let id = currentId;
       if (!id) {
-        // The first question opens the conversation; its URL is kept from now on.
-        const created = await chatApi.create({ extension_flow_key: pendingFlow || null });
+        // The first question opens the conversation - with the model and key chosen for
+        // it; its URL is kept from now on.
+        const created = await chatApi.create({ extension_flow_key: pendingFlow || null, ...(aiChoice(aiDraft) || {}) });
         id = created.id;
         setCurrentId(id);
         setConv(created);
+        setAiDraft((d) => ({ ...d, apiKey: '' }));
+        setAiError(null);
         window.history.replaceState(null, '', `/chat/c/${id}`);
+      } else if (!aiReady) {
+        const s = await chatApi.update(id, aiChoice(aiDraft) || {});
+        setConv((cur) => (cur ? { ...cur, ai: s.ai } : cur));
+        setEditingAi(false);
+        setAiDraft((d) => ({ ...d, apiKey: '' }));
       }
       const body: TurnBody = {
         question: text, idempotency_key: newIdempotencyKey(), follow_up: hasAnswer,
@@ -215,7 +278,8 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
       setBusy(false);
       setCancelling(false);
     }
-  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, sourceId, refreshList, t, flowName, stopTurn]);
+  }, [busy, readOnly, currentId, pendingFlow, hasAnswer, useFlowNow, sourceId, refreshList, t, flowName, stopTurn,
+      aiReady, aiDraft]);
 
   const cancel = useCallback(async () => {
     const live = liveRef.current;
@@ -368,6 +432,14 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
                    data-testid="chat-read-only">{t('aichat.session.readOnly')}</p>
               ) : null}
 
+              {readOnly ? null : (
+                <ModelPanel providers={aiProviders} myKeys={myKeys} ai={conv?.ai ?? null} ready={aiReady}
+                            canEdit={!conv || conv.is_owner} draft={aiDraft} onDraft={setAiDraft} error={aiError}
+                            existing={!!currentId}
+                            onEdit={() => { setEditingAi(true); setAiError(null); }}
+                            onCancelEdit={() => { setEditingAi(false); setAiError(null); }}
+                            onSave={() => { void saveAi(); }} />
+              )}
               <SourcesPanel sources={sources} />
               {canChooseFlow || flowKey ? (
                 <ExtensionPanel options={extensions} value={flowKey} name={flowName} editable={canChooseFlow}
@@ -453,7 +525,7 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
                               onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
                               placeholder={hasAnswer ? t('aichat.followUpPlaceholder') : t('aichat.placeholder')}
                               className="min-h-[44px] flex-1 resize-y" />
-                    <Button type="submit" variant="primary" size="lg" disabled={!question.trim() || busy}
+                    <Button type="submit" variant="primary" size="lg" disabled={!question.trim() || busy || !aiUsable}
                             leadingIcon={<Send className="h-4 w-4" />} data-testid="chat-ask">
                       {t('aichat.ask')}
                     </Button>
@@ -479,6 +551,75 @@ export default function ChatWorkspace({ conversationId }: { conversationId?: num
                        router.push('/chat');
                      }} />
     </div>
+  );
+}
+
+/** The model and API key THIS conversation runs on (PO 2026-10-28: the person's own;
+ *  no server default). The key is write-only: only its last characters come back. */
+function ModelPanel({ providers, myKeys, ai, ready, canEdit, draft, onDraft, error, existing, onEdit, onCancelEdit,
+  onSave }: {
+  providers: AiModelProvider[]; myKeys: MyKey[]; ai: ConversationSummary['ai'] | null; ready: boolean;
+  canEdit: boolean; draft: AiDraft; onDraft: (d: AiDraft) => void; error: string | null; existing: boolean;
+  onEdit: () => void; onCancelEdit: () => void; onSave: () => void;
+}) {
+  const { t } = useI18n();
+  const reusable = myKeys.filter((k) => k.provider === draft.provider);
+  return (
+    <section className={`${CARD} space-y-2 px-4 py-3 text-caption`} data-testid="chat-model" data-ready={ready}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Cpu className="h-4 w-4 shrink-0 text-brand" aria-hidden />
+        <span className="text-text-secondary">{t('aichat.model.label')}</span>
+        {ready && ai ? (
+          <>
+            <span className="font-emphasis text-text-primary" data-testid="chat-model-current">
+              {ai.model} · key …{ai.key_hint}
+            </span>
+            {canEdit ? (
+              <Button variant="link" size="xs" onClick={onEdit} data-testid="chat-model-change">
+                {t('aichat.model.change')}
+              </Button>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {!ready && canEdit ? (
+        <div className="space-y-2">
+          {providers.length ? (
+            <AiModelKeyPicker providers={providers} testId="chat-model" keyHint={ai?.key_hint}
+                              value={draft} onChange={(next) => onDraft({ ...draft, ...next,
+                                credentialId: next.apiKey ? null : draft.credentialId })} />
+          ) : (
+            <p className="text-label text-text-tertiary">{t('aichat.session.loading')}</p>
+          )}
+          {reusable.length && !draft.apiKey ? (
+            <label className="flex flex-wrap items-center gap-2 text-label text-text-tertiary">
+              {t('aichat.model.reuse')}
+              <Select value={draft.credentialId ? String(draft.credentialId) : ''} data-testid="chat-model-reuse"
+                      className="min-w-0 flex-1 sm:max-w-xs"
+                      onChange={(e) => onDraft({ ...draft, credentialId: e.target.value ? Number(e.target.value) : null })}>
+                <option value="">{t('aichat.model.reuseNone')}</option>
+                {reusable.map((k) => <option key={k.credential_id} value={String(k.credential_id)}>…{k.key_hint}</option>)}
+              </Select>
+            </label>
+          ) : null}
+          {existing ? (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" size="sm" onClick={onSave} disabled={!aiChoice(draft)}
+                      data-testid="chat-model-save">{t('aichat.model.save')}</Button>
+              {ai?.ready ? (
+                <Button variant="ghost" size="sm" onClick={onCancelEdit}>{t('aichat.session.cancelEdit')}</Button>
+              ) : null}
+            </div>
+          ) : (
+            <p className="text-label text-text-tertiary">{t('aichat.model.hint')}</p>
+          )}
+        </div>
+      ) : null}
+      {!ready && !canEdit ? (
+        <p className="text-label text-text-tertiary">{t('aichat.model.ownerOnly')}</p>
+      ) : null}
+      {error ? <p role="alert" className="text-label text-danger" data-testid="chat-model-error">{error}</p> : null}
+    </section>
   );
 }
 

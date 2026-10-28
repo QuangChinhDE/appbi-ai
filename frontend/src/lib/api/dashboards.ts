@@ -9,6 +9,7 @@ import {
   DashboardChartLayout,
   PublicLinkAppearanceConfig,
 } from '@/types/api';
+import type { AiModelProvider } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportAnalyzeResponse,
@@ -731,8 +732,15 @@ export const dashboardApi = {
    *  key)? Never a key or a credential secret. */
   getPublicLinkAiStatus: async (
     dashboardId: number, linkId: number,
-  ): Promise<{ ready: boolean; provider: string | null; credential: 'server' | 'link' | null }> => {
+  ): Promise<{ ready: boolean; provider: string | null; model: string | null;
+               credential: 'link' | null; missing?: 'key' | 'model' }> => {
     const response = await apiClient.get(`/dashboards/${dashboardId}/public-links/${linkId}/ai-status`);
+    return response.data;
+  },
+
+  /** The providers and models a publisher may choose for a link's assistant. */
+  getPublicLinkAiModels: async (): Promise<{ providers: AiModelProvider[] }> => {
+    const response = await apiClient.get('/dashboards/public-links/ai-models');
     return response.data;
   },
 

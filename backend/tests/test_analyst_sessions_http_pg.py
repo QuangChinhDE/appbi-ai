@@ -288,3 +288,37 @@ def test_another_person_cannot_reuse_an_idempotency_key(client, db, world, answe
     assert _ask(client, world["analyst"], answered, Q, key=key).status_code == 200
     stolen = _ask(client, world["viewer"], answered, Q, key=key)
     assert stolen.status_code == 409 and "rows" not in stolen.text
+
+
+def test_a_conversation_without_its_own_key_and_model_does_not_ask(client, db, world):  # noqa: F811
+    """PO 2026-10-28: each AI Chat conversation runs on the API key and model its owner
+    supplied - no server default. Without them a question is refused before any turn
+    or model call; a pasted key is stored encrypted or refused, never kept plain, and
+    is never returned (only its last characters)."""
+    _module(db, world["analyst"])
+    cid = _new(client, world["analyst"])
+    view = client.get(f"/api/v1/chat/conversations/{cid}", headers=world["analyst"].headers).json()
+    assert view["ai"]["ready"] is False
+    r = client.post(f"/api/v1/chat/conversations/{cid}/turns", headers=world["analyst"].headers,
+                    json={"question": Q, "idempotency_key": uuid.uuid4().hex})
+    assert r.status_code == 409 and r.json()["detail"]["code"] == "ai_model_required"
+    with sa.create_engine(_owner_url()).connect() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM chat_turns t JOIN chat_conversations v "
+                                 "ON v.id = t.conversation_id WHERE v.id = :i"), {"i": cid}).scalar() == 0
+    models = client.get("/api/v1/chat/models", headers=world["analyst"].headers).json()
+    assert any(p["provider"] == "openai" for p in models["providers"])
+    secret = "sk-test-" + uuid.uuid4().hex
+    r = client.patch(f"/api/v1/chat/conversations/{cid}", headers=world["analyst"].headers,
+                     json={"ai_provider": "openai", "ai_model": "gpt-4o-mini", "ai_api_key": secret})
+    assert secret not in r.text
+    if r.status_code == 422:  # no encryption configured here: refused, never stored plain
+        assert "mã hoá" in r.json()["detail"]
+    else:
+        assert r.status_code == 200 and r.json()["ai"] == {**r.json()["ai"], "ready": True, "model": "gpt-4o-mini",
+                                                            "key_hint": secret[-4:]}
+    with sa.create_engine(_owner_url()).connect() as c:
+        assert c.execute(sa.text("SELECT count(*) FROM ai_provider_credentials WHERE secret_enc = :s"),
+                         {"s": secret}).scalar() == 0
+    bad = client.patch(f"/api/v1/chat/conversations/{cid}", headers=world["analyst"].headers,
+                       json={"ai_provider": "openai", "ai_model": "not-a-model", "ai_api_key": secret})
+    assert bad.status_code == 422 and secret not in bad.text

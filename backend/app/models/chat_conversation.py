@@ -55,6 +55,10 @@ class ChatConversation(Base):
     #: the OPTIONAL Agent Flow bound to this conversation as an extension. NULL is the
     #: normal case: the Data Core answers on its own.
     extension_flow_key = Column(String(64), nullable=True)
+    #: the API key (encrypted store) and model the person chose for THIS conversation;
+    #: no server default - a conversation without both does not ask (PO 2026-10-28)
+    ai_credential_id = Column(Integer, ForeignKey("ai_provider_credentials.id", ondelete="SET NULL"), nullable=True)
+    ai_model = Column(String(80), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_active_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)

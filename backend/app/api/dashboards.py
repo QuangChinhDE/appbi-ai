@@ -257,6 +257,15 @@ def list_dashboards(
     return items
 
 
+@router.get("/public-links/ai-models")
+def public_link_ai_models(current_user: User = Depends(get_current_user)) -> dict:
+    """The providers and models a publisher may choose for a public link's assistant
+    (with the API key they paste). There is no server default to fall back to."""
+    from app.services.ai_runtime import gateway
+
+    return {"providers": gateway.answer_models()}
+
+
 @router.get("/accessible-summary")
 def list_accessible_dashboards_summary(
     db: Session = Depends(get_db),
@@ -3450,6 +3459,15 @@ def _sanitize_link_for_admin(link: DashboardPublicLink) -> DashboardPublicLink:
         raw = dict(link.appearance_config)
         raw.pop("ai_bot_key", None)
         raw["ai_bot_key_configured"] = bool(raw.get("ai_bot_credential_id"))
+        if raw.get("ai_bot_credential_id"):
+            # the last characters only, so the publisher recognises which key it is
+            from sqlalchemy.orm import object_session
+
+            from app.models.ai_provider_credential import AiProviderCredential
+
+            s = object_session(link)
+            cred = s.get(AiProviderCredential, int(raw["ai_bot_credential_id"])) if s is not None else None
+            raw["ai_bot_key_hint"] = str(getattr(cred, "key_hint", "") or "")[-4:] if cred is not None else ""
         set_committed_value(link, "appearance_config", raw)
     return link
 
@@ -3462,8 +3480,9 @@ def _apply_ai_credential(db: Session, user: User, incoming: dict, existing: dict
       credential store, owned by the person saving, and the link references it;
       without encryption configured the save is refused rather than stored plain.
     * `ai_bot_credential_id` may only name a live credential the saver owns.
-    * absent -> the link keeps the credential it had; null -> it has none (the
-      server's key, under the link's budget, answers).
+    * absent -> the link keeps the credential it had; null -> it has none, and the
+      bot is not ready (there is no server key to fall back to).
+    * `ai_bot_model` must be a model the Answer Core can call with that key.
     """
     from app.core.crypto import encrypt_value
     from app.models.ai_provider_credential import AiProviderCredential
@@ -3471,6 +3490,7 @@ def _apply_ai_credential(db: Session, user: User, incoming: dict, existing: dict
 
     out = dict(incoming or {})
     out.pop("ai_bot_key_configured", None)
+    out.pop("ai_bot_key_hint", None)
     previous = dict(existing or {})
     typed = str(out.pop("ai_bot_key", None) or "").strip()
     if typed:
@@ -3512,6 +3532,23 @@ def _apply_ai_credential(db: Session, user: User, incoming: dict, existing: dict
         out["ai_bot_credential_migrated"] = True
     else:
         out.pop("ai_bot_credential_migrated", None)
+    # The MODEL the publisher chose for that key (PO 2026-10-28: the key and the model
+    # are the publisher's; there is no server default). Absent keeps the previous one.
+    if "ai_bot_model" not in out and previous.get("ai_bot_model"):
+        out["ai_bot_model"] = previous["ai_bot_model"]
+    model = str(out.get("ai_bot_model") or "").strip()
+    if model and out.get("ai_bot_credential_id"):
+        from app.services.ai_runtime import gateway
+
+        cred = db.get(AiProviderCredential, int(out["ai_bot_credential_id"]))
+        provider = str(getattr(cred, "provider", "") or "")
+        if not gateway.answer_model_ok(provider, model):
+            raise HTTPException(status_code=422, detail=f"Model “{model[:60]}” không dùng được với API key {provider}.")
+        out["ai_bot_provider"] = provider
+    if model:
+        out["ai_bot_model"] = model
+    else:
+        out.pop("ai_bot_model", None)
     return out
 
 
@@ -3703,7 +3740,8 @@ def get_public_link_ai_status(
     )
     if not link:
         raise HTTPException(status_code=404, detail="Public link not found")
-    return gateway.readiness(db, dict(link.appearance_config or {}))
+    # with the models a publisher may choose for their key (no server default)
+    return {**gateway.readiness(db, dict(link.appearance_config or {})), "models": gateway.answer_models()}
 
 
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)

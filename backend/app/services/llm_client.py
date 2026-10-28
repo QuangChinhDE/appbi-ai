@@ -99,21 +99,31 @@ def _call_openai(
     from app.services import llm_test_budget as _budget
     from app.services.ai_runtime import gateway
 
+    spec = _openai_spec(model)
+    if spec.get("endpoint") == "responses" and not images:
+        return _call_openai_responses(key, system, prompt, max_tokens, model, timeout)
+    reasoning = bool(spec.get("reasoning"))
+    if reasoning:
+        max_tokens = max(int(max_tokens or 0), _REASONING_MIN_TOKENS)  # thinking spends from the same cap
     res = gateway.authorize("openai", model, system, prompt, max_tokens)
     max_tokens = res.max_tokens
     rid = _budget.reserve("openai", model, system, prompt, max_tokens)  # inert unless a test budget is set
+    payload: dict = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning:  # reasoning models take max_completion_tokens and no temperature
+        payload["max_completion_tokens"] = max_tokens
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = 0.2
     try:
         with _budget.metered(rid):
             resp = httpx.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-                    "max_tokens": max_tokens,
-                    "temperature": 0.2,
-                    "response_format": {"type": "json_object"},
-                },
+                json=payload,
                 timeout=timeout,
             )
         resp.raise_for_status()
@@ -127,6 +137,55 @@ def _call_openai(
     gateway.settle(res, body.get("usage") or {})
     parsed = _parse_json_object(body["choices"][0]["message"]["content"])
     _budget.settle(rid, "openai", model, body.get("usage") or {}, raw=parsed, model_returned=str(body.get("model") or ""))
+    return parsed
+
+
+#: a reasoning model spends thinking tokens from the output cap before it writes the JSON
+_REASONING_MIN_TOKENS = 4000
+
+
+def _openai_spec(model: str) -> dict:
+    try:
+        from app.services.agent_flows import models_catalogue as cat
+
+        return cat.spec("openai", model) or {}
+    except Exception:  # noqa: BLE001 - an uncatalogued model is called as a chat model
+        return {}
+
+
+def _call_openai_responses(key: str, system: str, prompt: str, max_tokens: int, model: str,
+                           timeout: float = _TIMEOUT) -> Optional[dict]:
+    """A model OpenAI serves on the Responses API (the GPT-6 family): JSON mode via
+    `text.format`, reasoning kept low, usage settled exactly like a chat call."""
+    from app.services import llm_test_budget as _budget
+    from app.services.ai_runtime import gateway
+
+    spec = _openai_spec(model)
+    if spec.get("reasoning"):
+        max_tokens = max(int(max_tokens or 0), _REASONING_MIN_TOKENS)
+    res = gateway.authorize("openai", model, system, prompt, max_tokens)
+    rid = _budget.reserve("openai", model, system, prompt, res.max_tokens)
+    payload: dict = {"model": model, "instructions": system, "input": prompt, "store": False,
+                     "max_output_tokens": res.max_tokens, "text": {"format": {"type": "json_object"}}}
+    if spec.get("reasoning"):
+        payload["reasoning"] = {"effort": "low"}
+    try:
+        with _budget.metered(rid):
+            resp = httpx.post("https://api.openai.com/v1/responses",
+                              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                              json=payload, timeout=timeout)
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:
+        _budget.settle(rid, "openai", model, {}, error=type(exc).__name__)
+        _settle_failed(res, exc)
+        raise
+    usage = body.get("usage") or {}
+    gateway.settle(res, usage)
+    text = "".join(c.get("text") or "" for item in body.get("output") or [] if item.get("type") == "message"
+                   for c in item.get("content") or [] if c.get("type") == "output_text")
+    parsed = _parse_json_object(text)
+    _budget.settle(rid, "openai", model, usage, raw=parsed, model_returned=str(body.get("model") or ""))
     return parsed
 
 
@@ -264,13 +323,20 @@ class LLMClient:
         from app.services import llm_test_budget as _budget
         from app.services.ai_runtime import gateway
 
-        pinned = gateway.current().credential
+        bill = gateway.current()
+        pinned = bill.credential
         if pinned is not None:
-            # A turn that pinned its key (a public link's own) uses that key only:
-            # the credential and the budget belong to the same billing principal.
+            # A turn that pinned its key (a conversation's or a link's own) uses that key
+            # and the model its owner chose, only: the credential and the budget belong
+            # to the same billing principal.
             call, provider_model = _CALLS[pinned.provider]
             providers = [(pinned.provider, pinned.key, call,
-                          _DESIGN_MODELS[pinned.provider] if strong else provider_model)]
+                          pinned.model or (_DESIGN_MODELS[pinned.provider] if strong else provider_model))]
+        elif bill.needs_user_key:
+            # AI Chat and the public bot run on the key and model a person supplied -
+            # never on the server's (PO 2026-10-28)
+            raise gateway.NoCredential("Chưa có API key và model cho trợ lý AI này.",
+                                       {"reason": "user_key_required"})
 
         if _budget.active():
             # Under a test budget there is no automatic fallback to another provider

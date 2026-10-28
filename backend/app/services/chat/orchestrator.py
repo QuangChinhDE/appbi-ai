@@ -101,6 +101,10 @@ def begin(db: Session, user: Any, conversation_id: int, req: TurnRequest) -> tup
         raise TurnRejected(503, "AI Chat đang tạm dừng để bảo trì. Lịch sử hội thoại vẫn xem được.")
     if req.extension not in extension.MODES:
         raise TurnRejected(422, "extension must be auto, always or never")
+    if not conversations.ai_view(db, c)["ready"]:
+        # the key and model are the person's, per conversation; there is no server default
+        raise TurnRejected(409, {"code": "ai_model_required",
+                                 "message": "Hãy chọn model và dán API key cho cuộc trò chuyện này trước khi hỏi."})
 
     if db.get_bind().dialect.name == "postgresql":
         # One person's admission at a time: the ceilings below count rows this
@@ -196,16 +200,26 @@ def _core(turn_id: str, user_id: Any, conversation_id: int, req: TurnRequest,
         catalog = conversations.data_catalog(db, user)
         scope = conversations.ViewerScope.of(db, user, catalog)
         previous = conversations.previous_plan(db, c, scope, user.id) if req.follow_up else None
+        from app.services.ai_runtime import gateway
+
+        # every model call of this turn runs on the conversation's own key and model
+        bill = gateway.Billing(purpose="chat", user_id=str(user.id), turn_ref=turn_id,
+                               credential=gateway.stored_credential(db, c.ai_credential_id, c.ai_model or ""))
+        if bill.credential is None:
+            return env.failed("model_unavailable", "Cuộc trò chuyện này chưa có API key và model dùng được."), [], []
         try:
-            core = ask(db, user, req.question, core_deps(), previous=previous, turn_id=turn_id,
-                       drop_consent=req.drop_consent,
-                       consented_plan=req.consented_plan if isinstance(req.consented_plan, dict) else None,
-                       dataset_id=req.dataset_id,
-                       value_choice=req.value_choice if isinstance(req.value_choice, dict) else None,
-                       choice_token=req.choice_token, on_step=on_step,
-                       should_stop=lambda: not is_running(turn_id))
+            with gateway.billing(bill):
+                core = ask(db, user, req.question, core_deps(), previous=previous, turn_id=turn_id,
+                           drop_consent=req.drop_consent,
+                           consented_plan=req.consented_plan if isinstance(req.consented_plan, dict) else None,
+                           dataset_id=req.dataset_id,
+                           value_choice=req.value_choice if isinstance(req.value_choice, dict) else None,
+                           choice_token=req.choice_token, on_step=on_step,
+                           should_stop=lambda: not is_running(turn_id))
         except TurnStopped:
             return env.cancelled(), [], []
+        except gateway.AiPolicyRefused as refused:
+            return env.refused(refused.code, refused.message_vi), [], []
         except Exception as ex:  # noqa: BLE001 - classified below, re-raised when it is not the source's
             if _is_source_error(ex):
                 logger.warning("[chat] source unavailable for turn %s: %s", turn_id, type(ex).__name__)

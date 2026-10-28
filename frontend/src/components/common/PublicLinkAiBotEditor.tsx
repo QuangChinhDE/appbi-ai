@@ -3,19 +3,20 @@
 import { useEffect, useState } from 'react';
 import { Bot, Workflow } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { PublicLinkAppearanceConfig } from '@/types/api';
+import type { AiModelProvider, PublicLinkAppearanceConfig } from '@/types/api';
 import { Input } from '@/components/ui/Input';
 import { dashboardApi } from '@/lib/api/dashboards';
+import { AiModelKeyPicker } from '@/components/common/AiModelKeyPicker';
 import { FlowBindingEditor, type BindingFlush } from '@/components/common/FlowBindingEditor';
 
 // The AI assistant of one public link.
 //
 // PO directive (2026-10-28): the public Dashboard AI Bot is a consumer of the ONE
-// Answer Core. Turning it on is enough: viewers ask about the published report and
-// the Core answers from its charts, with the link's filters, locks and pages. There
-// is no flow to pick first, no key to paste, no model or "thinking" mode to choose:
-// the credential is the server's (or a key this link already had, kept encrypted),
-// and the budget below is enforced on the server for every model call.
+// Answer Core. Viewers ask about the published report and the Core answers from its
+// charts, with the link's filters, locks and pages. No flow to pick first. The MODEL
+// and the API KEY are the publisher's (pasted here, stored encrypted, never shown
+// again) - there is no server default; the budget below is enforced on the server
+// for every model call.
 //
 // An Agent Flow stays available as an OPTIONAL add-on: the Core may call it for
 // documents (policies, procedures); it never answers in the Core's place and never
@@ -32,7 +33,8 @@ interface PublicLinkAiBotEditorProps {
   registerBindingFlush?: (flush: BindingFlush | null) => void;
 }
 
-type Readiness = { ready: boolean; provider: string | null; credential: 'server' | 'link' | null };
+type Readiness = { ready: boolean; provider: string | null; model: string | null;
+                   credential: 'link' | null; missing?: 'key' | 'model' };
 
 function asPositive(raw: string): number | null {
   const v = Number(raw);
@@ -44,6 +46,16 @@ export function PublicLinkAiBotEditor({
 }: PublicLinkAiBotEditorProps) {
   const enabled = value.ai_bot_enabled === true;
   const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [providers, setProviders] = useState<AiModelProvider[]>([]);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let stale = false;
+    dashboardApi.getPublicLinkAiModels()
+      .then((r) => { if (!stale) setProviders(r.providers || []); })
+      .catch(() => { if (!stale) setProviders([]); });
+    return () => { stale = true; };
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled || !linkId) return undefined;
@@ -52,7 +64,7 @@ export function PublicLinkAiBotEditor({
       .then((r) => { if (!stale) setReadiness(r); })
       .catch(() => { if (!stale) setReadiness(null); });
     return () => { stale = true; };
-  }, [dashboardId, enabled, linkId, value.ai_bot_credential_id]);
+  }, [dashboardId, enabled, linkId, value.ai_bot_credential_id, value.ai_bot_model]);
 
   const patch = <K extends keyof PublicLinkAppearanceConfig>(key: K, next: PublicLinkAppearanceConfig[K]) =>
     onChange({ ...value, [key]: next });
@@ -66,7 +78,7 @@ export function PublicLinkAiBotEditor({
         </div>
         <p className="mb-4 text-caption leading-6 text-text-tertiary">
           Người xem link công khai hỏi về số liệu của báo cáo; trợ lý trả lời từ chính các biểu đồ đã
-          công khai, đúng bộ lọc và khoá của link này. Không cần tạo Agent Flow hay nhập API key.
+          công khai, đúng bộ lọc và khoá của link này. Chọn model và dán API key của bạn để trợ lý hoạt động.
         </p>
 
         <button
@@ -98,32 +110,42 @@ export function PublicLinkAiBotEditor({
 
         {enabled && (
           <div className="mt-4 space-y-4 rounded-lg border border-brand/20 bg-brand/5 p-4">
+            <div>
+              <p className="mb-2 text-tiny font-strong text-text-secondary">Model và API key của trợ lý</p>
+              {providers.length > 0 ? (
+                <AiModelKeyPicker
+                  providers={providers}
+                  testId="ai-bot-model-key"
+                  keyHint={value.ai_bot_key_configured ? value.ai_bot_key_hint : null}
+                  value={{ provider: value.ai_bot_provider || 'openai', model: value.ai_bot_model || '',
+                           apiKey: value.ai_bot_key || '' }}
+                  onChange={(next) => onChange({
+                    ...value, ai_bot_provider: next.provider, ai_bot_model: next.model,
+                    ai_bot_key: next.apiKey || undefined,
+                  })}
+                />
+              ) : (
+                <p className="text-tiny text-text-tertiary">Đang tải danh sách model…</p>
+              )}
+            </div>
+
             <div data-testid="ai-bot-readiness">
               {!linkId ? (
-                <p className="text-tiny text-text-tertiary">Lưu link để kiểm tra trạng thái mô hình AI.</p>
+                <p className="text-tiny text-text-tertiary">Lưu link để kiểm tra trạng thái trợ lý.</p>
               ) : readiness === null ? (
-                <p className="text-tiny text-text-tertiary">Đang kiểm tra mô hình AI…</p>
+                <p className="text-tiny text-text-tertiary">Đang kiểm tra trạng thái trợ lý…</p>
               ) : readiness.ready ? (
-                <p className="flex items-center gap-1.5 text-tiny text-text-secondary">
+                <p className="flex items-center gap-1.5 text-tiny text-text-secondary" data-ready="true">
                   <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-success" />
-                  Mô hình AI sẵn sàng
-                  {readiness.credential === 'link' ? ' — dùng API key riêng của link (đã mã hoá).'
-                    : ' — dùng cấu hình AI của hệ thống.'}
+                  Trợ lý sẵn sàng — {readiness.model} với API key của bạn (đã mã hoá).
                 </p>
               ) : (
-                <p className="flex items-center gap-1.5 text-tiny text-warning">
+                <p className="flex items-center gap-1.5 text-tiny text-warning" data-ready="false">
                   <span className="inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-warning" />
-                  Chưa có mô hình AI được cấu hình trên máy chủ. Người xem sẽ thấy trợ lý chưa sẵn sàng.
+                  {readiness.missing === 'model'
+                    ? 'Chưa chọn model cho API key của link. Người xem sẽ thấy trợ lý chưa sẵn sàng.'
+                    : 'Chưa có API key cho trợ lý. Người xem sẽ thấy trợ lý chưa sẵn sàng.'}
                 </p>
-              )}
-              {value.ai_bot_key_configured && (
-                <button
-                  type="button"
-                  className="mt-1.5 text-tiny text-brand underline-offset-2 hover:underline"
-                  onClick={() => onChange({ ...value, ai_bot_credential_id: null, ai_bot_key_configured: false })}
-                >
-                  Bỏ API key riêng, dùng cấu hình AI của hệ thống
-                </button>
               )}
             </div>
 
