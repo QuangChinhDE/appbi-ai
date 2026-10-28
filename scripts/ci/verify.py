@@ -76,12 +76,18 @@ if os.name == "nt" and not os.environ.get("WT_SESSION"):
         GREEN = RED = YELLOW = BOLD = OFF = ""
 
 
+#: why a required `tsc` gate has no command of its own: the tier's typecheck IS that gate
+TYPECHECK_COVERS = "covered by this tier's frontend typecheck"
+
+
 class Report:
     def __init__(self) -> None:
         self.failed: list[str] = []
         self.passed: list[str] = []
         self.skipped: list[tuple[str, str]] = []
         self.unverified: list[tuple[str, str]] = []
+        #: the tier's frontend typecheck: None = not run, else ("ok"|"fail"|"skip", detail)
+        self.typecheck: tuple[str, str] | None = None
 
     def section(self, title: str) -> None:
         print(f"\n{BOLD}> {title}{OFF}")
@@ -208,7 +214,7 @@ def plan_command(test_id: str, spec: dict) -> tuple[list[str] | None, Path, dict
 
     # The frontend typecheck is already run by the tier itself.
     if "tsc --noEmit" in cmd:
-        return None, REPO_ROOT, {}, "covered by this tier's frontend typecheck"
+        return None, REPO_ROOT, {}, TYPECHECK_COVERS
 
     return None, REPO_ROOT, {}, f"command not auto-runnable here: {cmd}"
 
@@ -229,6 +235,20 @@ def run_required_tests(core, files: list[str], rep: Report) -> None:
         test_id = entry.get("id") if isinstance(entry, dict) else str(entry)
         spec = registry.get(test_id) or {}
         argv, cwd, env, why = plan_command(test_id, spec)
+        if argv is None and why == TYPECHECK_COVERS:
+            # THE GATE IS THE TIER'S OWN TYPECHECK. It used to be reported UNVERIFIED
+            # even right after that typecheck passed. Its result is the gate's result;
+            # a tier that did not run it (no frontend file changed) runs it now.
+            if rep.typecheck is None:
+                frontend_typecheck(rep)
+            state, detail = rep.typecheck or ("skip", "typecheck did not run")
+            if state == "ok":
+                rep.ok(f"{test_id} ({detail})")
+            elif state == "fail":
+                rep.bad(f"{test_id} ({detail})")
+            else:
+                rep.unverifiable(test_id, detail)
+            continue
         if argv is None:
             rep.unverifiable(test_id, why)
             continue
@@ -249,15 +269,19 @@ def frontend_typecheck(rep: Report) -> None:
     rep.section("Frontend typecheck (tsc --noEmit)")
     tsc = REPO_ROOT / "frontend" / "node_modules" / "typescript" / "bin" / "tsc"
     if not tsc.exists():
-        rep.skip("tsc", "typescript not installed in frontend/node_modules")
+        rep.typecheck = ("skip", "typescript not installed in frontend/node_modules")
+        rep.skip("tsc", rep.typecheck[1])
         return
     result = run(["node", str(tsc), "--noEmit", "--incremental", "false"],
                  REPO_ROOT / "frontend")
     if result is None:
-        rep.skip("tsc", "node not on PATH")
+        rep.typecheck = ("skip", "node not on PATH")
+        rep.skip("tsc", rep.typecheck[1])
     elif result.returncode == 0:
+        rep.typecheck = ("ok", "no type errors")
         rep.ok("no type errors")
     else:
+        rep.typecheck = ("fail", "frontend type errors")
         print((result.stdout or "")[-2500:])
         rep.bad("frontend type errors")
 
