@@ -300,7 +300,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             raise
         plan = core.get("plan") if core.get("status") == "answered" and isinstance(core.get("plan"), dict) else None
         e = env.from_core(core)
-        target = publisher_guide.target_for(guide, plan, core) if plan else None
+        target = publisher_guide.target_for(guide, plan, core, _filters_in_force(link.ctx, core)) if plan else None
         if target is not None:
             e = env.with_target(e, target)
         refused = guided_analysis.eligible(e, req.question, has_notes=knows, has_addon=bool(link.flow_key))
@@ -329,6 +329,16 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
         return e, plan, link.flow_key, link.appearance
     finally:
         db.close()
+
+
+def _filters_in_force(ctx: Any, core: dict) -> list:
+    """The filters the chart the Core read ran under, beyond the question's own: the
+    link's / viewer's (per chart when a custom-scope slicer applies) and its page bounds."""
+    cid = (core.get("evidence") or {}).get("chart_id")
+    by_chart = getattr(ctx, "public_filters_by_chart", None) or {}
+    pages = getattr(ctx, "page_scope_by_chart", None) or {}
+    return [*(by_chart.get(cid) if cid in by_chart else getattr(ctx, "public_filters", None) or []),
+            *(pages.get(cid) or [])]
 
 
 def _core_answer(question: str, e: dict) -> dict:

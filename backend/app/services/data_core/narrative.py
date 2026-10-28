@@ -136,6 +136,11 @@ def _label(d: date, grain: str) -> str:
     return d.isoformat()
 
 
+def _member(v) -> str:
+    """A group's name as the reader reads it: a blank member is "(trống)", never "None"."""
+    return "(trống)" if v is None or (isinstance(v, str) and not v.strip()) else str(v)
+
+
 def _thin_edges(series: dict, present: set, grain: str, today: date) -> list[date]:
     """The edge periods `chart_value_normalization.time_completeness` calls
     `edge_low_volume`, computed on the periods' totals."""
@@ -164,7 +169,7 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
             continue  # counted by the time_nulls check
         d = _start(d, grain)
         present.add(d)
-        key = str(r.get(ccol["name"])) if ccol else m["label"]
+        key = _member(r.get(ccol["name"])) if ccol else m["label"]
         v = _num(r.get(m["name"]))
         prev = series[key].get(d, 0.0)
         series[key][d] = None if v is None or prev is None else prev + v
@@ -282,7 +287,7 @@ def _leaders(known: list[tuple[str, float]], lowest: bool = False) -> list[str]:
 def _ranking(rows, m, ccol, checks, order: str = "desc", top: Optional[int] = None, *,
              additive: bool = True) -> dict:
     # A NULL measure is UNKNOWN, not zero: it is neither ranked nor summed.
-    known = [(str(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
+    known = [(_member(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
     unknown = [k for k, v in known if v is None]
     vals = sorted(((k, v) for k, v in known if v is not None), key=lambda kv: kv[1], reverse=(order != "asc"))
     if not vals:

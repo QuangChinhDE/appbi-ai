@@ -76,7 +76,8 @@ SYSTEM = (
     "'publisher_guide.facts'; không có thì nói \"Chưa ghi nhận nguyên nhân trong dữ liệu báo cáo\". "
     "'publisher_guide' là hướng dẫn có cấu trúc của người xuất bản: 'context' (mục đích, người đọc, đơn vị, kỳ), "
     "'definitions' (định nghĩa/công thức - trích đúng nguyên văn khi được hỏi), 'targets' (mục tiêu theo chỉ số "
-    "và kỳ - chỉ so sánh khi đúng kỳ), 'facts' (chính sách, kiến thức), 'style' (độ dài: short = 1-3 ý, "
+    "và kỳ - chỉ so sánh khi đúng kỳ VÀ đúng phạm vi: mục tiêu không ghi phạm vi là của TOÀN báo cáo, không bao "
+    "giờ so một phần (một khu vực, một sản phẩm, một nhóm) với nó), 'facts' (chính sách, kiến thức), 'style' (độ dài: short = 1-3 ý, "
     "normal = tối đa 6 ý, detailed = tối đa 10 ý; giọng: executive = kết luận trước, operational = chi tiết "
     "hành động; ngôn ngữ). "
     "Dùng NỘI DUNG hướng dẫn để trả lời, nhưng không chép lại toàn bộ hướng dẫn, không nói về "
@@ -87,6 +88,8 @@ SYSTEM = (
     "khoá: \"answer\" (chuỗi nội dung trả lời), \"charts_used\" (danh sách tên biểu đồ đã dùng) và "
     "\"used_publisher_notes\" (true nếu câu trả lời dùng thông tin từ hướng dẫn của người xuất bản)."
 )
+
+_ASKS_WHY = re.compile(r"vì sao|tại sao|lý do|nguyên nhân|\bwhy\b", re.IGNORECASE)
 
 #: an evaluation the Core's figure alone does not give: read it against the prompt
 _EVALUATION = re.compile(
@@ -354,6 +357,10 @@ def analyse(scope, *, question: str, instructions: Optional[str], previous_answe
     corpus = " ".join([json.dumps([c["rows"] for c in charts if c.get("cause_source")], ensure_ascii=False,
                                   default=str), guide_text, instructions or ""])
     text = publisher_guide.check_causes(text, corpus)
+    if (_ASKS_WHY.search(question or "") and publisher_guide.NO_CAUSE not in text
+            and not publisher_guide.states_a_cause(text)):
+        # asked "why" and no recorded cause was given: said, not left to be guessed
+        text = f"{text}\n{publisher_guide.NO_CAUSE}".strip()
     verified = (_numbers([c["rows"] for c in charts]) | _numbers([c["facts"] for c in charts])
                 | _numbers(previous_answer or {}) | _numbers(core_answer or {})
                 | _figures_in(instructions or "") | _figures_in(guide_text))

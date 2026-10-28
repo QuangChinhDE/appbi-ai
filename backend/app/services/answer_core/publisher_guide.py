@@ -180,23 +180,24 @@ def synonyms(guide: Optional[PublisherGuide]) -> dict[str, list[str]]:
 
 # ── targets ──────────────────────────────────────────────────────────────────
 
-def _period_values(plan: dict) -> set[str]:
-    out: set[str] = set()
-    for cond in (plan.get("filters") or {}).values():
-        if not isinstance(cond, dict):
-            continue
-        value = cond.get("value")
-        values = value if isinstance(value, list) else [value]
-        if isinstance(value, dict):  # a date range: its first day names the period
-            values = [value.get("from")]
-        out |= {_fold(str(v)).strip() for v in values if v not in (None, "")}
-    return out
+def _values(cond: Any) -> set[str]:
+    """The folded values one filter condition holds (a date range: its first day)."""
+    if not isinstance(cond, dict):
+        return set()
+    value = cond.get("value")
+    values = [value.get("from")] if isinstance(value, dict) else value if isinstance(value, list) else [value]
+    return {_fold(str(v)).strip() for v in values if v not in (None, "")}
 
 
-def target_for(guide: Optional[PublisherGuide], plan: Optional[dict], core: dict) -> Optional[dict]:
+def target_for(guide: Optional[PublisherGuide], plan: Optional[dict], core: dict,
+               context_filters: Optional[list] = None) -> Optional[dict]:
     """The target block beside the Core's ONE total, computed by code; None when the
-    answer is a breakdown, no target names its measure, or the target's period is
-    not the one the answer covers (never compared across periods)."""
+    answer is a breakdown, no target names its measure, or the answer's scope is not
+    the target's. Every filter in force counts - the question's and the link's /
+    viewer's (`context_filters`): a target with no period is the whole report's, so it
+    is compared only with an unfiltered total; a target for period T08 only with a total
+    whose every filter is that period. Live 2026-10-28: the company target was set
+    against the West region's revenue ("đạt 0,73%")."""
     if not guide or not guide.targets or not isinstance(plan, dict):
         return None
     measures = plan.get("measures") or []
@@ -209,11 +210,15 @@ def target_for(guide: Optional[PublisherGuide], plan: Optional[dict], core: dict
     actual = rows[0].get(col) if col else None
     if not isinstance(actual, (int, float)) or isinstance(actual, bool):
         return None
-    periods = _period_values(plan)
-    candidates = [t for t in guide.targets if t.ref == ref]
-    dated = [t for t in candidates if t.period and _fold(t.period).strip() in periods]
-    undated = [t for t in candidates if not t.period]
-    target = (dated or undated or [None])[0]
+    in_force = [v for v in (_values(c) for c in [*(plan.get("filters") or {}).values(), *(context_filters or [])]) if v]
+
+    def same_scope(t: Target) -> bool:
+        period = _fold(t.period).strip() if t.period else ""
+        # a period target needs the answer to BE that period (an unfiltered total is every period)
+        return bool(in_force) and all(v == {period} for v in in_force) if period else not in_force
+
+    candidates = [t for t in guide.targets if t.ref == ref and same_scope(t)]
+    target = ([t for t in candidates if t.period] or candidates or [None])[0]
     if target is None or not target.value:
         return None
     gap = actual - target.value
@@ -238,6 +243,15 @@ NO_CAUSE = "Chưa ghi nhận nguyên nhân trong dữ liệu báo cáo."
 
 def _words(text: str) -> set[str]:
     return {w for w in _fold(text).split() if len(w) > 2 and w not in _STOP and not w.isdigit()}
+
+
+def states_a_cause(text: str) -> bool:
+    """The text says why (a causal marker that is not a mere "therefore")."""
+    for sentence in re.split(r"(?<=[.!?])\s+|\n", text or ""):
+        low = sentence.lower()
+        if _CAUSE_EN.search(low) or (_CAUSE_VI.search(low) and not _NOT_CAUSE_VI.search(low)):
+            return True
+    return False
 
 
 def check_causes(text: str, corpus: str) -> str:

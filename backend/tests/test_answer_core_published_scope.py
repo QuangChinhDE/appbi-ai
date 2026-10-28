@@ -858,3 +858,32 @@ def test_the_guide_is_validated_against_the_links_catalog_and_never_served_to_vi
     assert exc.value.status_code == 422
     src = (pathlib.Path(public_api_mod.__file__)).read_text(encoding="utf-8")
     assert 'safe_appearance.pop("ai_bot_guide", None)' in src
+
+
+def test_a_target_is_never_set_against_a_subset_of_its_scope():
+    """Live 2026-10-28 (Chrome): asked about the West region, the company's target was
+    set against West's revenue ("đạt 0,73% mục tiêu 12.000.000"). Every filter in force
+    counts - the question's and the link's / viewer's."""
+    from app.services.answer_core.publisher_guide import load, target_for
+
+    guide = load({"ai_bot_guide": GUIDE})
+    one = {"columns": [{"name": "r", "ref": R, "role": "measure"}], "rows": [{"r": 150.0}]}
+    plan = {"measures": [R], "dimensions": [], "filters": {}}
+    west = {**plan, "filters": {Q: {"operator": "eq", "value": "West"}}}
+    assert target_for(guide, west, one) is None                                        # the question's filter
+    assert target_for(guide, plan, one, [{"field": Q, "operator": "in", "value": ["West"]}]) is None  # a slicer
+    t08 = [{"field": "v.ky", "operator": "in", "value": ["T08"]}]
+    assert target_for(guide, plan, one, t08)["target"] == 200.0                       # the period's own target
+    assert target_for(guide, plan, one, [*t08, {"field": Q, "value": ["West"]}]) is None
+
+
+def test_asked_why_with_no_recorded_cause_says_so(scope):
+    from app.services.answer_core import guided_analysis as g
+    from app.services.answer_core.publisher_guide import NO_CAUSE
+
+    out = g.analyse(scope, question="Vì sao doanh thu Laptop cao?", instructions=None,
+                    complete=lambda *a, **k: {"answer": "- Laptop đạt 150, cao nhất."})
+    assert out["text"].endswith(NO_CAUSE)
+    out = g.analyse(scope, question="Doanh thu Laptop thế nào?", instructions=None,
+                    complete=lambda *a, **k: {"answer": "- Laptop đạt 150, cao nhất."})
+    assert NO_CAUSE not in out["text"]

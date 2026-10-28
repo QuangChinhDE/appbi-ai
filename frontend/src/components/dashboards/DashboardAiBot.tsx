@@ -643,8 +643,9 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
             <p className="mb-1.5 flex items-center gap-1 text-micro font-strong uppercase tracking-wide text-brand">
               <Sparkles className="h-3 w-3" aria-hidden="true" />{t('dashboards.aiBot.core.analysisLabel')}
             </p>
-            {e.code === 'ai_analysis' && data.message && (
-              // the system's own reason it could not compute this directly - kept, not hidden
+            {e.code === 'ai_analysis' && data.message && (data.analysis.charts || []).length > 0 && (
+              // the system's own reason it could not compute this directly - kept beside an
+              // analysis of the charts (an answer from the publisher's guide alone needs none)
               <p className="mb-1.5 text-label text-text-tertiary" data-testid="ai-bot-core-reason">
                 {t('dashboards.aiBot.core.coreReason', { reason: data.message })}
               </p>

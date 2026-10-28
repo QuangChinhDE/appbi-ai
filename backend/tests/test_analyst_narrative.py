@@ -247,3 +247,11 @@ def test_no_share_of_total_for_an_average_a_rate_or_a_top_n_cut():
     story = describe(tcols, trows, time_ref="v.order_date", truncated=False, today=AFTER)
     assert "không cộng gộp được" in story["headline"]
     assert not any(f["claim"].startswith("total") for f in story["facts"])   # per-group changes stay
+
+
+def test_a_blank_member_reads_as_blank_never_none():
+    """Live 2026-10-28: the ranking bullets read "None: 2,100" for rows with no region."""
+    cols = [{"name": "c", "ref": "v.region", "role": "dimension", "label": "Khu vực"},
+            {"name": "r", "ref": "v.revenue", "role": "measure", "label": "Doanh thu", "aggregation": "sum"}]
+    story = describe(cols, [{"c": "West", "r": 9.0}, {"c": None, "r": 1.0}], time_ref=None, truncated=False)
+    assert any(b.startswith("(trống):") for b in story["bullets"]) and not any("None" in b for b in story["bullets"])
