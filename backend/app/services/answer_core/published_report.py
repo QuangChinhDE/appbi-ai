@@ -35,8 +35,22 @@ from typing import Any, Optional
 
 from app.services.data_core.scope import Refusal
 
-#: How many published charts the planner is shown (the viewer's page first).
-MAX_CHARTS = 40
+#: How many published charts the catalog holds (the viewer's page first): every chart
+#: of a large report is rankable. Raised from 40 (2026-10-28): a report of 85 charts
+#: left 45 of them unreachable however the question named them.
+MAX_CHARTS = 150
+#: How many of them the planner is SHOWN for one question - the most relevant
+#: (`PublishedReportScope.shortlist`). Live 2026-10-28: all 85 charts of a report were
+#: ~60k input tokens per question, the cost and the latency of every turn.
+SHORTLIST = 12
+#: words that say nothing about WHICH chart (question scaffolding); "bang" (a state)
+#: is a word here even though grounding stops it as "bằng" (by/with)
+_RANK_STOP = frozenset("""
+a ai bao bieu cac cai cho chi co con cua cung da dang de den do duoc gi hay hien khong khi la lam
+len mot moi nao nay nhieu nhu nhung nhat nua o ra sao so the thi thu tren trong tu va ve voi xem
+top cao thap lon nho bao cao so lieu du lieu chart page trang
+is the of in for by and what how which show me
+""".split())
 _ADDITIVE = frozenset({"sum", "count", "min", "max"})
 
 
@@ -280,6 +294,28 @@ class PublishedReportScope:
             self.catalog()
         return self._charts.get(int(chart_id))
 
+    def rank(self, question: str) -> list:
+        """The published charts of this link by relevance to the question (`rank_entries`)."""
+        pages = getattr(self.ctx, "pages", None) or []
+        current = next((p for p in pages if str(p.get("id")) == str(self.page_id or "")), None)
+        page = frozenset(int(c) for c in (current or {}).get("chart_ids") or [])
+        return rank_entries(question, self.catalog(), self._charts, notes=getattr(self, "notes", None),
+                            page_charts=page)
+
+    def shortlist(self, question: str, catalog: list, previous: Optional[dict] = None) -> list:
+        """What the planner is shown: the SHORTLIST charts most relevant to the question
+        among `catalog`, plus the previous answer's chart on a follow-up. The plan is
+        still validated and read against the full link (nothing outside it is reachable
+        either way); a smaller report is shown whole."""
+        if len(catalog) <= SHORTLIST:
+            return catalog
+        offered = {e.explore_id for e in catalog}
+        keep = [e for e in self.rank(question) if e.explore_id in offered][:SHORTLIST]
+        prev = (previous or {}).get("explore_id") if isinstance(previous, dict) else None
+        if prev is not None and all(e.explore_id != prev for e in keep):
+            keep += [e for e in catalog if e.explore_id == prev]
+        return keep
+
     # ── budgets and rights the Core asks about ─────────────────────────────────
     def exhausted(self) -> Optional[tuple]:
         return None  # the link's budget is checked by the turn and enforced per call by the Model Gateway
@@ -435,6 +471,64 @@ class PublishedReportScope:
             "duration_ms": m.get("duration_ms"), "freshness": m.get("data_as_of") or "live",
             "regrouped": bool(m.get("regrouped")),
         }
+
+
+def _terms(text: str) -> set[str]:
+    """The words of a text that can say WHICH chart, and their adjacent pairs
+    ("thanh toan"), accent-folded."""
+    from app.services.data_core.grounding import fold
+
+    ws = [w for w in re.split(r"[^0-9a-z]+", fold(text).replace("_", " ")) if w]
+    words = {w for w in ws if len(w) > 1 and w not in _RANK_STOP}
+    return words | {f"{a} {b}" for a, b in zip(ws, ws[1:]) if a not in _RANK_STOP or b not in _RANK_STOP}
+
+
+def _glossary(question: str, notes: Optional[str]) -> set[str]:
+    """The terms the publisher's prompt adds to a question: a line that shares a term
+    with the question ("bang là Customer State") lends the question its other terms."""
+    asked, out = _terms(question), set()
+    for line in re.split(r"[\n;]+", notes or ""):
+        terms = _terms(line)
+        if terms & asked:
+            out |= terms - asked
+    return out
+
+
+def rank_entries(question: str, entries: list, charts: dict, *, notes: Optional[str] = None,
+                 page_charts: frozenset = frozenset()) -> list:
+    """The published charts by relevance to the question - deterministic, no model:
+    a term of the chart's title or page outweighs one of its fields, a word pair
+    outweighs a word, a term most charts share weighs nothing (IDF), the publisher's
+    glossary counts half, the viewer's page breaks ties. Stable: equal scores keep the
+    catalog's order (the viewer's page first)."""
+    import math
+
+    asked, lent = _terms(question), _glossary(question, notes)
+    named = []
+    for e in entries:
+        c = charts.get(e.explore_id)
+        title = _terms(f"{c.name if c else e.label} {' '.join(c.pages) if c else ''}")
+        fields = set()
+        for f in e.fields:
+            fields |= _terms(f"{f.label} {' '.join(f.synonyms)} {f.ref.rsplit('.', 1)[-1]}")
+        named.append((e, title, fields - title))
+    n = len(named) or 1
+    df: dict[str, int] = {}
+    for _e, title, fields in named:
+        for t in title | fields:
+            df[t] = df.get(t, 0) + 1
+
+    def weight(t: str) -> float:
+        return math.log((n + 1) / (df.get(t, 0) + 0.5)) * (2.0 if " " in t else 1.0)
+
+    def score(item) -> float:
+        e, title, fields = item
+        s = sum(2 * weight(t) for t in asked & title) + sum(weight(t) for t in asked & fields)
+        s += 0.5 * (sum(2 * weight(t) for t in lent & title) + sum(weight(t) for t in lent & fields))
+        return s + (0.25 if e.explore_id in page_charts else 0.0)
+
+    scored = [(score(item), i, item[0]) for i, item in enumerate(named)]
+    return [e for _s, _i, e in sorted(scored, key=lambda x: (-x[0], x[1]))]
 
 
 def _title_parts(title: str) -> tuple[str, str]:

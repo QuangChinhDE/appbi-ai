@@ -574,3 +574,113 @@ def test_the_guided_analysis_writes_figures_the_way_the_answers_language_does():
             == "Tổng doanh thu là 13.591.643,7; 98.666 đơn; SP chiếm 38,28%")
     assert _format_numbers("có 2,017 đơn trong năm 2017") == "có 2.017 đơn trong năm 2017"
     assert _format_numbers("Revenue was 13591643.7 in 2017 (38.28%)") == "Revenue was 13,591,643.7 in 2017 (38.28%)"
+
+
+def _report(names):
+    """A large published report: one entry per chart title (English field refs, as
+    the Olist report's are), the charts all on page 1 unless named otherwise."""
+    from app.services.answer_core.published_report import _Chart
+
+    entries, charts = [], {}
+    for i, (name, dim, page) in enumerate(names, start=100):
+        fields = [CatalogField(f"v.{dim}", "dimension", "string", dim),
+                  CatalogField("v.amount", "measure", "sum", "amount")]
+        entries.append(CatalogExplore(i, None, 90, name, None, "v", "postgresql", name, fields, published=True))
+        charts[i] = _Chart(i, name, [page], 90, "postgresql", [f"v.{dim}"], {"v.amount": "sum"})
+    return entries, charts
+
+
+_OLIST = [("Olist · Đơn theo trạng thái · page-1", "order_status", "Tổng quan"),
+          ("Olist · GMV theo tháng · page-1", "year_month", "Tổng quan"),
+          ("Olist · Doanh thu theo danh mục · page-2", "category", "Doanh thu & Sản phẩm"),
+          ("Olist · Khách hàng theo bang · page-3", "customer_state", "Khách hàng & Địa lý"),
+          ("Olist · Doanh thu theo bang · page-3", "customer_state", "Khách hàng & Địa lý"),
+          ("Olist · Thời gian giao hàng TB theo bang · page-4", "customer_state", "Giao hàng & Vận hành"),
+          ("Olist · Điểm đánh giá TB theo bang · page-5", "customer_state", "Đánh giá & Thanh toán"),
+          ("Olist · Phương thức thanh toán · page-5", "payment_type", "Đánh giá & Thanh toán"),
+          ("Olist · Số kỳ trả góp · page-5", "payment_installments", "Đánh giá & Thanh toán")]
+
+
+def test_a_large_report_shows_the_planner_the_charts_the_question_is_about():
+    """Live 2026-10-28, an 85-chart report: every question sent the whole catalog
+    (~60k tokens), and the analysis read the first eight charts - "phương thức thanh
+    toán" was answered from the order-status chart. The charts are ranked by the
+    question, deterministically."""
+    from app.services.answer_core.published_report import rank_entries
+
+    entries, charts = _report(_OLIST)
+    top = (lambda q, **k: charts[rank_entries(q, entries, charts, **k)[0].explore_id].name)
+    assert top("Phương thức thanh toán nào phổ biến nhất?") == "Olist · Phương thức thanh toán · page-5"
+    assert top("Điểm đánh giá trung bình theo bang thế nào?") == "Olist · Điểm đánh giá TB theo bang · page-5"
+    assert top("Top 5 bang có doanh thu cao nhất") == "Olist · Doanh thu theo bang · page-3"
+    # the publisher's glossary lends its words: "vùng" means the customer's state here
+    assert "theo bang" in top("Doanh thu theo vùng", notes="vùng là bang của khách hàng (customer_state)")
+    # nothing in common: the catalog's own order (the viewer's page first) stands
+    assert rank_entries("xin chào", entries, charts) == entries
+
+
+def test_the_planner_sees_a_shortlist_of_a_large_report_and_the_whole_of_a_small_one(monkeypatch):
+    from app.services.answer_core import published_report as pr
+    from app.services.data_core import service
+    from app.services.data_core.planner import Unsupported
+
+    many = [(f"Olist · Chỉ số phụ {i} · page-2", f"dim_{i}", "Phụ") for i in range(20)] + _OLIST
+    entries, charts = _report(many)
+    s = PublishedReportScope(db=None, ctx=_Ctx(), link_id=7, turn_id="t" * 32)
+    s._entries, s._charts = entries, charts
+    shown = {}
+
+    def plan(question, catalog, **k):
+        shown["ids"] = [c.explore_id for c in catalog]
+        return Unsupported("x")
+
+    monkeypatch.setattr(service, "make_plan", plan)
+    service.ask(None, None, "Phương thức thanh toán nào phổ biến nhất?", None, scope=s, turn_id="t" * 32)
+    assert len(shown["ids"]) == pr.SHORTLIST
+    assert charts[shown["ids"][0]].name == "Olist · Phương thức thanh toán · page-5"
+    # a follow-up keeps the previous answer's chart in view
+    prev = {"explore_id": entries[0].explore_id}
+    kept = s.shortlist("Còn theo bang thì sao?", entries, prev)
+    assert entries[0] in kept and len(kept) <= pr.SHORTLIST + 1
+    # a small report is shown whole
+    assert s.shortlist("Phương thức thanh toán?", entries[:5], None) == entries[:5]
+
+
+def test_a_new_question_is_not_read_as_a_refinement_of_the_last_answer():
+    """Live 2026-10-28: "Top 5 bang có doanh thu cao nhất" after "Doanh thu theo tháng"
+    was answered with the months ranked - the client sends every message as a
+    follow-up and the planner keeps a follow-up's breakdown."""
+    from app.services.data_core.intent import is_followup
+
+    for q in ("Chỉ tính quý 2 năm 2024", "Còn quý 1 thì sao?", "Bỏ lọc khu vực, tính tất cả khu vực",
+              "phân tích hơn về con số đó như nào tạo nên ?", "Top 2 thôi", "theo quý?", "What about Q1?"):
+        assert is_followup(q), q
+    for q in ("Top 5 bang có doanh thu cao nhất", "Phương thức thanh toán nào phổ biến nhất?",
+              "Doanh thu theo tháng thay đổi thế nào?", "Tỷ lệ giao đúng hẹn là bao nhiêu?"):
+        assert not is_followup(q), q
+
+
+def test_an_edge_period_far_below_a_typical_one_is_never_the_trough_or_compared():
+    """Live 2026-10-28: the analysis named 12/2016 (10.9) the lowest month; the data set
+    opens and ends with a few orders. The chart footnote's rule names them."""
+    from app.services.answer_core.guided_analysis import _facts
+
+    months = [{"Tháng": f"2017-{m:02d}-01", "Doanh thu": v}
+              for m, v in [(1, 3.0), (2, 400.0), (3, 500.0), (4, 450.0), (5, 600.0), (6, 520.0), (7, 9.0)]]
+    _, facts = _facts(months, frozenset({"Doanh thu"}))
+    assert facts["partial_periods"] == ["2017-01-01", "2017-07-01"]
+    assert facts["trough"] == {"period": "2017-02-01", "Doanh thu": 400.0}   # not 2017-01 (3.0)
+    assert facts["first"]["period"] == "2017-02-01" and facts["last"]["period"] == "2017-06-01"
+
+
+def test_an_average_over_time_has_no_peak_or_trough_and_a_stray_bold_marker_is_dropped():
+    """Live 2026-10-28: "đỉnh điểm đánh giá trung bình là 5 vào tháng 12/2016" - a month
+    of two reviews. An average per period has no volume to tell a thin period by, so no
+    peak or trough is computed. And "- **1. SP:** 5.202.955,05**" showed a stray "**"."""
+    from app.services.answer_core.guided_analysis import SYSTEM, _facts, _tidy
+
+    months = [{"Tháng": f"2017-{m:02d}-01", "Điểm TB": v} for m, v in [(1, 5.0), (2, 4.1), (3, 4.0), (4, 1.0)]]
+    _, facts = _facts(months, frozenset())
+    assert "peak" not in facts and "trough" not in facts and facts["no_peak_reason"]
+    assert "no_peak_reason" in SYSTEM and "tỷ lệ 5 sao" in SYSTEM
+    assert _tidy("- **1. SP:** 5.202.955,05**\n- **RJ**: 1") == "- **1. SP:** 5.202.955,05\n- **RJ**: 1"

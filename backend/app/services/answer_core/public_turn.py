@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from app.models.ai_runtime import PublicAnswerTurn
 from app.services.answer_core import guided_analysis
 from app.services.chat import envelope as env
+from app.services.data_core.intent import is_followup
 
 logger = logging.getLogger("app.public_answer")
 
@@ -261,7 +262,10 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
         # the publisher's prompt: a glossary for the planner, the guide of the analysis
         instructions = str((link.appearance or {}).get("ai_bot_report_context_note") or "").strip() or None
         scope.notes = instructions
-        previous = _previous_plan(db, link_id, req.conversation_key, turn_id) if req.follow_up else None
+        # the viewer's client sends every message as a possible follow-up; it refines the
+        # previous answer only when it says so (`intent.is_followup`), else it is new
+        follow_up = req.follow_up and is_followup(req.question)
+        previous = _previous_plan(db, link_id, req.conversation_key, turn_id) if follow_up else None
         bill = gateway.Billing(purpose="public_core", link_id=link_id,
                                link_usd_per_day=resolve_usd_limit(link.appearance), turn_ref=turn_id,
                                credential=gateway.link_credential(db, link.appearance))
@@ -297,7 +301,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
                     analysis = guided_analysis.analyse(
                         scope, question=req.question, instructions=instructions,
                         previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id)
-                        if req.follow_up else None,
+                        if follow_up else None,
                         core_answer=_core_answer(req.question, e) if evaluate else None)
             except gateway.AiPolicyRefused as policy:
                 if refused:  # the link's budget, said as it is - not the Core's "unsupported"

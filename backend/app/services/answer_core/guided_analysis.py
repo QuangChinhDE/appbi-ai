@@ -60,6 +60,10 @@ SYSTEM = (
     "phải lấy nguyên từ 'rows'. Không thêm đơn vị tiền tệ hay đơn vị đo (USD, VND, R$, ...) trừ khi đơn vị có "
     "trong tên biểu đồ, tên cột hoặc hướng dẫn. Với chuỗi thời gian, KHÔNG liệt kê từng kỳ; xu hướng chỉ "
     "đọc từ total_by_year (xem periods_by_year: năm có ít kỳ là năm chưa đủ dữ liệu), không so kỳ đầu với kỳ cuối. "
+    "Kỳ trong 'partial_periods' có thể chưa đầy đủ: không gọi là đỉnh/đáy, không dùng để so sánh. Khi 'facts' "
+    "có 'no_peak_reason', không nêu đỉnh/đáy của chuỗi đó. Gọi mỗi con số bằng ĐÚNG tên cột/biểu đồ của nó (tỷ lệ "
+    "5 sao không phải điểm đánh giá trung bình); nếu báo cáo không có đúng chỉ số hoặc đúng cách chia được hỏi, "
+    "nói rõ là không có, rồi mới nêu chỉ số gần nhất kèm tên thật của nó. "
     "Chỉ trả lời đúng điều được hỏi, không kể thêm các facts không liên quan. Nếu dữ liệu không đủ để trả lời, nói rõ còn thiếu gì và gợi ý câu hỏi báo cáo trả lời "
     "được. Làm theo HƯỚNG DẪN CỦA NGƯỜI XUẤT BẢN về góc nhìn, thuật ngữ và cách trình bày. Hướng dẫn đó còn "
     "là KIẾN THỨC của người xuất bản (chính sách, mục tiêu, kế hoạch, định nghĩa, bối cảnh kinh doanh): dùng nó "
@@ -136,6 +140,15 @@ def _round(v: float) -> float:
     return round(v, 2)
 
 
+def _thin_periods(series: list[dict], time_dim: str, m: str) -> set[str]:
+    """The series' edge periods `chart_value_normalization.time_completeness` calls
+    `edge_low_volume` (far below a typical period: probably cut off)."""
+    from app.services.chart_value_normalization import time_completeness
+
+    out = time_completeness([{"t": _period(r.get(time_dim)), "v": r[m]} for r in series], "t", "day", "v") or {}
+    return {str(p["bucket"]) for p in out.get("partial") or [] if p.get("reason") == "edge_low_volume"}
+
+
 def _facts(rows: list[dict], additive: frozenset[str] = frozenset(), top_n: int = 0) -> tuple[list[dict], dict]:
     """The rows in reading order and the figures a model gets wrong when it works them
     out itself - computed here, exactly: the ranking of a breakdown, the peak and trough
@@ -168,10 +181,22 @@ def _facts(rows: list[dict], additive: frozenset[str] = frozenset(), top_n: int 
     if time_dim:
         ordered = sorted(rows, key=lambda r: _period(r.get(time_dim)) or "")
         series = [r for r in ordered if _is_num(r.get(m))]
-        peak = max(series, key=lambda r: r[m])
-        trough = min(series, key=lambda r: r[m])
-        first, last = series[0], series[-1]
         facts["series_of"] = m
+        if m not in summable:
+            # An average or a rate per period has no volume to tell a thin period by:
+            # a month of two reviews reads 5.0 or 1.0 (live 2026-10-28, "đỉnh 5 vào
+            # 12/2016"). No peak or trough is computed, and the model is told why.
+            facts["no_peak_reason"] = "giá trị trung bình/tỷ lệ theo kỳ: kỳ ít dữ liệu cho giá trị cực đoan"
+            return ordered, facts
+        # an edge period far below a typical one is probably cut off (the chart's own
+        # footnote rule): named, and never the trough, the first or the last
+        thin = _thin_periods(series, time_dim, m)
+        whole = [r for r in series if _period(r.get(time_dim)) not in thin] or series
+        if thin:
+            facts["partial_periods"] = sorted(thin)
+        peak = max(whole, key=lambda r: r[m])
+        trough = min(whole, key=lambda r: r[m])
+        first, last = whole[0], whole[-1]
         facts["peak"] = {"period": label(peak), m: peak[m]}
         facts["trough"] = {"period": label(trough), m: trough[m]}
         facts["first"] = {"period": label(first), m: first[m]}
@@ -196,10 +221,12 @@ def _facts(rows: list[dict], additive: frozenset[str] = frozenset(), top_n: int 
     return ordered, facts
 
 
-def published_data(scope) -> list[dict]:
-    """The published charts of this link (the viewer's page first), as the viewer may
-    see them: name, page(s), labelled columns, capped rows in reading order, and the
-    figures computed from every row read (`_facts`).
+def published_data(scope, question: str = "") -> list[dict]:
+    """The published charts of this link MOST RELEVANT to the question (`scope.rank`;
+    live 2026-10-28: the first eight of an 85-chart report answered "phương thức thanh
+    toán" from the order-status chart), as the viewer may see them: name, page(s),
+    labelled columns, capped rows in reading order, and the figures computed from
+    every row read (`_facts`).
 
     A chart that could not apply one of the filters in force (`filters_not_applied`:
     another dataset's slicer) is left out: its rows are not the filtered rows, and a
@@ -207,7 +234,8 @@ def published_data(scope) -> list[dict]:
     from app.services.agent_flows.tools.context import ToolError, _fetch_chart_data
 
     out = []
-    for entry in scope.catalog()[:MAX_CHARTS]:
+    entries = scope.rank(question) if question and hasattr(scope, "rank") else scope.catalog()
+    for entry in entries[:MAX_CHARTS]:
         chart = scope.chart(entry.explore_id)
         if chart is None:
             continue
@@ -233,9 +261,12 @@ _HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 
 def _tidy(text: str) -> str:
-    """What a model adds around the answer: a "<markdown>" wrapper, "# headings"."""
+    """What a model adds around the answer: a "<markdown>" wrapper, "# headings", and
+    a bold marker left unpaired on a line ("- **1. SP:** 5.202.955,05**")."""
     text = _WRAPPER.sub("", _WRAPPER.sub("", text))
-    return _HEADING.sub(lambda m: f"**{m.group(1).strip('* ')}**", text).strip()
+    text = _HEADING.sub(lambda m: f"**{m.group(1).strip('* ')}**", text)
+    return "\n".join(line[::-1].replace("**", "", 1)[::-1] if line.count("**") % 2 else line
+                     for line in text.split("\n")).strip()
 
 
 _RAW_NUMBER = re.compile(r"(?<![\w.,])-?\d+(?:\.\d+)?(?![\w]|[.,]\d)")
@@ -276,7 +307,7 @@ def analyse(scope, *, question: str, instructions: Optional[str], previous_answe
     read or the model gave nothing usable (the Core's outcome then stands alone)."""
     from app.services.chat.extension import unverified_figures
 
-    charts = published_data(scope)
+    charts = published_data(scope, question)
     if not charts and not instructions:
         return None
     payload: dict[str, Any] = {"question": question, "charts": charts}

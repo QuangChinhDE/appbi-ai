@@ -156,3 +156,26 @@ def extract(question: str, *, chosen_metric: bool = False, followup: bool = Fals
             break
         quantity = True
     return Intent(content=" ".join(text.split()), ranking=ranking, quantity=quantity, consumed=consumed)
+
+
+# ── follow-up or a new question ───────────────────────────────────────────────
+# A viewer's every message used to be sent as a follow-up, and the planner keeps a
+# follow-up's breakdown: "Top 5 bang có doanh thu cao nhất" after "doanh thu theo
+# tháng" was answered with the months ranked (live 2026-10-28). A message refines the
+# previous answer only when it SAYS so - it points back ("con số đó", "ở trên"), opens
+# with a refining word ("còn ...", "chỉ ...", "bỏ ..."), ends asking "... thì sao?", or
+# is too short to stand alone ("theo quý?", "top 2 thôi").
+_BACK = re.compile(r"(?<![\w])(?:đó|ấy|này|ở trên|vừa rồi|trước đó|như vậy|kết quả trên)(?![\w])"
+                   r"|\b(?:that|those|it|above|previous|same)\b", re.IGNORECASE)
+_OPENS = re.compile(r"^(?:con|chi|bo|them|vay|the con|nhung|rieng|loai|tru|so voi|va|roi|tiep|sap xep|xep|loc|"
+                    r"giu|doi|thay|neu|what about|how about|and|only|just|now|remove|without|instead)\b")
+_ENDS = re.compile(r"\b(?:thi sao|thoi|nua|thi the nao)\s*$")
+_SHORT_WORDS = 4
+
+
+def is_followup(question: str) -> bool:
+    """Does this message refine the previous answer (else it is a new question)?"""
+    raw = str(question or "").strip()
+    text = " ".join(re.split(r"[^0-9a-z]+", fold(raw))).strip()
+    return (len(text.split()) <= _SHORT_WORDS or bool(_BACK.search(raw.lower()))
+            or bool(_OPENS.search(text)) or bool(_ENDS.search(text)))

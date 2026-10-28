@@ -210,3 +210,17 @@ def test_a_top_n_draft_only_when_the_chart_limit_gives_the_same_rows():
     nul, why = chart_draft(plan, "t", rows=[{"c": "A", "m": 9}, {"c": "B", "m": None}], columns=cols)
     assert nul is None and why
 
+
+
+def test_a_cut_off_last_period_is_not_the_end_of_the_recent_window():
+    """Live 2026-10-28 (Olist): "GMV 2018-07 → 2018-09: 1.06 triệu → 166.46 (-100.0%)"
+    - 2018-09 has ended on the calendar but holds a few orders. A first or last period
+    far below a typical one (the chart footnote's rule) is not compared."""
+    cols = [{"name": "d", "ref": "v.order_date", "role": "dimension", "label": "Order date"},
+            {"name": "r", "ref": "v.revenue", "role": "measure", "label": "Revenue"}]
+    rows = [{"d": f"2018-{m:02d}-01", "r": v}
+            for m, v in [(1, 1000.0), (2, 1100.0), (3, 1200.0), (4, 1300.0), (5, 1250.0), (6, 1400.0), (7, 3.0)]]
+    story = describe(cols, rows, time_ref="v.order_date", truncated=False, today=AFTER)
+    assert "2018-04 → 2018-06" in story["headline"] and "-100" not in story["headline"]
+    assert "2018-07" in story["note"] and "chưa đầy đủ" in story["note"]
+    assert "2018-07" in story["periods"]["partial"]

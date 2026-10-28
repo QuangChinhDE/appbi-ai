@@ -145,6 +145,11 @@ def ask(db, user, question: str, deps: Optional[CoreDeps], *, previous: Optional
             # the person named these Datasets' metrics (or the Dataset): the planner
             # chooses among them only; the rest of the catalog is not offered
             catalog = [c for c in catalog if c.dataset_id in named]
+        narrow = getattr(scope, "shortlist", None)
+        if narrow is not None:
+            # a scope that can rank its catalog for the question shows the planner the
+            # relevant part only (a public report of 85 charts: ~60k tokens a question)
+            catalog = narrow(question, catalog, previous)
         outcome = make_plan(question, catalog, previous=previous, complete=getattr(deps, "complete", None),
                             notes=getattr(scope, "notes", None),
                             chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
