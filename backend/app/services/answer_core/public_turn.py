@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.ai_runtime import PublicAnswerTurn
+from app.services.answer_core import guided_analysis
 from app.services.chat import envelope as env
 
 logger = logging.getLogger("app.public_answer")
@@ -257,11 +258,14 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             logger.info("[public_answer] link unavailable for turn %s: %s", turn_id, type(ex).__name__)
             return env.refused("link_unavailable", "Liên kết báo cáo không còn hiệu lực."), None, None, {}
         scope = PublishedReportScope(db, ctx=link.ctx, link_id=link_id, turn_id=turn_id, page_id=req.page_id)
+        # the publisher's prompt: a glossary for the planner, the guide of the analysis
+        instructions = str((link.appearance or {}).get("ai_bot_report_context_note") or "").strip() or None
+        scope.notes = instructions
         previous = _previous_plan(db, link_id, req.conversation_key, turn_id) if req.follow_up else None
         bill = gateway.Billing(purpose="public_core", link_id=link_id,
                                link_usd_per_day=resolve_usd_limit(link.appearance), turn_ref=turn_id,
                                credential=gateway.link_credential(db, link.appearance))
-        if bill.credential is None and not gateway.server_credentials():
+        if bill.credential is None:  # the publisher's key and model; never the server's
             return (env.failed("model_unavailable", "Trợ lý AI của báo cáo này chưa được cấu hình mô hình AI."),
                     None, link.flow_key, link.appearance)
         try:
@@ -279,9 +283,57 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
                 return env.failed("source_unavailable", SOURCE_UNAVAILABLE), None, link.flow_key, link.appearance
             raise
         plan = core.get("plan") if core.get("status") == "answered" and isinstance(core.get("plan"), dict) else None
-        return env.from_core(core), plan, link.flow_key, link.appearance
+        e = env.from_core(core)
+        refused = guided_analysis.eligible(e, req.question, has_notes=bool(instructions),
+                                           has_addon=bool(link.flow_key))
+        evaluate = not refused and guided_analysis.wants_evaluation(e, req.question, has_notes=bool(instructions))
+        if (refused or evaluate) and is_running(turn_id):
+            # The Core could not plan it - or answered a figure the question asks to
+            # evaluate: the AI reads the PUBLISHED charts and the publisher's prompt;
+            # labelled, its figures checked against the data and the prompt.
+            on_step({"step": "analysis", "detail": "Phân tích từ dữ liệu đã công khai của báo cáo"})
+            try:
+                with gateway.billing(bill):
+                    analysis = guided_analysis.analyse(
+                        scope, question=req.question, instructions=instructions,
+                        previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id)
+                        if req.follow_up else None,
+                        core_answer=_core_answer(req.question, e) if evaluate else None)
+            except gateway.AiPolicyRefused as policy:
+                if refused:  # the link's budget, said as it is - not the Core's "unsupported"
+                    return env.refused(policy.code, policy.message_vi), plan, link.flow_key, link.appearance
+                analysis = None  # an evaluation: the Core's answer stands alone
+            except Exception:  # noqa: BLE001 - the Core's refusal stands
+                logger.warning("[public_answer] guided analysis failed for turn %s", turn_id, exc_info=True)
+                analysis = None
+            if analysis:
+                e = env.with_analysis(e, analysis)
+        return e, plan, link.flow_key, link.appearance
     finally:
         db.close()
+
+
+def _core_answer(question: str, e: dict) -> dict:
+    """The Core's answer to this turn, as the viewer sees it: what an evaluation reads."""
+    data = e.get("data") if isinstance(e.get("data"), dict) else {}
+    answer = data.get("answer") if isinstance(data.get("answer"), dict) else {}
+    return {"question": question, "headline": answer.get("headline"), "rows": (data.get("rows") or [])[:30]}
+
+
+def _previous_answer(db: Session, link_id: int, conversation_key: str, turn_id: str) -> Optional[dict]:
+    """The last answer of this conversation, as the viewer saw it: question, headline,
+    rows (capped) - the context of "phân tích hơn về con số đó"."""
+    t = (db.query(PublicAnswerTurn)
+         .filter(PublicAnswerTurn.link_id == link_id, PublicAnswerTurn.conversation_key == conversation_key,
+                 PublicAnswerTurn.status == "answered", PublicAnswerTurn.turn_id != turn_id)
+         .order_by(PublicAnswerTurn.created_at.desc()).first())
+    data = (t.envelope or {}).get("data") if t is not None and isinstance(t.envelope, dict) else None
+    if not isinstance(data, dict):
+        return None
+    answer = data.get("answer") if isinstance(data.get("answer"), dict) else {}
+    analysis = data.get("analysis") if isinstance(data.get("analysis"), dict) else {}
+    return {"question": t.question, "headline": answer.get("headline") or analysis.get("text", "")[:600],
+            "rows": (data.get("rows") or [])[:30]}
 
 
 async def run(*, link_id: int, token: str, turn_id: str, req: PublicTurnRequest, resolve: Resolver,

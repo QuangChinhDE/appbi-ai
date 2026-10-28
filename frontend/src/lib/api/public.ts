@@ -338,6 +338,10 @@ export interface PublicAnswerData {
   rows?: Record<string, unknown>[];
   truncated?: boolean;
   evidence?: PublicAnswerEvidence | null;
+  /** The guided analysis of the published charts and the publisher's prompt: in place
+   *  of a could-not-plan refusal (code `ai_analysis`), or beside an answer it evaluates.
+   *  Labelled; its unread figures listed; `used_notes` when it used the prompt. */
+  analysis?: { text: string; charts?: string[]; unverified_figures?: string[]; used_notes?: boolean } | null;
   options?: string[];
   choices?: { label: string; token?: string }[];
 }

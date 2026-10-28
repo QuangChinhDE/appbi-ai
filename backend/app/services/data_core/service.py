@@ -146,6 +146,7 @@ def ask(db, user, question: str, deps: Optional[CoreDeps], *, previous: Optional
             # chooses among them only; the rest of the catalog is not offered
             catalog = [c for c in catalog if c.dataset_id in named]
         outcome = make_plan(question, catalog, previous=previous, complete=getattr(deps, "complete", None),
+                            notes=getattr(scope, "notes", None),
                             chosen=({"explore_id": chosen["explore_id"], "measure": chosen["measure"]}
                                     if chosen and chosen.get("measure") else None))
     if isinstance(outcome, (Unsupported, Clarify)) and isinstance(previous, dict):

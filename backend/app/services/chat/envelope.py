@@ -80,6 +80,19 @@ def with_supporting(env: dict, supporting: Optional[dict], notices: list[dict]) 
     return out
 
 
+def with_analysis(env: dict, analysis: dict) -> dict:
+    """A Core that could not plan the question, answered by the public bot's guided
+    analysis of the PUBLISHED charts (answer_core/guided_analysis.py): `answered`
+    with code `ai_analysis`, the analysis beside the Core's own data - never in place
+    of a Core figure, and labelled as AI analysis by every reader. Beside an answered
+    Core (an evaluation of its figure) the Core's status and code stay as they are."""
+    data = dict(env.get("data") or {})
+    data["analysis"] = analysis
+    if env.get("status") == "answered":
+        return {**env, "data": data}
+    return {**env, "status": "answered", "code": "ai_analysis", "message": None, "data": data}
+
+
 def stored(env: dict, max_rows: int) -> dict:
     """What is persisted: the envelope minus capabilities, rows capped."""
     e = copy.deepcopy(env)

@@ -149,6 +149,29 @@ export function PublicLinkAiBotEditor({
               )}
             </div>
 
+            <label className="block">
+              <span className="mb-1 block text-tiny font-strong text-text-secondary">Hướng dẫn cho trợ lý (prompt)</span>
+              <textarea
+                value={value.ai_bot_report_context_note ?? ''}
+                rows={8}
+                onChange={(e) => patch('ai_bot_report_context_note', e.target.value || null)}
+                placeholder={'Ví dụ:\n- Thuật ngữ: GMV là "Total Revenue"; "đơn hàng" là "Order Count"; "bang" là "Customer State".\n'
+                  + '- Mục tiêu doanh thu năm 2018: 8.000.000 R$.\n'
+                  + '- Chính sách đổi trả: trong 7 ngày kể từ khi nhận hàng, hoàn tiền trong 5 ngày làm việc.\n'
+                  + '- Khi phân tích, ưu tiên so sánh theo tháng và chỉ ra 3 bang đóng góp lớn nhất.\n'
+                  + '- Trả lời ngắn gọn, giọng điệu cho ban giám đốc.'}
+                className="w-full resize-y rounded-md border border-stroke-strong bg-surface-1 px-3 py-2 text-caption text-text-primary placeholder:text-text-quaternary focus:border-brand focus:outline-none"
+                data-testid="ai-bot-instructions"
+              />
+              <span className="mt-1 block text-tiny leading-5 text-text-tertiary">
+                Trợ lý dùng hướng dẫn này để hiểu thuật ngữ, làm góc nhìn khi phân tích, và như kiến thức ngoài
+                biểu đồ: trả lời câu hỏi biểu đồ không có (chính sách, bối cảnh) và đánh giá con số (ví dụ so với
+                mục tiêu) - ghi rõ là &ldquo;Phân tích của AI&rdquo;. Người xem không thấy nguyên văn hướng dẫn,
+                nhưng trợ lý có thể nêu nội dung trong đó khi trả lời, nên đừng ghi thông tin không muốn công khai.
+                Số liệu trong hướng dẫn được coi là của bạn, không thay số liệu biểu đồ.
+              </span>
+            </label>
+
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-1 block text-tiny font-strong text-text-secondary">Hạn mức chi phí / 24 giờ (USD)</span>
