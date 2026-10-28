@@ -1723,6 +1723,38 @@ def _shared_meta(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return meta
 
 
+def _slicer_has_default(s: Dict[str, Any]) -> bool:
+    """A slicer that filters the report before anyone touches it: a non-empty saved
+    value, or a date preset other than "all"/"custom"."""
+    value = s.get("value")
+    if isinstance(value, dict):
+        has_value = any(v not in (None, "", []) for v in value.values())
+    else:
+        has_value = value not in (None, "", [])
+    return has_value or str(s.get("datePreset") or "") not in ("", "custom", "all", "none")
+
+
+def _removed_default_slicers(live: Any, draft: Any) -> list[Dict[str, Any]]:
+    """The report-wide slicers WITH a default value the live report has and the draft
+    no longer has as report-wide (deleted, or narrowed to some pages). Customer demo
+    2026-10-28: the period slicer (T08) vanished from slicers_config and the report
+    silently showed every period summed. Nothing to say when the draft does not
+    touch slicers (`draft` not a list)."""
+    if not isinstance(draft, list) or not isinstance(live, list):
+        return []
+
+    def report_wide(s: Any) -> bool:
+        return isinstance(s, dict) and str(s.get("scope") or "all") == "all"
+
+    kept = {str(s.get("id")) for s in draft if report_wide(s) and s.get("id") is not None}
+    out = []
+    for s in live:
+        if report_wide(s) and s.get("id") is not None and str(s["id"]) not in kept and _slicer_has_default(s):
+            out.append({"id": str(s["id"]), "label": str(s.get("label") or s.get("field") or s["id"]),
+                        "value": s.get("value") if s.get("value") not in (None, "", []) else s.get("datePreset")})
+    return out
+
+
 def _has_shared_draft(snapshot: Optional[Dict[str, Any]]) -> bool:
     return isinstance(snapshot, dict) and any(k in snapshot for k in _SHARED_DRAFT_KEYS)
 
@@ -1735,7 +1767,10 @@ def _shared_rev_token(dash, snapshot: Optional[Dict[str, Any]]) -> str:
     stored while nothing is pending: a copy loaded then equals the live report,
     so it is current."""
     published = dash.last_published_at.isoformat() if getattr(dash, "last_published_at", None) else "never"
-    return f"{published}#{_shared_meta(snapshot)['rev'] if _has_shared_draft(snapshot) else 0}"
+    # The counter outlives a Discard (`_after_author_leaves`): it restarted at 1, so a
+    # copy loaded before the Discard carried a token equal to the next edit's and its
+    # stale slicer list passed the check (customer demo 2026-10-28: a period slicer lost).
+    return f"{published}#{_shared_meta(snapshot)['rev']}"
 
 
 def _shared_draft_state(dash, snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Any]:
@@ -1777,8 +1812,11 @@ def _after_author_leaves(snapshot: Optional[Dict[str, Any]], user_key: str, keep
         for key in (*_SHARED_DRAFT_KEYS, _SHARED_META):
             if key in snapshot:
                 out[key] = snapshot[key]
-    # Otherwise the shared draft is gone; its revision token moves on by itself
-    # (a Publish changes last_published_at).
+    elif isinstance(snapshot, dict) and _SHARED_META in snapshot:
+        # The shared draft is gone, its revision counter is not: it moves on, so no
+        # later token repeats one an editor may still hold (a meta alone is no draft:
+        # `has_draft` reads the shared keys).
+        out[_SHARED_META] = {"rev": _shared_meta(snapshot)["rev"] + 1, "authors": {}}
     return out or None
 
 
@@ -3000,7 +3038,7 @@ def update_dashboard_draft_filters(
             )
         author_name = getattr(current_user, "full_name", None) or current_user.email
         if not _has_shared_draft(snapshot):
-            meta = {"rev": 0, "authors": {}}
+            meta = {"rev": meta["rev"], "authors": {}}  # a fresh draft; the counter goes on
         meta["rev"] += 1
         meta["authors"][str(current_user.id)] = author_name
         meta["last_by_name"] = author_name
@@ -3061,6 +3099,9 @@ class PublishRequest(BaseModel):
     # publish only the caller's own work and leave the shared draft pending.
     shared_ack_rev: Optional[str] = None
     keep_shared: bool = False
+    # Report-wide slicers with a default value the caller agreed to remove (the 409
+    # `slicer_removal_unconfirmed` lists them): the report then shows every value.
+    confirm_removed_slicers: Optional[list[str]] = None
 
 
 class DiscardRequest(BaseModel):
@@ -3161,6 +3202,19 @@ def publish_dashboard_draft(
     keep_shared = bool(payload and payload.keep_shared)
     if not keep_shared:
         _refuse_others_shared_draft(dash, snapshot, user_key, payload.shared_ack_rev if payload else None, "publish")
+        removed = _removed_default_slicers(dash.slicers_config, snapshot.get("slicers_config"))
+        confirmed = {str(i) for i in (payload.confirm_removed_slicers if payload else None) or []}
+        unconfirmed = [s for s in removed if s["id"] not in confirmed]
+        if unconfirmed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "slicer_removal_unconfirmed",
+                    "removed": unconfirmed,
+                    "message": "Publishing removes a report-wide filter that has a default value; "
+                               "the report would show every value of that field.",
+                },
+            )
 
     # ── Elements this user removed in the draft leave the live report now, in
     #    the same commit as everything else they publish. ──

@@ -46,11 +46,26 @@ export type DashboardEditLock = {
 // The shared filters/pages/theme draft is edited by every author together; each
 // write names the revision it was made on and the server refuses a stale one
 // (409 `shared_draft_stale`) instead of silently replacing a colleague's edit.
-// The revision is read from every response that carries it.
+//
+// The revision a write names is the one the editor's LISTS were made from: taken
+// when the Builder seeds them (`adoptSharedDraft`) and from this editor's own writes,
+// publish and discard. It used to be refreshed by every GET while the Builder seeded
+// its slicer list once, so after any refetch a stale list went out under a fresh
+// revision and replaced a colleague's slicers (customer demo 2026-10-28).
 const sharedDraftRev = new Map<number, string>();
 function noteSharedDraft<T extends { id?: number; shared_draft?: { rev?: string } | null }>(d: T): T {
   if (d && typeof d.id === 'number' && typeof d.shared_draft?.rev === 'string') sharedDraftRev.set(d.id, d.shared_draft.rev);
   return d;
+}
+
+/** The Builder seeded its filter/slicer lists from this dashboard: its writes name this revision. */
+export function adoptSharedDraft(d: { id?: number; shared_draft?: { rev?: string } | null } | null | undefined): void {
+  if (d) noteSharedDraft(d);
+}
+
+/** The revision this editor's writes currently name (undefined before the Builder seeded). */
+export function adoptedSharedDraftRev(dashboardId: number): string | undefined {
+  return sharedDraftRev.get(dashboardId);
 }
 
 /** Raised when the shared draft moved on since this editor loaded it. */
@@ -63,8 +78,9 @@ export const dashboardApi = {
   },
 
   getById: async (id: number): Promise<Dashboard> => {
+    // a read does not move the revision this editor's writes name (`adoptSharedDraft`)
     const response = await apiClient.get(`/dashboards/${id}`);
-    return noteSharedDraft(response.data);
+    return response.data;
   },
 
   create: async (data: DashboardCreate): Promise<Dashboard> => {
@@ -332,7 +348,11 @@ export const dashboardApi = {
   // published meanwhile (unless force=true).
   publishDraft: async (
     dashboardId: number,
-    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
+    opts?: {
+      tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean;
+      /** ids of report-wide slicers with a default the author agreed to remove (409 `slicer_removal_unconfirmed`) */
+      confirmRemovedSlicers?: string[];
+    },
   ): Promise<Dashboard> => {
     // sharedAckRev / keepShared: the answer to 409 `shared_draft_other_authors`
     // — publish other authors' shared edits too (the revision shown), or leave
@@ -343,6 +363,7 @@ export const dashboardApi = {
         force: !!opts.force,
         ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}),
         ...(opts.keepShared ? { keep_shared: true } : {}),
+        ...(opts.confirmRemovedSlicers?.length ? { confirm_removed_slicers: opts.confirmRemovedSlicers } : {}),
       }
       : undefined;
     const response = await apiClient.post(`/dashboards/${dashboardId}/publish`, body);
