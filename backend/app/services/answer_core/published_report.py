@@ -194,6 +194,8 @@ class PublishedReportScope:
         self._charts: dict[int, _Chart] = {}
         self._entries: Optional[list] = None
         self._reads = 0
+        #: the publisher's guide (`publisher_guide.PublisherGuide`), set before the catalog is built
+        self.guide = None
 
     # ── what the planner may ask about ────────────────────────────────────────
     def catalog(self) -> list:
@@ -216,6 +218,11 @@ class PublishedReportScope:
         ordered = first + sorted(c for c in ctx.allowed_chart_ids if c not in first)
 
         vocab = _Vocabulary(self.db)
+        # the publisher's glossary (`ai_bot_guide`): their words for a field, offered
+        # to the planner and the chart ranking as that field's synonyms
+        from app.services.answer_core.publisher_guide import synonyms as _guide_synonyms
+
+        glossary = _guide_synonyms(getattr(self, "guide", None))
         exposed = {str(r) for r in ((ctx.exposed_fields or (set(), set()))[0] or set()) if "." in str(r)}
         slicer_labels = {}
         for s in (getattr(ctx.dashboard, "slicers_config", None) or []):
@@ -252,6 +259,8 @@ class PublishedReportScope:
                 if one_dim and breakdown_words:
                     # the breakdown the report's title names ("sản phẩm" of "Doanh thu theo sản phẩm")
                     words = tuple(dict.fromkeys([*words, breakdown_words]))[:12]
+                if glossary.get(ref):
+                    words = tuple(dict.fromkeys([*glossary[ref], *words]))[:16]
                 cf.append(CatalogField(ref, "dimension", dtype, str(d.get("label") or ref), desc, words))
                 dims.append(ref)
             only = len(fields.get("measures") or []) == 1
@@ -264,6 +273,8 @@ class PublishedReportScope:
                     # the words the report's title gives a viewer for its one metric
                     # ("Doanh thu" of "Doanh thu theo sản phẩm") over an English label
                     words = tuple(dict.fromkeys([*words, metric_words]))[:12]
+                if glossary.get(ref):
+                    words = tuple(dict.fromkeys([*glossary[ref], *words]))[:16]
                 cf.append(CatalogField(ref, "measure", agg, str(m.get("label") or ref), desc, words))
                 measures[ref] = agg
             if not measures:

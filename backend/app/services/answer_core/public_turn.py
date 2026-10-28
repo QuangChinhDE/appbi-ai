@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.ai_runtime import PublicAnswerTurn
-from app.services.answer_core import guided_analysis
+from app.services.answer_core import guided_analysis, publisher_guide
 from app.services.chat import envelope as env
 from app.services.data_core.intent import is_followup
 
@@ -262,6 +262,18 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
         # the publisher's prompt: a glossary for the planner, the guide of the analysis
         instructions = str((link.appearance or {}).get("ai_bot_report_context_note") or "").strip() or None
         scope.notes = instructions
+        # the publisher's structured guide: what code can answer, code answers (no model)
+        guide = publisher_guide.load(link.appearance)
+        scope.guide = guide
+        knows = bool(instructions) or guide is not None
+        topic = publisher_guide.out_of_scope(guide, req.question)
+        if topic is not None:
+            return (env.refused("guide_out_of_scope", topic.reason or
+                                f"Trợ lý của báo cáo này không trả lời về “{topic.topic}”."),
+                    None, link.flow_key, link.appearance)
+        meaning = publisher_guide.definition(guide, req.question)
+        if meaning is not None:
+            return env.with_definition(meaning.model_dump()), None, link.flow_key, link.appearance
         # the viewer's client sends every message as a possible follow-up; it refines the
         # previous answer only when it says so (`intent.is_followup`), else it is new
         follow_up = req.follow_up and is_followup(req.question)
@@ -288,9 +300,11 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             raise
         plan = core.get("plan") if core.get("status") == "answered" and isinstance(core.get("plan"), dict) else None
         e = env.from_core(core)
-        refused = guided_analysis.eligible(e, req.question, has_notes=bool(instructions),
-                                           has_addon=bool(link.flow_key))
-        evaluate = not refused and guided_analysis.wants_evaluation(e, req.question, has_notes=bool(instructions))
+        target = publisher_guide.target_for(guide, plan, core) if plan else None
+        if target is not None:
+            e = env.with_target(e, target)
+        refused = guided_analysis.eligible(e, req.question, has_notes=knows, has_addon=bool(link.flow_key))
+        evaluate = not refused and guided_analysis.wants_evaluation(e, req.question, has_notes=knows)
         if (refused or evaluate) and is_running(turn_id):
             # The Core could not plan it - or answered a figure the question asks to
             # evaluate: the AI reads the PUBLISHED charts and the publisher's prompt;
@@ -299,7 +313,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             try:
                 with gateway.billing(bill):
                     analysis = guided_analysis.analyse(
-                        scope, question=req.question, instructions=instructions,
+                        scope, question=req.question, instructions=instructions, guide=guide,
                         previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id)
                         if follow_up else None,
                         core_answer=_core_answer(req.question, e) if evaluate else None)

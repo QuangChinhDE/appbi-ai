@@ -93,6 +93,20 @@ def with_analysis(env: dict, analysis: dict) -> dict:
     return {**env, "status": "answered", "code": "ai_analysis", "message": None, "data": data}
 
 
+def with_definition(definition: dict) -> dict:
+    """A term the publisher's guide defines, answered with that definition verbatim
+    (public bot, `answer_core/publisher_guide.py`): no data read, no model call."""
+    return {"v": VERSION, "status": "answered", "code": "guide_definition", "message": None,
+            "data": {"definition": definition}, "supporting": None, "notices": []}
+
+
+def with_target(env: dict, target: dict) -> dict:
+    """The publisher's target beside the Core's one total, computed by code."""
+    data = dict(env.get("data") or {})
+    data["target"] = target
+    return {**env, "data": data}
+
+
 def stored(env: dict, max_rows: int) -> dict:
     """What is persisted: the envelope minus capabilities, rows capped."""
     e = copy.deepcopy(env)

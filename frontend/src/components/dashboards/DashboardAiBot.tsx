@@ -407,10 +407,11 @@ const NOT_SUPPORTED_CODES = new Set([
 
 /** Where an answer comes from, said once per bubble (customer feedback 2026-10-28: a
  *  Core figure, an AI analysis and a refusal by policy all looked alike). */
-function SourceChip({ kind, t }: { kind: 'core' | 'unsupported' | 'policy'; t: Translate }) {
-  const look = kind === 'core' ? 'bg-success/10 text-success'
+function SourceChip({ kind, t }: { kind: 'core' | 'guide' | 'unsupported' | 'policy'; t: Translate }) {
+  const look = kind === 'core' ? 'bg-success/10 text-success' : kind === 'guide' ? 'bg-brand/10 text-brand'
     : kind === 'unsupported' ? 'bg-surface-3 text-text-secondary' : 'bg-warning/10 text-warning';
-  const key = kind === 'core' ? 'sourceCore' : kind === 'unsupported' ? 'sourceUnsupported' : 'sourcePolicy';
+  const key = kind === 'core' ? 'sourceCore' : kind === 'guide' ? 'sourceGuide'
+    : kind === 'unsupported' ? 'sourceUnsupported' : 'sourcePolicy';
   return (
     <span className={`mb-1 inline-block rounded px-1.5 py-0.5 text-micro font-strong uppercase tracking-wide ${look}`}
           data-testid="ai-bot-source" data-source={kind}>
@@ -426,8 +427,13 @@ function chartTitle(name: string): string {
 
 /** The analysis' markdown, the little it uses: paragraphs, "- " bullets, **bold**. */
 function MiniMarkdown({ text }: { text: string }) {
-  const inline = (line: string) => line.split(/(\*\*[^*]+\*\*)/g).map((part, i) => (
-    part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong> : part));
+  // **bold**, and ⟦figure⟧ = a figure not found in the data read, flagged where it stands
+  const inline = (line: string) => line.split(/(\*\*[^*]+\*\*|⟦[^⟧]+⟧)/g).map((part, i) => (
+    part.startsWith('**') && part.endsWith('**') ? <strong key={i}>{part.slice(2, -2)}</strong>
+      : part.startsWith('⟦') && part.endsWith('⟧')
+        ? <mark key={i} className="rounded bg-warning/15 px-0.5 text-warning" data-testid="ai-bot-unverified-inline"
+                title="Chưa kiểm chứng với dữ liệu">{part.slice(1, -1)}</mark>
+        : part));
   return (
     <div className="space-y-1 text-text-primary">
       {text.split(/\n+/).filter((l) => l.trim()).map((line, i) => {
@@ -556,6 +562,23 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
             </ul>
           )}
           {answer.note && <p className="mt-1 text-label text-text-tertiary">{answer.note}</p>}
+          {data?.target && (
+            // the publisher's target, compared by code with the system's figure above
+            <div className="mt-2 rounded-md border border-brand/20 bg-brand/5 px-2 py-1.5 text-label" data-testid="ai-bot-target">
+              <p className="font-emphasis text-text-primary">
+                {t('dashboards.aiBot.core.targetLine', {
+                  pct: fmt(data.target.attainment_pct, locale),
+                  target: fmt(data.target.target, locale),
+                  period: data.target.period ? ` (${data.target.period})` : '',
+                })}
+              </p>
+              <p className="text-text-secondary">
+                {t(data.target.gap < 0 ? 'dashboards.aiBot.core.targetShort' : 'dashboards.aiBot.core.targetOver', {
+                  gap: fmt(Math.abs(data.target.gap), locale), unit: data.target.unit ? ` ${data.target.unit}` : '',
+                })}
+              </p>
+            </div>
+          )}
           {cols.length > 0 && rows.length > 0 && (
             <div className="mt-2 max-w-full overflow-x-auto">
               <table className="w-full text-label" data-testid="ai-bot-table">
@@ -634,10 +657,23 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
             )}
             <p className="mt-1.5 text-micro text-text-tertiary">
               {(data.analysis.charts || []).length > 0
-                ? t('dashboards.aiBot.core.analysisFrom', { charts: (data.analysis.charts || []).map(chartTitle).join(', ') })
+                // "figures read from these charts" only when every figure was found in them
+                ? t((data.analysis.unverified_figures || []).length > 0
+                  ? 'dashboards.aiBot.core.analysisFromPartly' : 'dashboards.aiBot.core.analysisFrom',
+                    { charts: (data.analysis.charts || []).map(chartTitle).join(', ') })
                 : t('dashboards.aiBot.core.analysisNote')}
               {data.analysis.used_notes && <> {t('dashboards.aiBot.core.analysisNotes')}</>}
             </p>
+          </div>
+        </Bubble>
+      )}
+      {e.code === 'guide_definition' && data?.definition && (
+        <Bubble side="assistant" wide>
+          <div data-testid="ai-bot-definition">
+            <SourceChip kind="guide" t={t} />
+            <p className="font-emphasis text-text-primary">{data.definition.name}</p>
+            <p className="mt-0.5 whitespace-pre-wrap text-text-primary">{data.definition.formula}</p>
+            {data.definition.note && <p className="mt-1 text-label text-text-tertiary">{data.definition.note}</p>}
           </div>
         </Bubble>
       )}
@@ -659,7 +695,8 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
       )}
       {e.status === 'refused' && (
         <Bubble side="assistant" tone="warning">
-          <SourceChip kind={NOT_SUPPORTED_CODES.has(e.code || '') ? 'unsupported' : 'policy'} t={t} />
+          <SourceChip kind={e.code === 'guide_out_of_scope' ? 'guide'
+            : NOT_SUPPORTED_CODES.has(e.code || '') ? 'unsupported' : 'policy'} t={t} />
           <p role="status" data-testid="ai-bot-refused" data-code={e.code || ''}>
             {e.message || data?.message}
           </p>

@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { AiModelKeyPicker } from '@/components/common/AiModelKeyPicker';
 import { FlowBindingEditor, type BindingFlush } from '@/components/common/FlowBindingEditor';
+import { PublisherGuideEditor } from '@/components/common/PublisherGuideEditor';
 
 // The AI assistant of one public link.
 //
@@ -149,26 +150,35 @@ export function PublicLinkAiBotEditor({
               )}
             </div>
 
+            <div>
+              <p className="mb-1 text-tiny font-strong text-text-secondary">Hướng dẫn cho trợ lý</p>
+              <p className="mb-2 text-tiny leading-5 text-text-tertiary">
+                Mỗi phần có một công dụng rõ ràng: thuật ngữ giúp chọn đúng biểu đồ, định nghĩa được trả nguyên văn,
+                mục tiêu được hệ thống tự so sánh, nguyên nhân chỉ lấy từ biểu đồ nguồn. Người xem không thấy nguyên văn
+                hướng dẫn, nhưng trợ lý có thể nêu nội dung trong đó khi trả lời - đừng ghi thông tin không muốn công khai.
+              </p>
+              <PublisherGuideEditor
+                value={value.ai_bot_guide}
+                onChange={(guide) => patch('ai_bot_guide', guide)}
+                dashboardId={dashboardId}
+                linkId={linkId}
+              />
+            </div>
+
             <label className="block">
-              <span className="mb-1 block text-tiny font-strong text-text-secondary">Hướng dẫn cho trợ lý (prompt)</span>
+              <span className="mb-1 block text-tiny font-strong text-text-secondary">Ghi chú khác (tự do)</span>
               <textarea
                 value={value.ai_bot_report_context_note ?? ''}
-                rows={8}
+                rows={4}
                 onChange={(e) => patch('ai_bot_report_context_note', e.target.value || null)}
-                placeholder={'Ví dụ:\n- Thuật ngữ: GMV là "Total Revenue"; "đơn hàng" là "Order Count"; "bang" là "Customer State".\n'
-                  + '- Mục tiêu doanh thu năm 2018: 8.000.000 R$.\n'
-                  + '- Chính sách đổi trả: trong 7 ngày kể từ khi nhận hàng, hoàn tiền trong 5 ngày làm việc.\n'
-                  + '- Khi phân tích, ưu tiên so sánh theo tháng và chỉ ra 3 bang đóng góp lớn nhất.\n'
-                  + '- Trả lời ngắn gọn, giọng điệu cho ban giám đốc.'}
+                placeholder={'Điều chưa có ô riêng ở trên, ví dụ:\n'
+                  + '- Khi phân tích, ưu tiên so sánh theo tháng và chỉ ra 3 khu vực đóng góp lớn nhất.'}
                 className="w-full resize-y rounded-md border border-stroke-strong bg-surface-1 px-3 py-2 text-caption text-text-primary placeholder:text-text-quaternary focus:border-brand focus:outline-none"
                 data-testid="ai-bot-instructions"
               />
               <span className="mt-1 block text-tiny leading-5 text-text-tertiary">
-                Trợ lý dùng hướng dẫn này để hiểu thuật ngữ, làm góc nhìn khi phân tích, và như kiến thức ngoài
-                biểu đồ: trả lời câu hỏi biểu đồ không có (chính sách, bối cảnh) và đánh giá con số (ví dụ so với
-                mục tiêu) - ghi rõ là &ldquo;Phân tích của AI&rdquo;. Người xem không thấy nguyên văn hướng dẫn,
-                nhưng trợ lý có thể nêu nội dung trong đó khi trả lời, nên đừng ghi thông tin không muốn công khai.
-                Số liệu trong hướng dẫn được coi là của bạn, không thay số liệu biểu đồ.
+                Văn bản tự do, dùng như trước. Ưu tiên các ô có cấu trúc ở trên: chúng được dùng chính xác hơn
+                (thuật ngữ, định nghĩa, mục tiêu được hệ thống xử lý trực tiếp, không phụ thuộc AI đoán).
               </span>
             </label>
 

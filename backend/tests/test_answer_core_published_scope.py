@@ -9,6 +9,7 @@ filters, locks, page bounds, exposed fields - is exercised on the live stack.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -727,3 +728,133 @@ def test_the_evidence_lists_the_filters_the_chart_ran_with_not_the_links_list(sc
     ev = scope.evidence(_plan(scope, [P], [R]), result)
     assert ev["filters_applied"] == ["region in North"]           # not the link's "channel eq Online"
     assert ev["filters_withheld"] == 0 and ev["filters_dropped"] == []
+
+
+# ── the publisher's structured guide (docs/features/public-bot-trust-guide) ──────
+
+GUIDE = {
+    "context": {"purpose": "Báo cáo doanh thu", "unit": "VND"},
+    "glossary": [{"term": "doanh số", "ref": R}],
+    "definitions": [{"name": "Điểm KPI", "aliases": ["KPI score"],
+                     "formula": "Điểm KPI = 0,6 × % đạt doanh thu + 0,4 × % đạt đơn hàng", "note": "Thang 100"}],
+    "targets": [{"ref": R, "value": 300.0, "period": "", "label": "Doanh thu"},
+                {"ref": R, "value": 200.0, "period": "T08", "label": "Doanh thu"}],
+    "cause_sources": [{"chart_id": 11}],
+    "facts": [{"title": "Chính sách đổi trả", "content": "Khách được đổi trả trong 15 ngày."}],
+    "style": {"length": "short", "tone": "executive", "language": "vi"},
+    "out_of_scope": [{"topic": "lương nhân viên", "reason": "Báo cáo không công khai thông tin lương."}],
+}
+
+
+def _core_turn(monkeypatch, question, appearance):
+    """`public_turn._core` up to the guide's deterministic answers (no model, no key)."""
+    from app.services.answer_core import public_turn as pt
+
+    class _Db:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pt, "_session", lambda: _Db())
+    monkeypatch.setattr(pt, "_previous_plan", lambda *a, **k: None)
+    from app.services.ai_runtime import gateway
+    monkeypatch.setattr(gateway, "link_credential", lambda *a, **k: None)   # no key: stops before any model
+    ctx = _Ctx()
+    ctx.pages, ctx.dashboard = [], None
+    resolve = lambda db: pt.LinkTurnContext(ctx=ctx, appearance=appearance)
+    req = pt.PublicTurnRequest(question=question, conversation_key="c" * 16, idempotency_key="i" * 16)
+    return pt._core(7, "t" * 32, req, resolve, lambda step: None)
+
+
+def test_a_defined_term_is_answered_with_the_definition_verbatim_and_no_model(monkeypatch):
+    """Customer demo 2026-10-28: "điểm KPI tính thế nào" got "báo cáo chưa có" although
+    the publisher had written the formula. A meaning question about a defined term is
+    answered with the definition, verbatim (PO decision), before any key is needed."""
+    e, plan, _, _ = _core_turn(monkeypatch, "Điểm KPI được tính thế nào?", {"ai_bot_guide": GUIDE})
+    assert e["status"] == "answered" and e["code"] == "guide_definition" and plan is None
+    assert e["data"]["definition"]["formula"] == GUIDE["definitions"][0]["formula"]
+    e, *_ = _core_turn(monkeypatch, "how is the KPI score calculated", {"ai_bot_guide": GUIDE})
+    assert e["code"] == "guide_definition"
+    # naming the term without asking what it means goes on to the Core (no key here: model_unavailable)
+    e, *_ = _core_turn(monkeypatch, "Điểm KPI tháng này bao nhiêu?", {"ai_bot_guide": GUIDE})
+    assert e["code"] != "guide_definition"
+
+
+def test_an_out_of_scope_topic_is_refused_with_the_publishers_reason_and_no_model(monkeypatch):
+    e, *_ = _core_turn(monkeypatch, "Lương nhân viên khu vực Bắc là bao nhiêu?", {"ai_bot_guide": GUIDE})
+    assert e["status"] == "refused" and e["code"] == "guide_out_of_scope"
+    assert e["message"] == "Báo cáo không công khai thông tin lương."
+
+
+def test_a_target_is_compared_by_code_only_for_one_total_of_the_period_it_names():
+    from app.services.answer_core.publisher_guide import load, target_for
+
+    guide = load({"ai_bot_guide": GUIDE})
+    one = {"columns": [{"name": "r", "ref": R, "role": "measure"}], "rows": [{"r": 150.0}]}
+    plan = {"measures": [R], "dimensions": [], "filters": {}}
+    assert target_for(guide, plan, one) == {"measure": "Doanh thu", "period": None, "target": 300.0, "actual": 150.0,
+                                            "gap": -150.0, "attainment_pct": 50.0, "unit": None}
+    t08 = {**plan, "filters": {"v.ky": {"operator": "eq", "value": "T08"}}}
+    assert target_for(guide, t08, one)["target"] == 200.0                    # the period's own target
+    by_group = {"columns": [{"name": "p", "ref": P, "role": "dimension"}, *one["columns"]],
+                "rows": [{"p": "Laptop", "r": 150.0}]}
+    assert target_for(guide, {**plan, "dimensions": [P]}, by_group) is None  # a breakdown is not compared
+    assert target_for(guide, {**plan, "measures": [A]}, one) is None         # no target for that measure
+
+
+def test_a_cause_no_source_records_is_removed_and_said_plainly():
+    """Customer demo 2026-10-28: the bot added "cầu thị trường", "đối thủ" - causes the
+    data never said. A causal sentence stays only when its cause is in a source."""
+    from app.services.answer_core.publisher_guide import NO_CAUSE, check_causes
+
+    corpus = '[["Khu vực Bắc", "Thiếu nhân sự bán hàng", "Tuyển bổ sung 5 nhân viên"]]'
+    text = ("- Doanh thu Bắc giảm 12%.\n- Nguyên nhân do cầu thị trường yếu và đối thủ giảm giá.\n"
+            "- Doanh thu Bắc giảm vì thiếu nhân sự bán hàng.")
+    out = check_causes(text, corpus)
+    assert "cầu thị trường" not in out and "đối thủ" not in out
+    assert "thiếu nhân sự bán hàng" in out and "giảm 12%" in out and out.endswith(NO_CAUSE)
+    assert check_causes("Doanh thu tăng, do đó cần giữ nhịp.", "") == "Doanh thu tăng, do đó cần giữ nhịp."
+
+
+def test_the_guide_reaches_the_analysis_glossary_the_catalog_and_figures_are_marked_in_place(scope):
+    from app.services.answer_core import guided_analysis as g
+    from app.services.answer_core.publisher_guide import load
+
+    guide = load({"ai_bot_guide": GUIDE})
+    sent = {}
+
+    def model(prompt, system=None, max_tokens=None):
+        sent["payload"] = json.loads(prompt)
+        return {"answer": "Doanh thu 150, đạt 50% mục tiêu 300; tăng 37,5% so với kỳ trước.", "charts_used": [],
+                "used_publisher_notes": True}
+
+    out = g.analyse(scope, question="Doanh thu có đạt mục tiêu không?", instructions=None, guide=guide,
+                    complete=model)
+    assert sent["payload"]["publisher_guide"]["definitions"][0]["name"] == "Điểm KPI"
+    assert "glossary" not in sent["payload"]["publisher_guide"]             # the planner's, not the model's
+    assert any(c.get("cause_source") for c in sent["payload"]["charts"])    # cause sources always read
+    assert out["unverified_figures"] == ["37,5%"] and "⟦37,5%⟧" in out["text"]
+    assert out["used_notes"] is True
+    # the glossary: the publisher's word is a synonym of the field, for the planner
+    s = PublishedReportScope(db=None, ctx=scope.ctx, link_id=7, turn_id="t" * 32)
+    s.guide = guide
+    from app.services.answer_core.publisher_guide import synonyms
+    assert synonyms(guide) == {R: ["doanh số"]}
+
+
+def test_the_guide_is_validated_against_the_links_catalog_and_never_served_to_viewers():
+    from app.api import dashboards as dash_api
+    from app.api import public as public_api_mod
+
+    catalog = {"charts": [{"chart_id": 11, "name": "x", "pages": []}],
+               "fields": [{"ref": R, "label": "Doanh thu", "kind": "measure", "aggregation": "sum", "charts": [11]},
+                          {"ref": P, "label": "Sản phẩm", "kind": "dimension", "aggregation": None, "charts": [11]}]}
+    assert dash_api._checked_guide(GUIDE, lambda: catalog)["definitions"][0]["name"] == "Điểm KPI"
+    with pytest.raises(Exception) as exc:
+        dash_api._checked_guide({**GUIDE, "glossary": [{"term": "x", "ref": "v.secret"}],
+                                 "cause_sources": [{"chart_id": 99}]}, lambda: catalog)
+    assert exc.value.status_code == 422 and set(exc.value.detail["invalid"]) == {"glossary:x", "cause_sources:99"}
+    with pytest.raises(Exception) as exc:
+        dash_api._checked_guide({"targets": [{"ref": R, "value": "nhiều"}]})
+    assert exc.value.status_code == 422
+    src = (pathlib.Path(public_api_mod.__file__)).read_text(encoding="utf-8")
+    assert 'safe_appearance.pop("ai_bot_guide", None)' in src

@@ -3677,7 +3677,8 @@ def create_public_link(
         name=request.name,
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
-        appearance_config=_apply_ai_credential(db, current_user, request.appearance_config or {}, None, None),
+        appearance_config=_apply_ai_credential(db, current_user, _with_checked_guide(request.appearance_config),
+                                               None, None),
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
         expires_at=_aware(request.expires_at),
@@ -3798,6 +3799,80 @@ def get_public_link_ai_status(
     return {**gateway.readiness(db, dict(link.appearance_config or {})), "models": gateway.answer_models()}
 
 
+def _link_guide_catalog(db: Session, dash_id: int, link: DashboardPublicLink, user: User) -> dict:
+    """The charts and fields the link's AI Bot reads - built exactly as a turn builds
+    them (published tiles only, the link's own filters, locks and exposed fields), for
+    the publisher guide's pickers and its save-time check."""
+    from app.api.public import _serve_published_only
+    from app.services.answer_core.published_report import PublishedReportScope
+    from app.services.answer_core.publisher_guide import catalog_payload
+    from app.services.public_link_scope import LinkScopeUnavailable, link_tool_context
+
+    dash = (db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == dash_id).first())
+    if dash is None:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    _serve_published_only(dash)
+    try:
+        ctx = link_tool_context(db, dashboard=dash, filters_config=getattr(link, "filters_config", None),
+                                appearance_config=getattr(link, "appearance_config", None),
+                                context_for_log=f"guide_catalog:{link.id}", actor_type="user",
+                                actor_ref=getattr(user, "email", None) or str(user.id))
+    except LinkScopeUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Không dựng được phạm vi dữ liệu của link") from exc
+    return catalog_payload(PublishedReportScope(db, ctx=ctx, link_id=link.id, turn_id=f"guide-{link.id}"))
+
+
+@router.get("/{dashboard_id}/public-links/{link_id}/ai/catalog")
+def get_public_link_ai_catalog(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """What the link's AI Bot can read, for the publisher guide's pickers."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_publish_access(db, current_user, dash, "dashboards")
+    link = (db.query(DashboardPublicLink)
+            .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id).first())
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    return _link_guide_catalog(db, dashboard_id, link, current_user)
+
+
+def _checked_guide(raw: Any, catalog_of: Optional[Any] = None) -> Optional[dict]:
+    """The publisher guide as stored: well-formed (422 otherwise) and - when the link
+    exists - naming only fields and charts the link's bot reads (422 listing them)."""
+    from pydantic import ValidationError
+
+    from app.services.answer_core.publisher_guide import invalid_entries, parse
+
+    if not raw:
+        return None
+    try:
+        guide = parse(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"code": "ai_bot_guide_invalid",
+                                                     "errors": exc.errors(include_url=False)[:20]}) from exc
+    if catalog_of is not None:
+        bad = invalid_entries(guide, catalog_of())
+        if bad:
+            raise HTTPException(status_code=422, detail={
+                "code": "ai_bot_guide_unknown_refs", "invalid": bad,
+                "message": "Hướng dẫn nhắc tới trường hoặc biểu đồ không có trong báo cáo công khai của link này."})
+    return guide.model_dump()
+
+
+def _with_checked_guide(appearance: Optional[dict], catalog_of: Optional[Any] = None) -> dict:
+    out = dict(appearance or {})
+    if out.get("ai_bot_guide"):
+        out["ai_bot_guide"] = _checked_guide(out["ai_bot_guide"], catalog_of)
+    return out
+
+
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
 def update_public_link(
     dashboard_id: int,
@@ -3830,7 +3905,9 @@ def update_public_link(
         _refuse_unappliable_link_filters(request.filters_config)
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
-        link.appearance_config = _apply_ai_credential(db, current_user, dict(request.appearance_config),
+        appearance = _with_checked_guide(
+            request.appearance_config, lambda: _link_guide_catalog(db, dashboard_id, link, current_user))
+        link.appearance_config = _apply_ai_credential(db, current_user, appearance,
                                                       dict(link.appearance_config or {}), link.id)
     # Every security-changing edit moves the link to a new security generation,
     # which invalidates every password session minted before it (see

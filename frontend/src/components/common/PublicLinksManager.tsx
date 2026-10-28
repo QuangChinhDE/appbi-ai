@@ -923,6 +923,7 @@ export function PublicLinksManager({
       ai_bot_model: link.appearance_config?.ai_bot_model,
       ai_bot_web_search_enabled: link.appearance_config?.ai_bot_web_search_enabled,
       ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
+      ai_bot_guide: link.appearance_config?.ai_bot_guide,
       // No key ever comes back: the link's own key (if any) is a reference into
       // the encrypted store; leaving it untouched keeps it on save.
       ai_bot_credential_id: link.appearance_config?.ai_bot_credential_id,

@@ -9,7 +9,7 @@ import {
   DashboardChartLayout,
   PublicLinkAppearanceConfig,
 } from '@/types/api';
-import type { AiModelProvider } from '@/types/api';
+import type { AiModelProvider, PublicLinkAiCatalog } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportAnalyzeResponse,
@@ -751,6 +751,12 @@ export const dashboardApi = {
   // this call); if blank, the server uses a key already stored on a link.
   /** Is the AI model ready for a public link's assistant (server or the link's own
    *  key)? Never a key or a credential secret. */
+  /** What the link's AI Bot reads, for the publisher guide's pickers. */
+  getPublicLinkAiCatalog: async (dashboardId: number, linkId: number): Promise<PublicLinkAiCatalog> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/public-links/${linkId}/ai/catalog`);
+    return response.data;
+  },
+
   getPublicLinkAiStatus: async (
     dashboardId: number, linkId: number,
   ): Promise<{ ready: boolean; provider: string | null; model: string | null;

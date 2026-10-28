@@ -342,6 +342,11 @@ export interface PublicAnswerData {
    *  of a could-not-plan refusal (code `ai_analysis`), or beside an answer it evaluates.
    *  Labelled; its unread figures listed; `used_notes` when it used the prompt. */
   analysis?: { text: string; charts?: string[]; unverified_figures?: string[]; used_notes?: boolean } | null;
+  /** A term the publisher's guide defines, answered verbatim (code `guide_definition`). */
+  definition?: { name: string; aliases?: string[]; formula: string; note?: string } | null;
+  /** The publisher's target beside the system's one total, computed by code. */
+  target?: { measure: string; period?: string | null; target: number; actual: number; gap: number;
+             attainment_pct: number; unit?: string | null } | null;
   options?: string[];
   choices?: { label: string; token?: string }[];
 }
