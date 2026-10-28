@@ -884,14 +884,11 @@
   background-position: top, top;
   background-repeat: no-repeat;
 }
+/* Dark: only the shadow differs. The stripe and the tint are the accent-bar rules'
+   (below), as on light - this rule used to repaint them at a higher specificity, so an
+   author's accent bar (side, size, none) was ignored on dark modern reports. */
 [data-dashboard-skin='modern'][data-dashboard-theme='dark'] .dashboard-tile {
   box-shadow: var(--dashboard-card-shadow, 0 1px 2px rgba(0, 0, 0, .4), 0 12px 28px -16px rgba(0, 0, 0, .7));
-  background-image:
-    linear-gradient(90deg, var(--dashboard-accent, #8b8cf0), color-mix(in srgb, var(--dashboard-accent, #8b8cf0) 55%, #ffffff)),
-    linear-gradient(180deg, color-mix(in srgb, var(--dashboard-accent, #8b8cf0) 15%, transparent), transparent 82px);
-  background-size: 100% 3px, 100% 100%;
-  background-position: top, top;
-  background-repeat: no-repeat;
 }
 
 /*
@@ -1260,6 +1257,26 @@
   background-color: transparent;
   background-image: none;
   box-shadow: none;
+}
+/* The card border the author chose (cardBorderStyle) beats the template's treatment.
+   Set only when the author set it (DashboardThemeProvider). It sets the variables the
+   tile frame's inline border reads (tile-frame.ts) - an inline style beats any rule -
+   and, after the treatment rules, the tile's own border. A legacy explicit
+   cardBorderColor/Width is set inline on the provider and still wins over this. */
+[data-dashboard-cardborder="none"] {
+  --dashboard-card-border-color: transparent;
+}
+[data-dashboard-cardborder="hairline"] {
+  --dashboard-card-border-width: 1px;
+  --dashboard-card-border-color: rgb(var(--border-line));
+}
+[data-dashboard-cardborder="strong"] {
+  --dashboard-card-border-width: 1.5px;
+  --dashboard-card-border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 32%, rgb(var(--border-line)));
+}
+[data-dashboard-cardborder] .dashboard-tile {
+  border-width: var(--dashboard-card-border-width, 1px);
+  border-color: var(--dashboard-card-border-color, rgb(var(--border-line)));
 }
 
 /* ── Per-tile frame (tileFrame / AI Design) ──────────────────────────────────
