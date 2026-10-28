@@ -42,7 +42,11 @@ def scope(monkeypatch):
     def fake_fetch(c, chart_id, *, extra_filters=None):
         c.calls.append((chart_id, extra_filters))
         cols = [P, Q, R, A]
-        return {"columns": cols, "rows": [[r[k] for k in cols] for r in ROWS], "filters_applied": []}
+        # the chart read's own report of what it ran with, as `_fetch_chart_data` gives it:
+        # the disclosable filters it applied, and how many hidden ones it applied
+        shown, withheld = c.disclosed_filters()
+        return {"columns": cols, "rows": [[r[k] for k in cols] for r in ROWS], "filters_applied": shown,
+                "restricted_by_author": withheld}
 
     monkeypatch.setattr(context, "_fetch_chart_data", fake_fetch)
     s = PublishedReportScope(db=None, ctx=ctx, link_id=7, turn_id="t" * 32)
@@ -684,3 +688,42 @@ def test_an_average_over_time_has_no_peak_or_trough_and_a_stray_bold_marker_is_d
     assert "peak" not in facts and "trough" not in facts and facts["no_peak_reason"]
     assert "no_peak_reason" in SYSTEM and "tỷ lệ 5 sao" in SYSTEM
     assert _tidy("- **1. SP:** 5.202.955,05**\n- **RJ**: 1") == "- **1. SP:** 5.202.955,05\n- **RJ**: 1"
+
+
+def test_a_chart_that_cannot_apply_a_filter_in_force_refuses_and_names_it(scope, monkeypatch):
+    """Live 2026-10-28 (customer demo): asked about a shortfall while the report showed
+    period T08, the bot summed every period (224 tỷ, not ~30 tỷ) - the chart it read could
+    not apply the period filter, and the evidence still listed it as applied. A chart read
+    that reports a filter in force as not applied is refused, naming it (PO: refuse)."""
+    from app.services.agent_flows.tools import context
+    from app.services.data_core import planner, service
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        return {"columns": [P, Q, R, A], "rows": [[r[k] for k in (P, Q, R, A)] for r in ROWS],
+                "filters_applied": [], "filters_not_applied": [{"field": "Kỳ", "operator": "eq", "value": "T08"}]}
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    raw = {"status": "plan", "explore_id": 11, "dimensions": [P], "measures": [R], "time_grains": {},
+           "filters": {}, "sorts": [], "covered": {"doanh thu": R, "san pham": P}, "interpretation": "x"}
+    monkeypatch.setattr(service, "make_plan", lambda *a, **k: planner.validate(raw, scope.catalog()))
+    out = service.ask(None, None, "Doanh thu theo sản phẩm", None, scope=scope, turn_id="t" * 32)
+    assert out["status"] == "refused" and out["code"] == "filter_not_applied", out
+    assert "Kỳ" in out["message"] and "T08" in out["message"] and "Doanh thu theo sản phẩm" in out["message"]
+    assert "rows" not in out and "answer" not in out
+
+
+def test_the_evidence_lists_the_filters_the_chart_ran_with_not_the_links_list(scope, monkeypatch):
+    """The evidence named the link's global filters - a filter the chart had not applied
+    read as applied. It now names what THIS chart's read applied."""
+    from app.services.agent_flows.tools import context
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        return {"columns": [P, Q, R, A], "rows": [[r[k] for k in (P, Q, R, A)] for r in ROWS],
+                "filters_applied": [{"field": "v.region", "operator": "in", "value": ["North"]}],
+                "restricted_by_author": 0}
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    result = scope.read(_plan(scope, [P], [R]), [P], [R], {}, [], {}, 500)
+    ev = scope.evidence(_plan(scope, [P], [R]), result)
+    assert ev["filters_applied"] == ["region in North"]           # not the link's "channel eq Online"
+    assert ev["filters_withheld"] == 0 and ev["filters_dropped"] == []
