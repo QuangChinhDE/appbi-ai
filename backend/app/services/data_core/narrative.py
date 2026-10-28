@@ -130,6 +130,20 @@ def _label(d: date, grain: str) -> str:
     return d.isoformat()
 
 
+def _thin_edges(series: dict, present: set, grain: str, today: date) -> list[date]:
+    """The edge periods `chart_value_normalization.time_completeness` calls
+    `edge_low_volume`, computed on the periods' totals."""
+    from datetime import datetime as _datetime
+
+    from app.services.chart_value_normalization import time_completeness
+
+    rows = [{"t": _datetime(p.year, p.month, p.day),
+             "v": sum(v for s in series.values() for v in [s.get(p)] if v is not None)} for p in sorted(present)]
+    out = time_completeness(rows, "t", grain, "v", now=_datetime(today.year, today.month, today.day)) or {}
+    thin = {p["bucket"] for p in out.get("partial") or [] if p.get("reason") == "edge_low_volume"}
+    return [r["t"].date() for r in rows if r["t"] in thin]
+
+
 def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
                period: Optional[tuple[date, date]] = None) -> dict:
     grain = grain if grain in GRAIN_WORD else "month"
@@ -162,10 +176,18 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
     # A period that has not ended yet (today falls inside it, or it is in the
     # future) holds part of its data: comparing it with a full one is a fake drop.
     partial = [p for p in calendar if _next(p, grain) > today]
-    complete = [p for p in calendar if p not in partial]
+    # A first or last period far below a typical one is probably cut off - a data set
+    # that ends mid-month (live 2026-10-28: Olist 2018-09 held a few orders and the
+    # headline read "-100%"). The rule the chart's own footnote uses.
+    thin = [p for p in _thin_edges(series, present, grain, today) if p not in partial]
+    complete = [p for p in calendar if p not in partial and p not in thin]
     notes = []
     if partial:
         notes.append(f"Kỳ {', '.join(_label(p, grain) for p in partial)} chưa kết thúc nên không dùng để so sánh.")
+    if thin:
+        notes.append(f"Kỳ {', '.join(_label(p, grain) for p in thin)} ở đầu hoặc cuối dữ liệu thấp hơn nhiều so với "
+                     "một kỳ thông thường (có thể chưa đầy đủ) nên không dùng để so sánh.")
+    partial = partial + thin
     if not complete:
         return {"headline": f"Dữ liệu {m['label']} mới có ở {word} chưa kết thúc, chưa đủ để nói về xu hướng.",
                 "bullets": [], "facts": [], "checks": checks, "note": " ".join(notes), "incomplete": True}
