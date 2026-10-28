@@ -194,6 +194,8 @@ class PublishedReportScope:
         self._charts: dict[int, _Chart] = {}
         self._entries: Optional[list] = None
         self._reads = 0
+        #: the publisher's guide (`publisher_guide.PublisherGuide`), set before the catalog is built
+        self.guide = None
 
     # ── what the planner may ask about ────────────────────────────────────────
     def catalog(self) -> list:
@@ -216,6 +218,11 @@ class PublishedReportScope:
         ordered = first + sorted(c for c in ctx.allowed_chart_ids if c not in first)
 
         vocab = _Vocabulary(self.db)
+        # the publisher's glossary (`ai_bot_guide`): their words for a field, offered
+        # to the planner and the chart ranking as that field's synonyms
+        from app.services.answer_core.publisher_guide import synonyms as _guide_synonyms
+
+        glossary = _guide_synonyms(getattr(self, "guide", None))
         exposed = {str(r) for r in ((ctx.exposed_fields or (set(), set()))[0] or set()) if "." in str(r)}
         slicer_labels = {}
         for s in (getattr(ctx.dashboard, "slicers_config", None) or []):
@@ -252,6 +259,8 @@ class PublishedReportScope:
                 if one_dim and breakdown_words:
                     # the breakdown the report's title names ("sản phẩm" of "Doanh thu theo sản phẩm")
                     words = tuple(dict.fromkeys([*words, breakdown_words]))[:12]
+                if glossary.get(ref):
+                    words = tuple(dict.fromkeys([*glossary[ref], *words]))[:16]
                 cf.append(CatalogField(ref, "dimension", dtype, str(d.get("label") or ref), desc, words))
                 dims.append(ref)
             only = len(fields.get("measures") or []) == 1
@@ -264,6 +273,8 @@ class PublishedReportScope:
                     # the words the report's title gives a viewer for its one metric
                     # ("Doanh thu" of "Doanh thu theo sản phẩm") over an English label
                     words = tuple(dict.fromkeys([*words, metric_words]))[:12]
+                if glossary.get(ref):
+                    words = tuple(dict.fromkeys([*glossary[ref], *words]))[:16]
                 cf.append(CatalogField(ref, "measure", agg, str(m.get("label") or ref), desc, words))
                 measures[ref] = agg
             if not measures:
@@ -366,6 +377,18 @@ class PublishedReportScope:
         except ValueError as ex:  # the engine refuses a filter it cannot apply - loudly
             raise _refuse("filter_unreachable", str(ex)[:300]) from ex
         self._reads += 1
+        dropped = [f for f in data.get("filters_not_applied") or [] if isinstance(f, dict)]
+        if dropped:
+            # A filter in force that THIS chart could not apply (another dataset's
+            # slicer, an engine soft-drop): its rows are not the rows the report shows
+            # under that filter. Live 2026-10-28: asked about period T08, the bot summed
+            # every period. Never a number over different filters than the report's -
+            # the same rule as GQS `filter_would_drop` (PO decision: refuse, name it).
+            names = "; ".join(_describe_engine_filter(f) for f in dropped[:3])
+            raise _refuse("filter_not_applied",
+                          f"Biểu đồ “{chart.name}” không lọc được theo {names}, nên số của nó không phải số "
+                          "đang hiển thị với bộ lọc này. Hãy hỏi về biểu đồ có lọc theo trường đó, hoặc bỏ chọn "
+                          "bộ lọc rồi hỏi lại.", chart=chart.name)
         cols = [str(c) for c in data.get("columns") or []]
         rows = [dict(zip(cols, r)) for r in data.get("rows") or []]
         rows = [r for r in rows if all(_passes(r.get(ref), c) for ref, c in local.items())]
@@ -430,14 +453,16 @@ class PublishedReportScope:
         truncated = len(out_rows) > max_rows
         out_rows = out_rows[:max_rows]
         columns = [_Col(d, d, "dimension") for d in dims] + [_Col(m, m, "measure") for m in measures]
-        shown, withheld = self.ctx.disclosed_filters()
+        # The filters THIS chart ran with (disclosable ones named, hidden ones counted)
+        # - not the link's global list, which named a filter the chart had dropped.
+        shown = [f for f in data.get("filters_applied") or [] if isinstance(f, dict)]
+        withheld = int(data.get("restricted_by_author") or 0)
         meta = {
             "chart_id": chart.chart_id, "chart": chart.name, "pages": chart.pages, "source_type": chart.source_type,
             "dataset_id": chart.dataset_id, "rows_returned": len(out_rows),
             "duration_ms": int((time.monotonic() - started) * 1000),
             "filters_shown": [_describe_engine_filter(f) for f in shown][:12], "filters_withheld": withheld,
-            "filters_not_applied": [str(f.get("field") or f.get("semanticField") or "")
-                                    for f in data.get("filters_not_applied") or [] if isinstance(f, dict)],
+            "filters_not_applied": [],
             "data_as_of": data.get("data_as_of"), "regrouped": regroup,
         }
         return PublishedResult(columns=columns, rows=out_rows, truncated=truncated, meta=meta)

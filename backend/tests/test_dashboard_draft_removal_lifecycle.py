@@ -664,3 +664,66 @@ def test_a_single_author_publishes_and_discards_as_before(db):
     _stage(db, A, theme_config={"accent": "#000"})
     _discard(db, A)
     assert not _rev(db, A)["has_changes"]
+
+
+def test_the_shared_draft_revision_never_repeats_after_a_discard(db):
+    """Customer demo 2026-10-28: a period slicer vanished. The revision counter
+    restarted at 1 after a Discard, so a copy loaded before it (token "…#1") matched
+    the next edit's token and its stale slicer list replaced the colleague's. The token
+    now also names the draft's content."""
+    write = (lambda user, slicers, rev: api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
+        slicers_config=slicers, base_rev=rev), db, user))
+    write(A, SLICERS + [{"id": "s-extra", "field": "x", "operator": "in", "value": []}], _rev(db, A)["rev"])
+    stale = _rev(db, B)["rev"]                                   # B's copy, made before the Discard
+    _discard(db)
+    write(A, list(SLICERS), _rev(db, A)["rev"])                   # a fresh edit after the Discard
+    assert _rev(db, A)["rev"] != stale, "a revision repeated after Discard"
+    with pytest.raises(HTTPException) as exc:
+        write(B, [], stale)                                       # B's stale list would drop every slicer
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "shared_draft_stale"
+    assert not _has_draft_meta_only_as_draft(db)
+
+
+def _has_draft_meta_only_as_draft(db) -> bool:
+    """A Discard leaves no draft behind (the token names the draft's content instead)."""
+    _discard(db)
+    db.expire_all()
+    resp = api._serialize_dashboard_with_draft(db, db.query(Dashboard).filter(Dashboard.id == 1).one(), A)
+    return bool(resp.has_draft)
+
+
+PERIOD = {"id": "s-period", "field": "Kỳ", "label": "Kỳ", "type": "dropdown", "operator": "in", "value": ["T08"],
+          "scope": "all"}
+
+
+@pytest.mark.parametrize("draft", [
+    [dict(s) for s in SLICERS],                                   # the period slicer deleted
+    [dict(s) for s in SLICERS] + [{**PERIOD, "scope": "custom", "pageIds": ["p1"]}],   # narrowed to one page
+])
+def test_publishing_away_a_report_wide_default_filter_needs_an_explicit_yes(db, draft):
+    """Customer demo 2026-10-28: the period slicer (T08) left slicers_config and the
+    report silently showed every period summed. Publish names it and needs a yes."""
+    dash = db.query(Dashboard).filter(Dashboard.id == 1).one()
+    dash.slicers_config = list(SLICERS) + [dict(PERIOD)]
+    db.commit()
+    api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
+        slicers_config=draft, base_rev=_rev(db, A)["rev"]), db, A)
+    with pytest.raises(HTTPException) as exc:
+        api.publish_dashboard_draft(1, api.PublishRequest(force=True), db, A)
+    assert exc.value.status_code == 409 and exc.value.detail["code"] == "slicer_removal_unconfirmed"
+    assert exc.value.detail["removed"] == [{"id": "s-period", "label": "Kỳ", "value": ["T08"]}]
+    db.expire_all()
+    assert any(s.get("id") == "s-period" for s in db.query(Dashboard).get(1).slicers_config), "published anyway"
+
+    api.publish_dashboard_draft(1, api.PublishRequest(force=True, confirm_removed_slicers=["s-period"]), db, A)
+    db.expire_all()
+    live = db.query(Dashboard).get(1).slicers_config
+    assert not any(s.get("id") == "s-period" and s.get("scope", "all") == "all" for s in live)
+
+
+def test_a_slicer_without_a_default_value_publishes_away_without_a_question(db):
+    api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
+        slicers_config=[], base_rev=_rev(db, A)["rev"]), db, A)
+    api.publish_dashboard_draft(1, api.PublishRequest(force=True), db, A)    # s-region has no default
+    db.expire_all()
+    assert db.query(Dashboard).get(1).slicers_config == []

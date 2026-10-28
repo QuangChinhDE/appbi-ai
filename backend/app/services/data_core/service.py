@@ -279,7 +279,12 @@ def ask(db, user, question: str, deps: Optional[CoreDeps], *, previous: Optional
                 "evidence": {"query_id": evidence.get("query_id")}}
     if order and not time_ref and len([c for c in columns if c["role"] == "dimension"]) == 1:
         rows = _ordered(rows, columns, p, order)
-    story = narrative.describe(columns, rows, time_ref=time_ref, truncated=result.truncated,
+    # the narrative knows each measure's aggregation: a share or a sum over groups only
+    # where rows add up (not an average, a rate or a distinct count)
+    aggregation = {f.ref: f.type for f in p.explore.fields if f.kind == "measure"}
+    told = [{**c, "aggregation": aggregation.get(c["ref"] or "")} if c["role"] == "measure" else c
+            for c in columns]
+    story = narrative.describe(told, rows, time_ref=time_ref, truncated=result.truncated,
                                grain=p.time_grains.get(time_ref) if time_ref else None,
                                period=_asked_period(p, time_ref), order=order, top=p.limit)
     steps.append({"step": "verify", "detail": "; ".join(c["detail"] for c in story["checks"])})

@@ -721,6 +721,26 @@ export interface AiModelProvider {
   models: { model: string; label: string; lifecycle?: string | null; recommended?: boolean }[];
 }
 
+/** The publisher's structured guide for a link's AI Bot: each section has one use
+ *  (docs/features/public-bot-trust-guide/spec.md). Never served to viewers. */
+export interface PublisherGuide {
+  v?: number;
+  context?: { purpose?: string; audience?: string; unit?: string; period_note?: string };
+  glossary?: { term: string; ref: string }[];
+  definitions?: { name: string; aliases?: string[]; formula: string; note?: string }[];
+  targets?: { ref: string; value: number; period?: string; unit?: string; label?: string }[];
+  cause_sources?: { chart_id: number; note?: string }[];
+  facts?: { title: string; content: string }[];
+  style?: { length?: 'short' | 'normal' | 'detailed'; tone?: 'executive' | 'operational' | 'neutral'; language?: 'auto' | 'vi' | 'en' };
+  out_of_scope?: { topic: string; reason?: string }[];
+}
+
+/** What a link's AI Bot can read (GET …/public-links/{id}/ai/catalog): the guide's pickers. */
+export interface PublicLinkAiCatalog {
+  charts: { chart_id: number; name: string; pages: string[] }[];
+  fields: { ref: string; label: string; kind: 'dimension' | 'measure'; aggregation?: string | null; charts: number[] }[];
+}
+
 export interface PublicLinkAppearanceConfig {
   /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
@@ -783,6 +803,8 @@ export interface PublicLinkAppearanceConfig {
    * `ai_bot_report_context_note` for backward compatibility.)
    */
   ai_bot_report_context_note?: string | null;
+  /** The publisher's structured guide (backend `answer_core/publisher_guide.py`). */
+  ai_bot_guide?: PublisherGuide | null;
   /**
   /**
    * Allow the Thinking bot to search the public web for domain/market

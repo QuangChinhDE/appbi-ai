@@ -21,7 +21,7 @@ import {
   usePublishDashboard,
   useDiscardDashboardDraft,
 } from '@/hooks/use-dashboards';
-import { dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
+import { adoptSharedDraft, adoptedSharedDraftRev, dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
@@ -1768,6 +1768,45 @@ function DashboardDetailPageInner() {
      draftSlicerClusterLayout, appliedSlicerClusterLayout],
   );
 
+  // The report-wide filter / slicer lists follow the SHARED draft. They are seeded
+  // once above; when the server's revision moves on under this editor - a Discard,
+  // a Publish, another author's write - and nothing is pending here, they are seeded
+  // again from the server (customer demo 2026-10-28: a stale list, sent after a
+  // refetch or a Discard, removed the period slicer). With edits pending, they are
+  // kept: the next write is refused as stale and the editor is asked to reload.
+  // This editor's own write moved the revision itself: nothing to re-seed.
+  const seededSharedRevRef = React.useRef<string | null>(null);
+  const reseedSharedRef = React.useRef(false);
+  React.useEffect(() => {
+    const server = serverDashboard as any;
+    const rev = server?.shared_draft?.rev;
+    if (!server || typeof rev !== 'string' || !slicersSeededRef.current) return;
+    if (seededSharedRevRef.current === null) {
+      seededSharedRevRef.current = rev;
+      adoptSharedDraft(server);
+      return;
+    }
+    if (rev === seededSharedRevRef.current || hasPendingFilterChanges) return;
+    const ownWrite = adoptedSharedDraftRev(dashboardId) === rev && !reseedSharedRef.current;
+    seededSharedRevRef.current = rev;
+    reseedSharedRef.current = false;
+    adoptSharedDraft(server);
+    if (ownWrite) return;
+    const filters: TypedFilter[] = (Array.isArray(server.filters_config) ? server.filters_config as BaseFilter[] : [])
+      .map((b) => fromBaseFilter(b))
+      .filter((f): f is TypedFilter => f !== null);
+    filtersSnapshotRef.current = JSON.stringify(filters);
+    setDraftGlobalFilters(filters);
+    setAppliedGlobalFilters(filters);
+    const slicers = Array.isArray(server.slicers_config) ? (server.slicers_config as any[]) : [];
+    setDraftGlobalSlicers(slicers);
+    setAppliedGlobalSlicers(slicers);
+    const cluster = server.slicer_cluster_layout || null;
+    setDraftSlicerClusterLayout(cluster);
+    setAppliedSlicerClusterLayout(cluster);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDashboard, hasPendingFilterChanges, dashboardId]);
+
   // EVERY Builder-local edit that is not yet persisted and would vanish on leave:
   // unsaved layout/theme, un-applied filter/slicer edits (Apply persists them to
   // the draft), the Inspector's report name/description (behind "Save report"),
@@ -2269,6 +2308,26 @@ function DashboardDetailPageInner() {
     return out;
   };
 
+  /** Publish; when it would remove a report-wide filter that has a default value
+   *  (409 `slicer_removal_unconfirmed`), ask - naming each filter and its value - and
+   *  publish again only on an explicit yes. Then the lists are re-seeded from the server. */
+  const publishWithSlicerConfirm = async (arg: {
+    dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean;
+    sharedAckRev?: string; keepShared?: boolean;
+  }) => {
+    try {
+      await publishDashboardMutation.mutateAsync(arg);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status !== 409 || detail?.code !== 'slicer_removal_unconfirmed') throw err;
+      const removed: { id: string; label: string; value: unknown }[] = detail.removed ?? [];
+      const list = removed.map((s) => `• ${s.label}${s.value != null ? ` = ${Array.isArray(s.value) ? s.value.join(', ') : String(s.value)}` : ''}`).join('\n');
+      if (!window.confirm(t('dashboards.detail.slicerRemoval.confirm', { list }))) throw err;
+      await publishDashboardMutation.mutateAsync({ ...arg, confirmRemovedSlicers: removed.map((s) => s.id) });
+    }
+    reseedSharedRef.current = true;
+  };
+
   const handlePublish = async () => {
     if (committingPresentationRef.current) return;
     // The last content edit is in the draft before the snapshot is published.
@@ -2285,11 +2344,13 @@ function DashboardDetailPageInner() {
     }
     resetUndo();
     try {
-      await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
+      await publishWithSlicerConfirm({ dashboardId, tileBaseV });
       toast.success(t('dashboards.detail.publishedNewVersion'));
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+      if (err?.response?.status === 409 && detail?.code === 'slicer_removal_unconfirmed') {
+        toast.info(t('dashboards.detail.slicerRemoval.kept'));
+      } else if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
         setSharedChoice({ action: 'publish', authors: detail.authors ?? [], rev: detail.rev, tileBaseV });
       } else if (err?.response?.status === 409 && detail?.code === 'responsive_conflict') {
         setPublishConflict({ editor: null, tiles: deviceConflictLabels(detail.responsive) });
@@ -2316,10 +2377,11 @@ function DashboardDetailPageInner() {
     if (!(await settleContentEdits('flush'))) return;
     setPublishConflict(null);
     try {
-      await publishDashboardMutation.mutateAsync({ dashboardId, force: true });
+      await publishWithSlicerConfirm({ dashboardId, force: true });
       toast.success(t('dashboards.detail.publishedOverwrote'));
-    } catch {
-      toast.error(t('dashboards.detail.publishFailed'));
+    } catch (err: any) {
+      toast.error(t(err?.response?.data?.detail?.code === 'slicer_removal_unconfirmed'
+        ? 'dashboards.detail.slicerRemoval.kept' : 'dashboards.detail.publishFailed'));
     }
   };
 
@@ -2337,6 +2399,7 @@ function DashboardDetailPageInner() {
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
+        reseedSharedRef.current = true;
         toast.success(t('dashboards.detail.revertedToPublished'));
       } catch (err: any) {
         const detail = err?.response?.data?.detail;
@@ -2358,14 +2421,17 @@ function DashboardDetailPageInner() {
     const shared = include ? { sharedAckRev: choice.rev } : { keepShared: true };
     try {
       if (choice.action === 'publish') {
-        await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
+        await publishWithSlicerConfirm({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
         toast.success(t(include ? 'dashboards.detail.publishedNewVersion' : 'dashboards.detail.sharedChoice.publishedMine'));
       } else {
         await discardDraftMutation.mutateAsync({ dashboardId, ...shared });
+        reseedSharedRef.current = true;
         toast.success(t(include ? 'dashboards.detail.revertedToPublished' : 'dashboards.detail.sharedChoice.discardedMine'));
       }
     } catch (err: any) {
-      if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'responsive_conflict') {
+      if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'slicer_removal_unconfirmed') {
+        toast.info(t('dashboards.detail.slicerRemoval.kept'));
+      } else if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'responsive_conflict') {
         setPublishConflict({ editor: null, tiles: deviceConflictLabels(err.response.data.detail.responsive) });
       } else if (err?.response?.status === 409) {
         setPublishConflict({ editor: err?.response?.data?.detail?.last_editor ?? null, tiles: err?.response?.data?.detail?.tiles ?? [] });

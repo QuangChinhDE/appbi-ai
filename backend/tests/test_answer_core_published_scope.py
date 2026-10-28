@@ -9,6 +9,7 @@ filters, locks, page bounds, exposed fields - is exercised on the live stack.
 from __future__ import annotations
 
 import json
+import pathlib
 
 import pytest
 
@@ -42,7 +43,11 @@ def scope(monkeypatch):
     def fake_fetch(c, chart_id, *, extra_filters=None):
         c.calls.append((chart_id, extra_filters))
         cols = [P, Q, R, A]
-        return {"columns": cols, "rows": [[r[k] for k in cols] for r in ROWS], "filters_applied": []}
+        # the chart read's own report of what it ran with, as `_fetch_chart_data` gives it:
+        # the disclosable filters it applied, and how many hidden ones it applied
+        shown, withheld = c.disclosed_filters()
+        return {"columns": cols, "rows": [[r[k] for k in cols] for r in ROWS], "filters_applied": shown,
+                "restricted_by_author": withheld}
 
     monkeypatch.setattr(context, "_fetch_chart_data", fake_fetch)
     s = PublishedReportScope(db=None, ctx=ctx, link_id=7, turn_id="t" * 32)
@@ -684,3 +689,214 @@ def test_an_average_over_time_has_no_peak_or_trough_and_a_stray_bold_marker_is_d
     assert "peak" not in facts and "trough" not in facts and facts["no_peak_reason"]
     assert "no_peak_reason" in SYSTEM and "tỷ lệ 5 sao" in SYSTEM
     assert _tidy("- **1. SP:** 5.202.955,05**\n- **RJ**: 1") == "- **1. SP:** 5.202.955,05\n- **RJ**: 1"
+
+
+def test_a_chart_that_cannot_apply_a_filter_in_force_refuses_and_names_it(scope, monkeypatch):
+    """Live 2026-10-28 (customer demo): asked about a shortfall while the report showed
+    period T08, the bot summed every period (224 tỷ, not ~30 tỷ) - the chart it read could
+    not apply the period filter, and the evidence still listed it as applied. A chart read
+    that reports a filter in force as not applied is refused, naming it (PO: refuse)."""
+    from app.services.agent_flows.tools import context
+    from app.services.data_core import planner, service
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        return {"columns": [P, Q, R, A], "rows": [[r[k] for k in (P, Q, R, A)] for r in ROWS],
+                "filters_applied": [], "filters_not_applied": [{"field": "Kỳ", "operator": "eq", "value": "T08"}]}
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    raw = {"status": "plan", "explore_id": 11, "dimensions": [P], "measures": [R], "time_grains": {},
+           "filters": {}, "sorts": [], "covered": {"doanh thu": R, "san pham": P}, "interpretation": "x"}
+    monkeypatch.setattr(service, "make_plan", lambda *a, **k: planner.validate(raw, scope.catalog()))
+    out = service.ask(None, None, "Doanh thu theo sản phẩm", None, scope=scope, turn_id="t" * 32)
+    assert out["status"] == "refused" and out["code"] == "filter_not_applied", out
+    assert "Kỳ" in out["message"] and "T08" in out["message"] and "Doanh thu theo sản phẩm" in out["message"]
+    assert "rows" not in out and "answer" not in out
+
+
+def test_the_evidence_lists_the_filters_the_chart_ran_with_not_the_links_list(scope, monkeypatch):
+    """The evidence named the link's global filters - a filter the chart had not applied
+    read as applied. It now names what THIS chart's read applied."""
+    from app.services.agent_flows.tools import context
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        return {"columns": [P, Q, R, A], "rows": [[r[k] for k in (P, Q, R, A)] for r in ROWS],
+                "filters_applied": [{"field": "v.region", "operator": "in", "value": ["North"]}],
+                "restricted_by_author": 0}
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    result = scope.read(_plan(scope, [P], [R]), [P], [R], {}, [], {}, 500)
+    ev = scope.evidence(_plan(scope, [P], [R]), result)
+    assert ev["filters_applied"] == ["region in North"]           # not the link's "channel eq Online"
+    assert ev["filters_withheld"] == 0 and ev["filters_dropped"] == []
+
+
+# ── the publisher's structured guide (docs/features/public-bot-trust-guide) ──────
+
+GUIDE = {
+    "context": {"purpose": "Báo cáo doanh thu", "unit": "VND"},
+    "glossary": [{"term": "doanh số", "ref": R}],
+    "definitions": [{"name": "Điểm KPI", "aliases": ["KPI score"],
+                     "formula": "Điểm KPI = 0,6 × % đạt doanh thu + 0,4 × % đạt đơn hàng", "note": "Thang 100"}],
+    "targets": [{"ref": R, "value": 300.0, "period": "", "label": "Doanh thu"},
+                {"ref": R, "value": 200.0, "period": "T08", "label": "Doanh thu"}],
+    "cause_sources": [{"chart_id": 11}],
+    "facts": [{"title": "Chính sách đổi trả", "content": "Khách được đổi trả trong 15 ngày."}],
+    "style": {"length": "short", "tone": "executive", "language": "vi"},
+    "out_of_scope": [{"topic": "lương nhân viên", "reason": "Báo cáo không công khai thông tin lương."}],
+}
+
+
+def _core_turn(monkeypatch, question, appearance):
+    """`public_turn._core` up to the guide's deterministic answers (no model, no key)."""
+    from app.services.answer_core import public_turn as pt
+
+    class _Db:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pt, "_session", lambda: _Db())
+    monkeypatch.setattr(pt, "_previous_plan", lambda *a, **k: None)
+    from app.services.ai_runtime import gateway
+    monkeypatch.setattr(gateway, "link_credential", lambda *a, **k: None)   # no key: stops before any model
+    ctx = _Ctx()
+    ctx.pages, ctx.dashboard = [], None
+    resolve = lambda db: pt.LinkTurnContext(ctx=ctx, appearance=appearance)
+    req = pt.PublicTurnRequest(question=question, conversation_key="c" * 16, idempotency_key="i" * 16)
+    return pt._core(7, "t" * 32, req, resolve, lambda step: None)
+
+
+def test_a_defined_term_is_answered_with_the_definition_verbatim_and_no_model(monkeypatch):
+    """Customer demo 2026-10-28: "điểm KPI tính thế nào" got "báo cáo chưa có" although
+    the publisher had written the formula. A meaning question about a defined term is
+    answered with the definition, verbatim (PO decision), before any key is needed."""
+    e, plan, _, _ = _core_turn(monkeypatch, "Điểm KPI được tính thế nào?", {"ai_bot_guide": GUIDE})
+    assert e["status"] == "answered" and e["code"] == "guide_definition" and plan is None
+    assert e["data"]["definition"]["formula"] == GUIDE["definitions"][0]["formula"]
+    e, *_ = _core_turn(monkeypatch, "how is the KPI score calculated", {"ai_bot_guide": GUIDE})
+    assert e["code"] == "guide_definition"
+    # naming the term without asking what it means goes on to the Core (no key here: model_unavailable)
+    e, *_ = _core_turn(monkeypatch, "Điểm KPI tháng này bao nhiêu?", {"ai_bot_guide": GUIDE})
+    assert e["code"] != "guide_definition"
+
+
+def test_an_out_of_scope_topic_is_refused_with_the_publishers_reason_and_no_model(monkeypatch):
+    e, *_ = _core_turn(monkeypatch, "Lương nhân viên khu vực Bắc là bao nhiêu?", {"ai_bot_guide": GUIDE})
+    assert e["status"] == "refused" and e["code"] == "guide_out_of_scope"
+    assert e["message"] == "Báo cáo không công khai thông tin lương."
+
+
+def test_a_target_is_compared_by_code_only_for_one_total_of_the_period_it_names():
+    from app.services.answer_core.publisher_guide import load, target_for
+
+    guide = load({"ai_bot_guide": GUIDE})
+    one = {"columns": [{"name": "r", "ref": R, "role": "measure"}], "rows": [{"r": 150.0}]}
+    plan = {"measures": [R], "dimensions": [], "filters": {}}
+    assert target_for(guide, plan, one) == {"measure": "Doanh thu", "period": None, "target": 300.0, "actual": 150.0,
+                                            "gap": -150.0, "attainment_pct": 50.0, "unit": None}
+    t08 = {**plan, "filters": {"v.ky": {"operator": "eq", "value": "T08"}}}
+    assert target_for(guide, t08, one)["target"] == 200.0                    # the period's own target
+    by_group = {"columns": [{"name": "p", "ref": P, "role": "dimension"}, *one["columns"]],
+                "rows": [{"p": "Laptop", "r": 150.0}]}
+    assert target_for(guide, {**plan, "dimensions": [P]}, by_group) is None  # a breakdown is not compared
+    assert target_for(guide, {**plan, "measures": [A]}, one) is None         # no target for that measure
+
+
+def test_a_cause_no_source_records_is_removed_and_said_plainly():
+    """Customer demo 2026-10-28: the bot added "cầu thị trường", "đối thủ" - causes the
+    data never said. A causal sentence stays only when its cause is in a source."""
+    from app.services.answer_core.publisher_guide import NO_CAUSE, check_causes
+
+    corpus = '[["Khu vực Bắc", "Thiếu nhân sự bán hàng", "Tuyển bổ sung 5 nhân viên"]]'
+    text = ("- Doanh thu Bắc giảm 12%.\n- Nguyên nhân do cầu thị trường yếu và đối thủ giảm giá.\n"
+            "- Doanh thu Bắc giảm vì thiếu nhân sự bán hàng.")
+    out = check_causes(text, corpus)
+    assert "cầu thị trường" not in out and "đối thủ" not in out
+    assert "thiếu nhân sự bán hàng" in out and "giảm 12%" in out and out.endswith(NO_CAUSE)
+    assert check_causes("Doanh thu tăng, do đó cần giữ nhịp.", "") == "Doanh thu tăng, do đó cần giữ nhịp."
+
+
+def test_the_guide_reaches_the_analysis_glossary_the_catalog_and_figures_are_marked_in_place(scope):
+    from app.services.answer_core import guided_analysis as g
+    from app.services.answer_core.publisher_guide import load
+
+    guide = load({"ai_bot_guide": GUIDE})
+    sent = {}
+
+    def model(prompt, system=None, max_tokens=None):
+        sent["payload"] = json.loads(prompt)
+        return {"answer": "Doanh thu 150, đạt 50% mục tiêu 300; tăng 37,5% so với kỳ trước.", "charts_used": [],
+                "used_publisher_notes": True}
+
+    out = g.analyse(scope, question="Doanh thu có đạt mục tiêu không?", instructions=None, guide=guide,
+                    complete=model)
+    assert sent["payload"]["publisher_guide"]["definitions"][0]["name"] == "Điểm KPI"
+    assert "glossary" not in sent["payload"]["publisher_guide"]             # the planner's, not the model's
+    assert any(c.get("cause_source") for c in sent["payload"]["charts"])    # cause sources always read
+    assert out["unverified_figures"] == ["37,5%"] and "⟦37,5%⟧" in out["text"]
+    assert out["used_notes"] is True
+    # the glossary: the publisher's word is a synonym of the field, for the planner
+    s = PublishedReportScope(db=None, ctx=scope.ctx, link_id=7, turn_id="t" * 32)
+    s.guide = guide
+    from app.services.answer_core.publisher_guide import synonyms
+    assert synonyms(guide) == {R: ["doanh số"]}
+
+
+def test_the_guide_is_validated_against_the_links_catalog_and_never_served_to_viewers():
+    from app.api import dashboards as dash_api
+    from app.api import public as public_api_mod
+
+    catalog = {"charts": [{"chart_id": 11, "name": "x", "pages": []}],
+               "fields": [{"ref": R, "label": "Doanh thu", "kind": "measure", "aggregation": "sum", "charts": [11]},
+                          {"ref": P, "label": "Sản phẩm", "kind": "dimension", "aggregation": None, "charts": [11]}]}
+    assert dash_api._checked_guide(GUIDE, lambda: catalog)["definitions"][0]["name"] == "Điểm KPI"
+    with pytest.raises(Exception) as exc:
+        dash_api._checked_guide({**GUIDE, "glossary": [{"term": "x", "ref": "v.secret"}],
+                                 "cause_sources": [{"chart_id": 99}]}, lambda: catalog)
+    assert exc.value.status_code == 422 and set(exc.value.detail["invalid"]) == {"glossary:x", "cause_sources:99"}
+    with pytest.raises(Exception) as exc:
+        dash_api._checked_guide({"targets": [{"ref": R, "value": "nhiều"}]})
+    assert exc.value.status_code == 422
+    src = (pathlib.Path(public_api_mod.__file__)).read_text(encoding="utf-8")
+    assert 'safe_appearance.pop("ai_bot_guide", None)' in src
+
+
+def test_a_target_is_never_set_against_a_subset_of_its_scope():
+    """Live 2026-10-28 (Chrome): asked about the West region, the company's target was
+    set against West's revenue ("đạt 0,73% mục tiêu 12.000.000"). Every filter in force
+    counts - the question's and the link's / viewer's."""
+    from app.services.answer_core.publisher_guide import load, target_for
+
+    guide = load({"ai_bot_guide": GUIDE})
+    one = {"columns": [{"name": "r", "ref": R, "role": "measure"}], "rows": [{"r": 150.0}]}
+    plan = {"measures": [R], "dimensions": [], "filters": {}}
+    west = {**plan, "filters": {Q: {"operator": "eq", "value": "West"}}}
+    assert target_for(guide, west, one) is None                                        # the question's filter
+    assert target_for(guide, plan, one, [{"field": Q, "operator": "in", "value": ["West"]}]) is None  # a slicer
+    t08 = [{"field": "v.ky", "operator": "in", "value": ["T08"]}]
+    assert target_for(guide, plan, one, t08)["target"] == 200.0                       # the period's own target
+    assert target_for(guide, plan, one, [*t08, {"field": Q, "value": ["West"]}]) is None
+
+
+def test_asked_why_with_no_recorded_cause_says_so(scope):
+    from app.services.answer_core import guided_analysis as g
+    from app.services.answer_core.publisher_guide import NO_CAUSE
+
+    out = g.analyse(scope, question="Vì sao doanh thu Laptop cao?", instructions=None,
+                    complete=lambda *a, **k: {"answer": "- Laptop đạt 150, cao nhất."})
+    assert out["text"].endswith(NO_CAUSE)
+    out = g.analyse(scope, question="Doanh thu Laptop thế nào?", instructions=None,
+                    complete=lambda *a, **k: {"answer": "- Laptop đạt 150, cao nhất."})
+    assert NO_CAUSE not in out["text"]
+
+
+def test_the_model_never_sets_a_target_against_a_figure_the_code_did_not():
+    """Live 2026-10-28 (Chrome, after the code stopped it): the model still wrote
+    "mục tiêu 12.000.000 … West chưa đạt". A sentence comparing a figure with a
+    publisher target goes when the code compared none; stating the target stays."""
+    from app.services.answer_core.publisher_guide import drop_target_comparisons, load
+
+    guide = load({"ai_bot_guide": {"targets": [{"ref": R, "value": 12000000}]}})
+    text = ("- West đạt 88.073.\n- Mục tiêu 12.000.000, cho thấy West chưa đạt mục tiêu.\n"
+            "- Mục tiêu doanh thu năm là 12.000.000.")
+    out = drop_target_comparisons(text, guide)
+    assert "chưa đạt" not in out and "West đạt 88.073." in out and "Mục tiêu doanh thu năm là 12.000.000." in out

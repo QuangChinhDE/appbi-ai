@@ -224,3 +224,34 @@ def test_a_cut_off_last_period_is_not_the_end_of_the_recent_window():
     assert "2018-04 → 2018-06" in story["headline"] and "-100" not in story["headline"]
     assert "2018-07" in story["note"] and "chưa đầy đủ" in story["note"]
     assert "2018-07" in story["periods"]["partial"]
+
+
+def test_no_share_of_total_for_an_average_a_rate_or_a_top_n_cut():
+    """Customer demo 2026-10-28: a report showing 72.7% was explained with another % - the
+    narrative printed value / sum of rows for every measure, averages and rates included,
+    and over a top-N cut. A share of the total only where rows add up."""
+    cols = [{"name": "c", "ref": "v.unit", "role": "dimension", "label": "Đơn vị"},
+            {"name": "r", "ref": "v.rate", "role": "measure", "label": "Tỷ lệ đạt", "aggregation": "avg"}]
+    rows = [{"c": "A", "r": 72.7}, {"c": "B", "r": 64.0}, {"c": "C", "r": 90.1}]
+    story = describe(cols, rows, time_ref=None, truncated=False)
+    assert story["bullets"] and not any("%" in b for b in story["bullets"]), story["bullets"]
+
+    summed = [{**cols[0]}, {**cols[1], "aggregation": "sum", "label": "Doanh thu"}]
+    assert any("%" in b for b in describe(summed, rows, time_ref=None, truncated=False)["bullets"])
+    top = describe(summed, rows, time_ref=None, truncated=False, top=2)
+    assert not any("%" in b for b in top["bullets"]), top["bullets"]   # share of a top-N cut's sum
+
+    # over time, an average of several groups has no one total to compare
+    tcols = [{"name": "d", "ref": "v.order_date", "role": "dimension", "label": "Kỳ"}] + cols
+    trows = [{"d": f"2026-0{m}-01", "c": c, "r": v} for m in (7, 8, 9) for c, v in (("A", 70.0 + m), ("B", 60.0))]
+    story = describe(tcols, trows, time_ref="v.order_date", truncated=False, today=AFTER)
+    assert "không cộng gộp được" in story["headline"]
+    assert not any(f["claim"].startswith("total") for f in story["facts"])   # per-group changes stay
+
+
+def test_a_blank_member_reads_as_blank_never_none():
+    """Live 2026-10-28: the ranking bullets read "None: 2,100" for rows with no region."""
+    cols = [{"name": "c", "ref": "v.region", "role": "dimension", "label": "Khu vực"},
+            {"name": "r", "ref": "v.revenue", "role": "measure", "label": "Doanh thu", "aggregation": "sum"}]
+    story = describe(cols, [{"c": "West", "r": 9.0}, {"c": None, "r": 1.0}], time_ref=None, truncated=False)
+    assert any(b.startswith("(trống):") for b in story["bullets"]) and not any("None" in b for b in story["bullets"])

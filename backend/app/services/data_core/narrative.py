@@ -59,6 +59,11 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
         return {"headline": "Không có dữ liệu cho câu hỏi này trong phạm vi được phép.", "bullets": [],
                 "facts": [], "checks": checks}
     m = measures[0]
+    # Only a SUM or a COUNT adds up across rows: a share of "the total" or a sum over
+    # groups of an average / a rate / a distinct count is a number the data does not
+    # hold (live 2026-10-28: a report showing 72.7% was explained with another %).
+    # A column without an aggregation is read as before (a sum).
+    additive = str(m.get("aggregation") or "sum").lower() in ("sum", "count")
     if truncated:
         # Rows stop at the bound mid-way (a period or a ranking cut short): any
         # trend, ranking or total read from them would be an artefact of the cut.
@@ -66,9 +71,10 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
                              "Hãy thu hẹp câu hỏi (ví dụ theo nhóm thay vì từng mục, hoặc một khoảng thời gian)."),
                 "bullets": [], "facts": [], "checks": checks, "incomplete": True}
     if time_col is not None:
-        return _over_time(rows, m, time_col, cat_col, checks, grain or "month", today or date.today(), period)
+        return _over_time(rows, m, time_col, cat_col, checks, grain or "month", today or date.today(), period,
+                          additive=additive)
     if cat_col is not None:
-        return _ranking(rows, m, cat_col, checks, order or "desc", top)
+        return _ranking(rows, m, cat_col, checks, order or "desc", top, additive=additive)
     total = _num(rows[0].get(m["name"]))
     return {"headline": f"{m['label']}: {fmt(total)}.", "bullets": [],
             "facts": [{"claim": m["label"], "value": total}], "checks": checks}
@@ -130,6 +136,11 @@ def _label(d: date, grain: str) -> str:
     return d.isoformat()
 
 
+def _member(v) -> str:
+    """A group's name as the reader reads it: a blank member is "(trống)", never "None"."""
+    return "(trống)" if v is None or (isinstance(v, str) and not v.strip()) else str(v)
+
+
 def _thin_edges(series: dict, present: set, grain: str, today: date) -> list[date]:
     """The edge periods `chart_value_normalization.time_completeness` calls
     `edge_low_volume`, computed on the periods' totals."""
@@ -145,7 +156,7 @@ def _thin_edges(series: dict, present: set, grain: str, today: date) -> list[dat
 
 
 def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
-               period: Optional[tuple[date, date]] = None) -> dict:
+               period: Optional[tuple[date, date]] = None, *, additive: bool = True) -> dict:
     grain = grain if grain in GRAIN_WORD else "month"
     word = GRAIN_WORD[grain]
     # A period with no row is MISSING; a row whose measure is NULL is UNKNOWN.
@@ -158,7 +169,7 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
             continue  # counted by the time_nulls check
         d = _start(d, grain)
         present.add(d)
-        key = str(r.get(ccol["name"])) if ccol else m["label"]
+        key = _member(r.get(ccol["name"])) if ccol else m["label"]
         v = _num(r.get(m["name"]))
         prev = series[key].get(d, 0.0)
         series[key][d] = None if v is None or prev is None else prev + v
@@ -179,7 +190,8 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
     # A first or last period far below a typical one is probably cut off - a data set
     # that ends mid-month (live 2026-10-28: Olist 2018-09 held a few orders and the
     # headline read "-100%"). The rule the chart's own footnote uses.
-    thin = [p for p in _thin_edges(series, present, grain, today) if p not in partial]
+    # (volume-based: an average per period has no volume to tell a thin period by)
+    thin = [p for p in _thin_edges(series, present, grain, today) if p not in partial] if additive else []
     complete = [p for p in calendar if p not in partial and p not in thin]
     notes = []
     if partial:
@@ -204,9 +216,13 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
         return sum(vals)
 
     first, last = window[0], window[-1]
-    t0, t1 = total(first), total(last)
+    across = not additive and ccol is not None and len(series) > 1
+    t0, t1 = (None, None) if across else (total(first), total(last))
     L0, L1 = _label(first, grain), _label(last, grain)
-    if len(window) < 2:
+    if across:
+        headline = (f"{m['label']} theo {word} của từng nhóm ({L0} → {L1}): chỉ số này không cộng gộp được "
+                    "giữa các nhóm nên không có một con số chung; xem từng nhóm bên dưới.")
+    elif len(window) < 2:
         headline = f"{m['label']} {word} {L1}: {fmt(t1)}. Mới có một {word} đầy đủ nên chưa nói về xu hướng."
     elif t0 is None or t1 is None:
         headline = (f"{m['label']} {L0} → {L1}: {fmt(t0)} → {fmt(t1)}. "
@@ -215,14 +231,14 @@ def _over_time(rows, m, tcol, ccol, checks, grain: str, today: date,
         change = pct(t0, t1)
         headline = (f"{m['label']} {L0} → {L1}: {fmt(t0)} → {fmt(t1)}"
                     + (f" ({change:+.1f}%)." if change is not None else "."))
-    facts = [{"claim": f"total {L0}", "value": t0}, {"claim": f"total {L1}", "value": t1}]
+    facts = [] if across else [{"claim": f"total {L0}", "value": t0}, {"claim": f"total {L1}", "value": t1}]
     bullets = []
     if ccol and len(window) == 1:
         # One complete period asked for ("theo vùng năm 2025"): rank the groups in it.
         known = sorted(((k, s[last]) for k, s in series.items() if s.get(last) is not None),
                        key=lambda kv: kv[1], reverse=True)
         for k, v in known[:5]:
-            bullets.append(f"{k}: {fmt(v)}" + (f" ({v / t1 * 100:.1f}%)" if t1 else ""))
+            bullets.append(f"{k}: {fmt(v)}" + (f" ({v / t1 * 100:.1f}%)" if t1 and additive else ""))
             facts.append({"claim": f"{k} {L1}", "value": v})
     if ccol and len(window) >= 2:
         moves = []
@@ -268,15 +284,17 @@ def _leaders(known: list[tuple[str, float]], lowest: bool = False) -> list[str]:
     return [k for k, v in known if abs(v - top) <= 1e-9 * max(1.0, abs(top))]
 
 
-def _ranking(rows, m, ccol, checks, order: str = "desc", top: Optional[int] = None) -> dict:
+def _ranking(rows, m, ccol, checks, order: str = "desc", top: Optional[int] = None, *,
+             additive: bool = True) -> dict:
     # A NULL measure is UNKNOWN, not zero: it is neither ranked nor summed.
-    known = [(str(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
+    known = [(_member(r.get(ccol["name"])), _num(r.get(m["name"]))) for r in rows]
     unknown = [k for k, v in known if v is None]
     vals = sorted(((k, v) for k, v in known if v is not None), key=lambda kv: kv[1], reverse=(order != "asc"))
     if not vals:
         return {"headline": f"Không có giá trị {m['label']} nào để so sánh.", "bullets": [], "facts": [],
                 "checks": checks}
-    total = sum(v for _, v in vals) or None
+    # a share of the total only where rows add up, and never of a top-N cut's sum
+    total = (sum(v for _, v in vals) or None) if additive and not top else None
     bullets = [f"{k}: {fmt(v)}" + (f" ({v / total * 100:.1f}%)" if total else "") for k, v in vals[:5]]
     if unknown:
         bullets.append(f"Không có giá trị (không tính là 0): {', '.join(unknown[:5])}.")

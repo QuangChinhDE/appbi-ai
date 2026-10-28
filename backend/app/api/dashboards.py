@@ -1723,6 +1723,38 @@ def _shared_meta(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return meta
 
 
+def _slicer_has_default(s: Dict[str, Any]) -> bool:
+    """A slicer that filters the report before anyone touches it: a non-empty saved
+    value, or a date preset other than "all"/"custom"."""
+    value = s.get("value")
+    if isinstance(value, dict):
+        has_value = any(v not in (None, "", []) for v in value.values())
+    else:
+        has_value = value not in (None, "", [])
+    return has_value or str(s.get("datePreset") or "") not in ("", "custom", "all", "none")
+
+
+def _removed_default_slicers(live: Any, draft: Any) -> list[Dict[str, Any]]:
+    """The report-wide slicers WITH a default value the live report has and the draft
+    no longer has as report-wide (deleted, or narrowed to some pages). Customer demo
+    2026-10-28: the period slicer (T08) vanished from slicers_config and the report
+    silently showed every period summed. Nothing to say when the draft does not
+    touch slicers (`draft` not a list)."""
+    if not isinstance(draft, list) or not isinstance(live, list):
+        return []
+
+    def report_wide(s: Any) -> bool:
+        return isinstance(s, dict) and str(s.get("scope") or "all") == "all"
+
+    kept = {str(s.get("id")) for s in draft if report_wide(s) and s.get("id") is not None}
+    out = []
+    for s in live:
+        if report_wide(s) and s.get("id") is not None and str(s["id"]) not in kept and _slicer_has_default(s):
+            out.append({"id": str(s["id"]), "label": str(s.get("label") or s.get("field") or s["id"]),
+                        "value": s.get("value") if s.get("value") not in (None, "", []) else s.get("datePreset")})
+    return out
+
+
 def _has_shared_draft(snapshot: Optional[Dict[str, Any]]) -> bool:
     return isinstance(snapshot, dict) and any(k in snapshot for k in _SHARED_DRAFT_KEYS)
 
@@ -1735,7 +1767,18 @@ def _shared_rev_token(dash, snapshot: Optional[Dict[str, Any]]) -> str:
     stored while nothing is pending: a copy loaded then equals the live report,
     so it is current."""
     published = dash.last_published_at.isoformat() if getattr(dash, "last_published_at", None) else "never"
-    return f"{published}#{_shared_meta(snapshot)['rev'] if _has_shared_draft(snapshot) else 0}"
+    if not _has_shared_draft(snapshot):
+        return f"{published}#0"
+    # The counter restarts after a Discard, so a copy loaded before it carried a token
+    # equal to the next edit's and its stale slicer list passed the check (customer demo
+    # 2026-10-28: a period slicer lost). The token also names WHAT the draft holds: two
+    # drafts share a token only if they hold the same filters, pages and theme.
+    import hashlib
+    import json as _json
+
+    shared = {k: snapshot[k] for k in _SHARED_DRAFT_KEYS if k in snapshot}
+    digest = hashlib.sha1(_json.dumps(shared, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+    return f"{published}#{_shared_meta(snapshot)['rev']}.{digest}"
 
 
 def _shared_draft_state(dash, snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Any]:
@@ -1778,7 +1821,7 @@ def _after_author_leaves(snapshot: Optional[Dict[str, Any]], user_key: str, keep
             if key in snapshot:
                 out[key] = snapshot[key]
     # Otherwise the shared draft is gone; its revision token moves on by itself
-    # (a Publish changes last_published_at).
+    # (a Publish changes last_published_at; the token names the draft's content).
     return out or None
 
 
@@ -3061,6 +3104,9 @@ class PublishRequest(BaseModel):
     # publish only the caller's own work and leave the shared draft pending.
     shared_ack_rev: Optional[str] = None
     keep_shared: bool = False
+    # Report-wide slicers with a default value the caller agreed to remove (the 409
+    # `slicer_removal_unconfirmed` lists them): the report then shows every value.
+    confirm_removed_slicers: Optional[list[str]] = None
 
 
 class DiscardRequest(BaseModel):
@@ -3161,6 +3207,19 @@ def publish_dashboard_draft(
     keep_shared = bool(payload and payload.keep_shared)
     if not keep_shared:
         _refuse_others_shared_draft(dash, snapshot, user_key, payload.shared_ack_rev if payload else None, "publish")
+        removed = _removed_default_slicers(dash.slicers_config, snapshot.get("slicers_config"))
+        confirmed = {str(i) for i in (payload.confirm_removed_slicers if payload else None) or []}
+        unconfirmed = [s for s in removed if s["id"] not in confirmed]
+        if unconfirmed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "slicer_removal_unconfirmed",
+                    "removed": unconfirmed,
+                    "message": "Publishing removes a report-wide filter that has a default value; "
+                               "the report would show every value of that field.",
+                },
+            )
 
     # ── Elements this user removed in the draft leave the live report now, in
     #    the same commit as everything else they publish. ──
@@ -3623,7 +3682,8 @@ def create_public_link(
         name=request.name,
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
-        appearance_config=_apply_ai_credential(db, current_user, request.appearance_config or {}, None, None),
+        appearance_config=_apply_ai_credential(db, current_user, _with_checked_guide(request.appearance_config),
+                                               None, None),
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
         expires_at=_aware(request.expires_at),
@@ -3744,6 +3804,80 @@ def get_public_link_ai_status(
     return {**gateway.readiness(db, dict(link.appearance_config or {})), "models": gateway.answer_models()}
 
 
+def _link_guide_catalog(db: Session, dash_id: int, link: DashboardPublicLink, user: User) -> dict:
+    """The charts and fields the link's AI Bot reads - built exactly as a turn builds
+    them (published tiles only, the link's own filters, locks and exposed fields), for
+    the publisher guide's pickers and its save-time check."""
+    from app.api.public import _serve_published_only
+    from app.services.answer_core.published_report import PublishedReportScope
+    from app.services.answer_core.publisher_guide import catalog_payload
+    from app.services.public_link_scope import LinkScopeUnavailable, link_tool_context
+
+    dash = (db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == dash_id).first())
+    if dash is None:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    _serve_published_only(dash)
+    try:
+        ctx = link_tool_context(db, dashboard=dash, filters_config=getattr(link, "filters_config", None),
+                                appearance_config=getattr(link, "appearance_config", None),
+                                context_for_log=f"guide_catalog:{link.id}", actor_type="user",
+                                actor_ref=getattr(user, "email", None) or str(user.id))
+    except LinkScopeUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Không dựng được phạm vi dữ liệu của link") from exc
+    return catalog_payload(PublishedReportScope(db, ctx=ctx, link_id=link.id, turn_id=f"guide-{link.id}"))
+
+
+@router.get("/{dashboard_id}/public-links/{link_id}/ai/catalog")
+def get_public_link_ai_catalog(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """What the link's AI Bot can read, for the publisher guide's pickers."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_publish_access(db, current_user, dash, "dashboards")
+    link = (db.query(DashboardPublicLink)
+            .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id).first())
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    return _link_guide_catalog(db, dashboard_id, link, current_user)
+
+
+def _checked_guide(raw: Any, catalog_of: Optional[Any] = None) -> Optional[dict]:
+    """The publisher guide as stored: well-formed (422 otherwise) and - when the link
+    exists - naming only fields and charts the link's bot reads (422 listing them)."""
+    from pydantic import ValidationError
+
+    from app.services.answer_core.publisher_guide import invalid_entries, parse
+
+    if not raw:
+        return None
+    try:
+        guide = parse(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"code": "ai_bot_guide_invalid",
+                                                     "errors": exc.errors(include_url=False)[:20]}) from exc
+    if catalog_of is not None:
+        bad = invalid_entries(guide, catalog_of())
+        if bad:
+            raise HTTPException(status_code=422, detail={
+                "code": "ai_bot_guide_unknown_refs", "invalid": bad,
+                "message": "Hướng dẫn nhắc tới trường hoặc biểu đồ không có trong báo cáo công khai của link này."})
+    return guide.model_dump()
+
+
+def _with_checked_guide(appearance: Optional[dict], catalog_of: Optional[Any] = None) -> dict:
+    out = dict(appearance or {})
+    if out.get("ai_bot_guide"):
+        out["ai_bot_guide"] = _checked_guide(out["ai_bot_guide"], catalog_of)
+    return out
+
+
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
 def update_public_link(
     dashboard_id: int,
@@ -3776,7 +3910,9 @@ def update_public_link(
         _refuse_unappliable_link_filters(request.filters_config)
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
-        link.appearance_config = _apply_ai_credential(db, current_user, dict(request.appearance_config),
+        appearance = _with_checked_guide(
+            request.appearance_config, lambda: _link_guide_catalog(db, dashboard_id, link, current_user))
+        link.appearance_config = _apply_ai_credential(db, current_user, appearance,
                                                       dict(link.appearance_config or {}), link.id)
     # Every security-changing edit moves the link to a new security generation,
     # which invalidates every password session minted before it (see

@@ -154,6 +154,7 @@
  "GET /api/v1/dashboards/{dashboard_id}/filter-fields": "resource",
  "GET /api/v1/dashboards/{dashboard_id}/public-links": "resource",
  "GET /api/v1/dashboards/{dashboard_id}/public-links/{link_id}/ai-status": "resource",
+ "GET /api/v1/dashboards/{dashboard_id}/public-links/{link_id}/ai/catalog": "resource",
  "GET /api/v1/dashboards/{dashboard_id}/snapshots/info": "resource",
  "GET /api/v1/datasets/": "scope",
  "GET /api/v1/datasets/composable-parents": "scope",

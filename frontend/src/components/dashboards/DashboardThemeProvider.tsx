@@ -103,7 +103,12 @@ export function normalizeDashboardTheme(theme?: DashboardThemeConfig | null) {
   // Same expansion as resolveStyleTokens: this side owns accent / background /
   // dataColors, so without it an identity-only theme would get its layout but
   // none of its paint.
-  const raw = expandThemeIdentity(theme) ?? {};
+  // The legacy `radius` an author set is their cardRadius: named so BEFORE the template
+  // expands, or a template's cardRadius won over it (explicit tokens beat the template).
+  const own = theme && theme.cardRadius == null && (theme as any).radius != null
+    ? { ...theme, cardRadius: (theme as any).radius }
+    : theme;
+  const raw = expandThemeIdentity(own) ?? {};
   const density = normalizeDensity(raw.density);
   const cardStyle = normalizeCardStyle(raw.cardStyle);
   const accent = normalizeAccent(raw.accent);
@@ -336,6 +341,9 @@ export function DashboardThemeProvider({ theme, children, className, style: base
         data-dashboard-skin={t.skin ?? 'classic'}
         data-dashboard-cardtreatment={tokens.cardTreatment}
         data-dashboard-accentbar={tokens.accentBar}
+        // the card border the AUTHOR chose (cardBorderStyle) - resolved before but never
+        // rendered, so the template's treatment alone decided; absent = the treatment's
+        data-dashboard-cardborder={(theme as any)?.cardBorderStyle ? tokens.border : undefined}
         data-dashboard-chartchrome={tokens.chartChrome}
         data-dashboard-kpistyle={tokens.kpiStyle}
         data-dashboard-tablestyle={tokens.tableStyle}

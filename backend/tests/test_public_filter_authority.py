@@ -851,3 +851,37 @@ def test_a_report_without_custom_scope_slicers_builds_no_per_chart_sets(monkeypa
     monkeypatch.setattr(public_api, "_public_page_scope_by_chart", lambda *_a, **_k: {})
     monkeypatch.setattr(ToolContext, "from_dashboard", classmethod(lambda cls, **kw: kw))
     assert public_api._public_link_tool_context(None, dash, [], {})["public_filters_by_chart"] == {}
+
+
+def test_a_raw_column_slicer_of_an_imported_report_gets_its_values_scoped_as_the_tiles(monkeypatch):
+    """Customer demo 2026-10-28: an imported report's slicers are {field: "Kỳ"} - no
+    dataset, no view.field - so `_augment_with_slicer_fields` skipped them and every
+    public dropdown read "Không có giá trị khả dụng". The raw field is resolved the way
+    the engine filters the tiles (the chart binding's fieldMap / base view), over the
+    PUBLISHED charts only, keyed by the raw field so the filter bar matches it; the
+    slicer config is not rewritten; a raw field no published chart reads opens nothing."""
+    def chart(cid, dataset, base, fields, field_map=None):
+        return SimpleNamespace(chart_id=cid, chart=SimpleNamespace(config={"semanticBinding": {
+            "datasetId": dataset, "baseViewName": base, "dimensionFields": fields, "fieldMap": field_map or {}}}))
+
+    dash = SimpleNamespace(
+        slicers_config=[{"id": "s1", "field": "Kỳ", "scope": "all", "operator": "in", "value": []},
+                        {"id": "s2", "field": "Lương", "scope": "all", "operator": "in", "value": []}],
+        dashboard_charts=[chart(1, 122, "fact_kpi", ["fact_kpi.Kỳ", "fact_kpi.Đơn vị"]),
+                          chart(2, 122, "fact_kpi", ["fact_kpi.Kỳ"]),
+                          chart(3, 122, "fact_action", ["fact_action.Kỳ đánh giá"], {"Kỳ": "fact_action.Kỳ đánh giá"})])
+    monkeypatch.setattr(public_api, "_resolve_semantic_field_metadata",
+                        lambda db, ds, ref, dataset_models=None: {"key": ref, "name": ref.split(".", 1)[1],
+                                                                  "label": "Kỳ", "type": "dropdown", "datasetId": ds,
+                                                                  "semanticField": ref})
+    fields = public_api._augment_with_slicer_fields(None, dash, [])
+    assert [(f["key"], f["semanticField"], f["datasetId"]) for f in fields] == [("Kỳ", "fact_kpi.Kỳ", 122)]
+    assert fields[0]["chartCoverage"] == 2                       # the ref most published charts read it through
+    assert dash.slicers_config[0] == {"id": "s1", "field": "Kỳ", "scope": "all", "operator": "in", "value": []}
+
+    # its pick cascades the other dropdowns of that dataset through the resolved ref - only there
+    picked = [{"field": "Kỳ", "operator": "in", "value": ["T08"]}]
+    out = public_api._sanitize_public_viewer_filters(fields, 122, picked)
+    assert [(f["fieldKey"], f["value"]) for f in out] == [("fact_kpi.Kỳ", ["T08"])]
+    assert public_api._sanitize_public_viewer_filters(fields, 999, picked) == []
+    assert public_api._sanitize_public_viewer_filters(fields, 122, [{"field": "Lương", "value": ["x"]}]) == []

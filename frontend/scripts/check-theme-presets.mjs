@@ -228,6 +228,28 @@ if (!applyTpl.includes('for (const k of LEGACY_LOOK_KEYS) cleared[k] = undefined
   fail('applyTemplate does not clear LEGACY_LOOK_KEYS — a stale cardShadow / titleFontSize outranks the template just picked');
 } else pass('applyTemplate clears legacy look overrides');
 
+// (b2) An author's explicit card tokens beat the template / skin (customer feedback
+//      2026-10-28: accentBar, radius and border set by the author were overridden).
+{
+  const CSS = readSrc('src/app/globals.css');
+  const PROVIDER = readSrc('src/components/dashboards/DashboardThemeProvider.tsx');
+  const MODAL_SRC = readSrc('src/components/dashboards/DashboardThemeModal.tsx');
+  const darkModern = (CSS.match(/\[data-dashboard-skin='modern'\]\[data-dashboard-theme='dark'\] \.dashboard-tile \{[^}]*\}/) || [''])[0];
+  if (/background-image/.test(darkModern)) {
+    fail('dark+modern repaints the accent stripe at a higher specificity than the accent-bar rules — the author\'s accentBar is ignored on dark');
+  } else pass('dark+modern leaves the accent stripe to the accent-bar rules');
+  if (!/cardRadius == null && \(theme as any\)\.radius != null/.test(PROVIDER)
+      || PROVIDER.indexOf('expandThemeIdentity(own)') < 0) {
+    fail('the legacy `radius` is not named cardRadius before the template expands — the template\'s cardRadius wins over the author\'s');
+  } else pass('the author\'s legacy radius beats the template\'s cardRadius');
+  if (!PROVIDER.includes('data-dashboard-cardborder=') || !/\[data-dashboard-cardborder="strong"\]/.test(CSS)) {
+    fail('cardBorderStyle is resolved but never rendered — the template\'s treatment alone decides the border');
+  } else pass('the author\'s cardBorderStyle is rendered');
+  if (/pxNum\(t\.cardRadius, 8\) < 10/.test(MODAL_SRC)) {
+    fail('switching to Modern overwrites a radius the author set (0–9px → 16)');
+  } else pass('switching skin never overwrites a radius the author set');
+}
+
 // (c) There is no filter area to dock. Filters are controls on the report grid
 //     (unified grid, 20260929_0001); the slicer cluster — a strip above, a rail
 //     beside or a drawer — was removed, and nothing may bring it back. The
