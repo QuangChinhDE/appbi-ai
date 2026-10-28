@@ -275,6 +275,29 @@ def slicers_filtering_pages(slicers: list[dict] | None, page_ids: list[str] | No
     return out
 
 
+def viewer_picks_filtering_pages(
+    viewer_filters: list[dict] | None, slicers: list[dict] | None, page_ids: list[str] | None,
+) -> list[dict]:
+    """The viewer's picks that may constrain ``page_ids``: a pick on a report
+    slicer (same ``id``) that ``slicers_filtering_pages`` keeps off those pages
+    is dropped — its control can be shown on a page it does not filter, and the
+    pick must not filter that page's charts or cascade its dropdowns. Picks with
+    no matching stored slicer (page slicers, cross-filters) are untouched.
+    """
+    stored_ids = {str(s.get("id")) for s in slicers or [] if isinstance(s, dict) and s.get("id")}
+    if not stored_ids or not page_ids:
+        return list(viewer_filters or [])
+    filtering_ids = {
+        str(s.get("id")) for s in slicers_filtering_pages(slicers, page_ids)
+        if isinstance(s, dict) and s.get("id")
+    }
+    return [
+        f for f in viewer_filters or []
+        if not (isinstance(f, dict) and f.get("id") and str(f["id"]) in stored_ids
+                and str(f["id"]) not in filtering_ids)
+    ]
+
+
 def make_public_layers(
     *,
     chart_base: Optional[List[Dict[str, Any]]] = None,

@@ -500,3 +500,9 @@ These behaviors were fixed but have **no automated test** — a future change ca
 | DS-HARD-19: a new empty dataset could reference a parent only after a failing Sync & Publish | composition requires the lifecycle; a new dataset is legacy | first parent reference opts an EMPTY dataset in as draft; live legacy still refused | ✅ `test_composition_empty_child_enters_lifecycle.py` |
 
 *Generated 2026-06-30 from: code bug-markers (BUG-005…018), ~80 git fix-commits, the golden/contract/e2e test inventory, and the project memory bank. Update this file whenever a new bug is fixed — add the row AND its locking test.*
+
+### Public slicer shown-but-not-filtering still cascades/filters the page (2026-10-28, PR #82)
+- **Symptom:** dash89/ds122, "Nhân sự" slicer scope=custom (filter only on scorecard page, visible on Tổng quan) → on Tổng quan the Trụ cột/Cấu phần dropdowns showed "Không có giá trị khớp", banner "Thử nới lỏng: Kỳ, Nhân sự".
+- **Root cause:** PR #78 bounded only stored `slicers_config` by `pageScope[page].filter`; the viewer's pick on that slicer (viewer layer) was never page-checked, on the server or in the public FE cascade context.
+- **Fix:** `filter_layered_merge.viewer_picks_filtering_pages` in `_build_public_chart_filters` (charts + distinct + AI); `use-public-filter-distinct-values.ts` / `fetchPublicServerDistinct` filter the context with `slicerFiltersOnPage`.
+- **Locking test:** `test_public_filter_authority.py::test_a_viewer_pick_on_a_slicer_switched_off_for_the_page_does_not_filter_it`, `::test_a_dropdown_on_a_page_is_not_cascaded_by_a_slicer_switched_off_for_it`. FE half: no automated test (GAP).
