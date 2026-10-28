@@ -4,6 +4,7 @@ import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import { publicDashboardApi } from '@/lib/api/public';
 import { SLICER_DISTINCT_PREFETCH_LIMIT } from '@/lib/slicer-limits';
+import { slicerFiltersOnPage } from '@/lib/public-page-filters';
 import {
   getColumnKey,
   getDistinctValueFilterContext,
@@ -34,9 +35,12 @@ export function usePublicFilterDistinctValues(
     if (!token || columns.length === 0 || filters.length === 0) {
       return [];
     }
+    // A report slicer can be shown on a page its custom scope does not filter:
+    // its pick must not cascade this page's dropdowns (the server drops it too).
+    const filtering = pageId ? filters.filter((f) => slicerFiltersOnPage(f, pageId)) : filters;
     const contextFilters = extraContextFilters.length > 0
-      ? [...filters, ...extraContextFilters]
-      : filters;
+      ? [...filtering, ...extraContextFilters]
+      : filtering;
 
     const columnsByKey = new Map(
       columns.map((column) => [getColumnKey(column), column]),
@@ -65,7 +69,7 @@ export function usePublicFilterDistinctValues(
         filterContextKey: JSON.stringify(filterContext),
       };
     });
-  }, [columns, filters, extraContextFilters, token]);
+  }, [columns, filters, extraContextFilters, token, pageId]);
 
   const semanticDistinctQueries = useQueries({
     queries: activeSemanticDistinctTargets.map(({ column, filterContext, filterContextKey }) => ({

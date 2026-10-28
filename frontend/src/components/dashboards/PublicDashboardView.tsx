@@ -68,7 +68,7 @@ import { applyScopeBound, getColumnKey, getDistinctValueFilterContext, getFilter
 import { usePublicFilterDistinctValues } from '@/hooks/use-public-filter-distinct-values';
 import { buildPublicLinkTheme } from '@/lib/public-link-appearance';
 import { buildPublicDashboardFilterRuntime } from '@/lib/public-dashboard-runtime';
-import { mergeSeedWithViewerSelections, pageFilterFacts, resolvePublicPageFilterContext, statePageFilterFact, type PageFilterFact } from '@/lib/public-page-filters';
+import { mergeSeedWithViewerSelections, pageFilterFacts, slicerFiltersOnPage, resolvePublicPageFilterContext, statePageFilterFact, type PageFilterFact } from '@/lib/public-page-filters';
 import { useI18n } from '@/providers/LanguageProvider';
 import type { ChartDataResponse, Dashboard, DashboardChart } from '@/types/api';
 import { citedTilesOf } from '@/lib/report-evidence';
@@ -2126,7 +2126,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
       // + page-scope (same context the prefetch uses); self-strips this
       // field so the dropdown never pins its own value.
       const filterContext = getDistinctValueFilterContext(
-        [...appliedViewerFilters, ...pageHiddenFilters], column,
+        [...appliedViewerFilters.filter((f) => slicerFiltersOnPage(f, activePageId ?? '')), ...pageHiddenFilters], column,
       );
       const res = await publicDashboardApi.getFilterDistinctValues(
         token, column.datasetId, column.semanticField, activeSessionToken, 500, filterContext, search, undefined, activePageId,

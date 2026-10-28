@@ -297,11 +297,12 @@ def test_a_dropdown_keeps_every_hard_bound_on_its_own_field_and_drops_only_picks
     assert any(f.get("field") == "channel" for f in cascade), "a filter on another field stopped cascading"
 
 
-def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=()):
+def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=(), page_id="p1"):
     import json
     monkeypatch.setattr(public_api, "_get_dashboard_by_token", lambda *_a, **_k: (dash, [], None, {}))
     monkeypatch.setattr(public_api, "_build_public_filter_fields",
-                        lambda *_a, **_k: [{"datasetId": 1, "semanticField": "t1.region"}])
+                        lambda *_a, **_k: [{"datasetId": 1, "semanticField": "t1.region"},
+                                           {"datasetId": 1, "semanticField": "t1.staff"}])
     seen: dict = {}
 
     def fake_distinct(_db, _ds, _field, **kw):
@@ -312,7 +313,7 @@ def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=()):
     endpoint = public_api.get_public_filter_distinct_values
     endpoint = getattr(endpoint, "__wrapped__", endpoint)  # past the rate limiter
     out = endpoint("tok", None, dataset_id=1, field="t1.region", limit=200, offset=0, search=None,
-                   filters=json.dumps(viewer_filters), page_id="p1", db=None, x_public_session=None)
+                   filters=json.dumps(viewer_filters), page_id=page_id, db=None, x_public_session=None)
     return out, seen["filters"]
 
 
@@ -790,6 +791,31 @@ def test_a_chart_on_several_pages_keeps_a_slicer_any_of_them_applies():
                  slicers_config=_scoped_slicers())
     assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p1", "p2"])) == [
         "period", "scope", "staff"]
+
+
+def _staff_shown_but_not_filtering_p2():
+    return [{**STAFF, "id": "s-staff", "scope": "custom",
+             "pageScope": {"p1": {"filter": True, "visible": True},
+                           "p2": {"filter": False, "visible": True}}}]
+
+
+def test_a_viewer_pick_on_a_slicer_switched_off_for_the_page_does_not_filter_it():
+    # Dashboard 89: the "Nhân sự" control is shown on the overview page but
+    # filters only the scorecard page. The viewer's pick on it came back as a
+    # viewer slicer and filtered the overview anyway (page scope was checked
+    # only for the stored slicers).
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_staff_shown_but_not_filtering_p2())
+    pick = [{**STAFF, "id": "s-staff", "value": ["Hải"]}]
+    assert _fields(public_api._build_public_chart_filters(dash, [], pick, page_ids=["p2"])) == []
+    assert _fields(public_api._build_public_chart_filters(dash, [], pick, page_ids=["p1"])) == ["staff"]
+
+
+def test_a_dropdown_on_a_page_is_not_cascaded_by_a_slicer_switched_off_for_it(monkeypatch):
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_staff_shown_but_not_filtering_p2())
+    _out, sent = _public_dropdown(monkeypatch, dash, [{**STAFF, "id": "s-staff", "value": ["Hải"]}], page_id="p2")
+    assert not [f for f in sent if f.get("field") == "staff"], sent
 
 
 def test_the_public_ai_reads_each_chart_with_the_slicers_of_its_own_page(monkeypatch):

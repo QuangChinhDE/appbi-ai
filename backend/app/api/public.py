@@ -70,6 +70,7 @@ from app.services.filter_layered_merge import (
     make_public_layers,
     merge_layered_filters,
     slicers_filtering_pages,
+    viewer_picks_filtering_pages,
     split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
@@ -802,6 +803,10 @@ def _build_public_chart_filters(
         if str(f.get("publicMode") or f.get("public_mode") or "").lower() == "hidden" else f
         for f in authoritative_filters
     ]
+    _slicer_pages = slicer_page_ids if slicer_page_ids is not None else page_ids
+    viewer_filters = viewer_picks_filtering_pages(
+        viewer_filters, list(getattr(dash, "slicers_config", None) or []), _slicer_pages,
+    )
     merge_diagnostics: list[dict] = []
     merged = merge_layered_filters(
         make_public_layers(
@@ -811,7 +816,7 @@ def _build_public_chart_filters(
             # custom-scope slicer switched off for a page must not reach it.
             dashboard_slicers=slicers_filtering_pages(
                 list(getattr(dash, "slicers_config", None) or []),
-                slicer_page_ids if slicer_page_ids is not None else page_ids,
+                _slicer_pages,
             ),
             viewer_slicers=list(viewer_filters or []),
             viewer_filters=[],  # mini-pane overrides — wired in Phase F
