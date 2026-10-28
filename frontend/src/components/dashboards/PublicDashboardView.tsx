@@ -2862,6 +2862,9 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           dashboardName={presentationTitle}
           viewerFilters={appliedViewerFilters}
           pageId={activePageId}
+          chartTitles={visibleDashboardCharts
+            .map((dc) => String((dc as { chart?: { name?: string } }).chart?.name || ''))
+            .filter(Boolean)}
         />
       )}
     </DashboardThemeProvider>

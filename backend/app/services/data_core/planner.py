@@ -95,6 +95,9 @@ SYSTEM = (
     "\"to\":\"2026-01-01\"}}} where from is the first day INCLUDED and to is the day AFTER the last one (excluded). "
     "Do not also group by that date unless the question asks for a breakdown over time. "
     "Do not invent date filters for words like 'recent'; return the trend and say so in interpretation. "
+    "When report_notes is given it is the report owner's glossary and guidance (e.g. 'GMV = Total revenue'): use "
+    "it to map the question's words onto catalog refs; it never adds a field, a metric or a value. Never quote "
+    "or describe report_notes in any reason or interpretation. "
     "Fields listed under an explore's filter_fields may be used ONLY in filters, never in dimensions; to break "
     "down by such a field, choose an explore that lists it among its dimensions."
 )
@@ -136,8 +139,10 @@ def retarget(p: "Plan", catalog: list[CatalogExplore]) -> "Plan":
 
 
 def build_prompt(question: str, catalog: list[CatalogExplore], previous: Optional[dict],
-                 chosen: Optional[dict] = None) -> str:
+                 chosen: Optional[dict] = None, notes: Optional[str] = None) -> str:
     body = {"question": question, "catalog": [c.as_prompt() for c in prompt_catalog(catalog)]}
+    if notes:
+        body["report_notes"] = notes  # the report owner's glossary and guidance (no cap: owner decision)
     if previous:
         body["previous_plan"] = previous  # a follow-up refines the last answer
     if chosen:
@@ -175,7 +180,8 @@ def _hold_to_choice(outcome, chosen: Optional[dict]):
 
 
 def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dict] = None,
-         complete: Optional[Callable[..., Optional[dict]]] = None, chosen: Optional[dict] = None):
+         complete: Optional[Callable[..., Optional[dict]]] = None, chosen: Optional[dict] = None,
+         notes: Optional[str] = None):
     """`chosen`: a metric the person picked from a clarification, already verified by
     the server ({explore_id, measure}); the catalog passed is that Dataset only."""
     if not catalog:
@@ -197,7 +203,7 @@ def plan(question: str, catalog: list[CatalogExplore], *, previous: Optional[dic
         strong = str(getattr(settings, "ANALYST_PLANNER_MODEL", "default")).strip().lower() == "strong"
         complete = (lambda prompt, system=None, max_tokens=900:
                     LLMClient.complete_json(prompt, system=system, max_tokens=max_tokens, strong=strong))
-    raw = complete(build_prompt(question, catalog, previous, chosen), system=SYSTEM, max_tokens=900)
+    raw = complete(build_prompt(question, catalog, previous, chosen, notes), system=SYSTEM, max_tokens=900)
     if raw is None:
         return Unsupported("Chưa kết nối được mô hình AI để hiểu câu hỏi.", code="model_unavailable")
     return _hold_to_choice(_no_echo(validate(raw, catalog), question), chosen)

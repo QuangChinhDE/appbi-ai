@@ -8,6 +8,8 @@ filters, locks, page bounds, exposed fields - is exercised on the live stack.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.answer_core.published_report import PublishedReportScope, _Chart
@@ -378,3 +380,197 @@ def test_a_follow_up_that_lifts_a_filter_is_answered_without_it():
     assert not isinstance(p, Unsupported), p
     # a real field word before it is not a lift ("doanh thu tất cả khu vực" names a metric)
     assert isinstance(validate({**raw, "covered": {"lợi nhuận tất cả khu vực": None}}, [products]), Unsupported)
+
+
+def test_the_guided_analysis_reads_only_the_published_charts_and_flags_figures_it_did_not_read(scope):
+    """Owner decision 2026-10-28: when the Core cannot plan a question ("phân tích hơn
+    về con số đó"), the bot analyses the PUBLISHED charts, guided by the publisher's
+    prompt. What the model is given is those charts' rows only (through the governed
+    chart path); a figure in its answer that is not in them is listed as NOT verified."""
+    from app.services.answer_core import guided_analysis as g
+
+    sent = {}
+
+    def model(prompt, system=None, max_tokens=None):
+        sent["payload"], sent["system"] = json.loads(prompt), system
+        return {"answer": "Laptop dẫn đầu với 150 (100 ở North, 50 ở South); tổng là 1.234 và tăng 12%.", "charts_used":
+                ["Doanh thu theo sản phẩm", "Biểu đồ không tồn tại"]}
+
+    out = g.analyse(scope, question="Phân tích doanh thu theo sản phẩm", instructions="Nhấn mạnh sản phẩm chủ lực.",
+                    complete=model)
+    assert sent["payload"]["publisher_instructions"] == "Nhấn mạnh sản phẩm chủ lực."
+    assert [c["chart"] for c in sent["payload"]["charts"]] == ["Doanh thu theo sản phẩm"]
+    assert {"Sản phẩm": "Laptop", "Vùng": "North", "Doanh thu": 100.0, "Giá TB": 10.0} in sent["payload"]["charts"][0]["rows"]
+    assert "không" in sent["system"].lower() and "bịa" in sent["system"]
+    assert out["charts"] == ["Doanh thu theo sản phẩm"]
+    assert "1.234" in out["unverified_figures"] and "12%" in out["unverified_figures"]
+    assert scope.ctx.calls == [(11, None)]                        # the governed chart read, nothing else
+
+
+def test_the_guided_analysis_answers_only_could_not_plan_refusals():
+    from app.services.answer_core.guided_analysis import eligible
+
+    assert eligible({"status": "refused", "code": "unsupported"})
+    for code in ("ai_budget_exceeded", "model_unavailable", "link_unavailable", "outside_published_scope", None):
+        assert not eligible({"status": "refused", "code": code}), code
+    assert not eligible({"status": "answered", "code": None})
+    # review 2026-10-28: the Core's refusals that guard against a wrong figure stand as they are
+    for code in ("not_additive", "grain_not_shown"):
+        assert not eligible({"status": "refused", "code": code}), code
+    ran = {"status": "refused", "code": "unsupported", "data": {"status": "unsupported", "plan": {"measures": []},
+                                                                 "message": "Kết quả vượt giới hạn dòng"}}
+    assert not eligible(ran)                                    # 0 rows / top N cut by the row bound
+    # a document question: answered from the publisher's prompt, else refused honestly
+    unsupported = {"status": "refused", "code": "unsupported"}
+    policy = "Chính sách giao hàng trễ được hoàn phí thế nào?"
+    assert eligible(unsupported, "Doanh thu tăng vì sao?")
+    assert not eligible(unsupported, policy)
+    assert eligible(unsupported, policy, has_notes=True)
+    # a link with a document add-on: the Core's refusal is the add-on's, as before
+    assert not eligible(unsupported, "Doanh thu tăng vì sao?", has_notes=True, has_addon=True)
+
+
+def test_an_evaluation_of_the_cores_figure_reads_the_prompt_beside_the_answer():
+    """Owner 2026-10-28: "có đạt mục tiêu không?" - the Core answers the figure; the
+    analysis reads it against the publisher's prompt, beside the answer, not in its place."""
+    from app.services.answer_core.guided_analysis import wants_evaluation
+    from app.services.chat.envelope import with_analysis
+
+    answered = {"status": "answered", "code": None, "message": None, "data": {"answer": {"headline": "10"}}}
+    assert wants_evaluation(answered, "Doanh thu có đạt mục tiêu không?", has_notes=True)
+    assert not wants_evaluation(answered, "Doanh thu có đạt mục tiêu không?", has_notes=False)
+    assert not wants_evaluation(answered, "Tổng doanh thu là bao nhiêu?", has_notes=True)
+    out = with_analysis(answered, {"text": "Đạt 80% mục tiêu"})
+    assert out["status"] == "answered" and out["code"] is None
+    assert out["data"]["answer"] == {"headline": "10"} and out["data"]["analysis"]["text"] == "Đạt 80% mục tiêu"
+
+
+def test_the_publishers_prompt_is_knowledge_its_figures_are_its_own_and_it_is_not_cut(scope):
+    """Owner 2026-10-28: the prompt can carry what no chart holds (a policy, a target) -
+    the analysis answers from it, says so, and a figure the prompt states is the
+    publisher's, not "unverified". No length cap on the prompt."""
+    from app.services.answer_core import guided_analysis as g
+
+    sent = {}
+    notes = "Mục tiêu doanh thu năm: 15.000.000. Đổi trả trong 7 ngày. " + "Bối cảnh. " * 400
+
+    def model(prompt, system=None, max_tokens=None):
+        sent["payload"] = json.loads(prompt)
+        return {"answer": "Theo thông tin của người xuất bản, mục tiêu là 15.000.000; tổng 150 mới đạt 37,5%.",
+                "charts_used": [], "used_publisher_notes": True}
+
+    out = g.analyse(scope, question="Có đạt mục tiêu không?", instructions=notes,
+                    core_answer={"question": "q", "headline": "150", "rows": [{"Doanh thu": 150.0}]}, complete=model)
+    assert sent["payload"]["publisher_instructions"] == notes          # whole, however long
+    assert sent["payload"]["core_answer"]["headline"] == "150"
+    assert out["used_notes"] is True
+    assert "15.000.000" not in out["unverified_figures"]               # the publisher's own figure
+    assert "37,5%" in out["unverified_figures"]                       # worked out by the model: flagged
+    # no prompt: the model's claim to have used one is not believed
+    out = g.analyse(scope, question="x", instructions=None,
+                    complete=lambda *a, **k: {"answer": "Laptop 150", "used_publisher_notes": True})
+    assert out["used_notes"] is False
+
+
+def test_the_guided_analysis_never_sums_what_does_not_add_up_nor_reads_an_unfiltered_chart(monkeypatch):
+    """Review 2026-10-28: an average or a distinct count summed over rows, a share of a
+    Top-N chart's rows, a chart that could not apply the viewer's filter - each a wrong
+    figure the model was told was exact. None of them is computed or read."""
+    from app.services.agent_flows.tools import context
+    from app.services.answer_core.guided_analysis import _facts, published_data
+
+    rows = [{"Vùng": v, "Giá TB": a, "Doanh thu": s} for v, a, s in [("North", 10.0, 100.0), ("South", 30.0, 50.0)]]
+    _, facts = _facts(rows, frozenset({"Doanh thu"}))
+    assert facts["total_of_rows"] == {"Doanh thu": 150.0}               # the sum, never the averages added
+    _, facts = _facts([{k: r[k] for k in ("Vùng", "Giá TB")} for r in rows], frozenset({"Doanh thu"}))
+    assert "total_of_rows" not in facts and all("share_percent" not in t for t in facts["top"])
+    assert [t["name"] for t in facts["top"]] == ["South", "North"]      # ranking an average is still true
+    _, facts = _facts([{"Vùng": None, "Doanh thu": 5.0}, {"Vùng": "West", "Doanh thu": 9.0}], frozenset({"Doanh thu"}))
+    assert facts["lowest"]["name"] == "(trống)"                         # a blank member, never "None"
+    _, facts = _facts(rows, frozenset({"Doanh thu"}), top_n=2)
+    assert facts["rows_are_top_n"] == 2 and "total_of_rows" not in facts
+    assert all("share_percent" not in t for t in facts["top"])
+
+    calls = []
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        calls.append(chart_id)
+        out = {"columns": [P, R, A], "rows": [["Laptop", 100.0, 10.0], ["Phone", 50.0, 30.0]], "filters_applied": []}
+        if chart_id == 12:
+            out["filters_not_applied"] = [{"field": "Bang", "value": "SP"}]
+        return out
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    s = PublishedReportScope(db=None, ctx=_Ctx(), link_id=7, turn_id="t" * 32)
+    s._charts = {11: _Chart(11, "Theo sản phẩm", ["Tổng quan"], 90, "bigquery", [P], {R: "sum", A: "avg"}),
+                 12: _Chart(12, "Toàn quốc", ["Tổng quan"], 91, "bigquery", [P], {R: "sum", A: "avg"})}
+    fields = [CatalogField(P, "dimension", "string", "Sản phẩm"), CatalogField(R, "measure", "sum", "Doanh thu"),
+              CatalogField(A, "measure", "avg", "Giá TB")]
+    s._entries = [CatalogExplore(11, None, 90, "Theo sản phẩm", None, "v", "bigquery", "x", fields),
+                  CatalogExplore(12, None, 91, "Toàn quốc", None, "v", "bigquery", "x", fields)]
+    charts = published_data(s)
+    assert [c["chart"] for c in charts] == ["Theo sản phẩm"] and calls == [11, 12]
+    assert charts[0]["facts"]["total_of_rows"] == {"Doanh thu": 150.0}  # "Giá TB" (avg) is never summed
+
+
+def test_the_publishers_prompt_reaches_the_planner_as_report_notes():
+    from app.services.data_core.planner import SYSTEM, build_prompt
+
+    body = json.loads(build_prompt("GMV là bao nhiêu?", [], None, notes="GMV = Total revenue"))
+    assert body["report_notes"] == "GMV = Total revenue" and "report_notes" in SYSTEM
+    assert "report_notes" not in json.loads(build_prompt("x", [], None))
+
+
+def test_the_guided_analysis_ranks_and_finds_peaks_itself_rather_than_trusting_the_model():
+    """Live demo 2026-10-28: asked "Top 5 bang", the model listed BA (511k) above PR
+    (683k) and dropped SC; asked about months it named the wrong peak and called R$
+    "USD". The ranking, peak, trough and change are computed here, over every row, and
+    the model is told to take them from `facts` and add no currency of its own."""
+    from app.services.answer_core.guided_analysis import SYSTEM, _facts
+
+    states = [{"Bang": s, "Doanh thu": v} for s, v in
+              [("RJ", 1824092.67), ("BA", 511349.99), ("SP", 5202955.05), ("PR", 683083.76),
+               ("MG", 1585308.03), ("SC", 520553.34), ("AC", 1000.0)]]
+    rows, facts = _facts(states, frozenset({"Doanh thu"}))
+    assert [t["name"] for t in facts["top"]] == ["SP", "RJ", "MG", "PR", "SC"]
+    assert [t["rank"] for t in facts["top"]] == [1, 2, 3, 4, 5]
+    assert facts["lowest"] == {"name": "AC", "Doanh thu": 1000.0}
+    assert rows[0]["Bang"] == "SP" and rows[-1]["Bang"] == "AC"
+    assert facts["top"][0]["share_percent"] == round(5202955.05 / sum(r["Doanh thu"] for r in states) * 100, 2)
+
+    months = [{"Tháng": m, "Doanh thu": v} for m, v in
+              [("2017-03-01", 400.0), ("2017-01-01", 120.0), ("2017-11-01", 1010.0), ("2018-08-01", 900.0)]]
+    rows, facts = _facts(months, frozenset({"Doanh thu"}))
+    assert [r["Tháng"] for r in rows] == ["2017-01-01", "2017-03-01", "2017-11-01", "2018-08-01"]
+    assert facts["peak"] == {"period": "2017-11-01", "Doanh thu": 1010.0}
+    assert facts["trough"] == {"period": "2017-01-01", "Doanh thu": 120.0}
+    assert facts["total_by_year"] == {"2017": 1530.0, "2018": 900.0}
+    assert facts["periods_by_year"] == {"2017": 3, "2018": 1}
+    assert "change_first_to_last" not in facts      # edge periods are partial: no first-vs-last trend
+    assert "facts" in SYSTEM and "USD" in SYSTEM                  # rank from facts; no currency added
+
+
+def test_the_guided_analysis_drops_the_wrapper_and_headings_the_model_adds(scope):
+    """The live answers began with a literal "<markdown>" and "# heading"."""
+    from app.services.answer_core import guided_analysis as g
+
+    out = g.analyse(scope, question="Top sản phẩm", instructions=None,
+                    complete=lambda *a, **k: {"answer": "<markdown># Top sản phẩm\n- Laptop: 150</markdown>"})
+    assert out["text"] == "**Top sản phẩm**\n- Laptop: 150"
+
+
+def test_the_guided_analysis_writes_figures_the_way_the_answers_language_does():
+    """Live demo 2026-10-28: the analysis printed "13591643.7" beside the Core's
+    "13.591.643,7". A year stays a year; an id is not a number."""
+    from app.services.answer_core.guided_analysis import _format_numbers
+
+    vi = _format_numbers("Tổng doanh thu đạt 13591643.7, năm 2017 cao nhất; SP chiếm 38.28%; tháng cuối 145.0; "
+                         "98666 đơn; người bán 6560211a19b4")
+    assert vi == ("Tổng doanh thu đạt 13.591.643,7, năm 2017 cao nhất; SP chiếm 38,28%; tháng cuối 145; "
+                  "98.666 đơn; người bán 6560211a19b4")
+    assert _format_numbers("tổng là 1.234 và 5.202.955,05") == "tổng là 1.234 và 5.202.955,05"   # already vi
+    # the model grouped it the English way itself: the Vietnamese answer still reads one way
+    assert (_format_numbers("Tổng doanh thu là 13,591,643.70; 98,666 đơn; SP chiếm 38.28%")
+            == "Tổng doanh thu là 13.591.643,7; 98.666 đơn; SP chiếm 38,28%")
+    assert _format_numbers("có 2,017 đơn trong năm 2017") == "có 2.017 đơn trong năm 2017"
+    assert _format_numbers("Revenue was 13591643.7 in 2017 (38.28%)") == "Revenue was 13,591,643.7 in 2017 (38.28%)"
