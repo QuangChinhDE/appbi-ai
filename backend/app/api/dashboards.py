@@ -1767,10 +1767,18 @@ def _shared_rev_token(dash, snapshot: Optional[Dict[str, Any]]) -> str:
     stored while nothing is pending: a copy loaded then equals the live report,
     so it is current."""
     published = dash.last_published_at.isoformat() if getattr(dash, "last_published_at", None) else "never"
-    # The counter outlives a Discard (`_after_author_leaves`): it restarted at 1, so a
-    # copy loaded before the Discard carried a token equal to the next edit's and its
-    # stale slicer list passed the check (customer demo 2026-10-28: a period slicer lost).
-    return f"{published}#{_shared_meta(snapshot)['rev']}"
+    if not _has_shared_draft(snapshot):
+        return f"{published}#0"
+    # The counter restarts after a Discard, so a copy loaded before it carried a token
+    # equal to the next edit's and its stale slicer list passed the check (customer demo
+    # 2026-10-28: a period slicer lost). The token also names WHAT the draft holds: two
+    # drafts share a token only if they hold the same filters, pages and theme.
+    import hashlib
+    import json as _json
+
+    shared = {k: snapshot[k] for k in _SHARED_DRAFT_KEYS if k in snapshot}
+    digest = hashlib.sha1(_json.dumps(shared, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+    return f"{published}#{_shared_meta(snapshot)['rev']}.{digest}"
 
 
 def _shared_draft_state(dash, snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Any]:
@@ -1812,11 +1820,8 @@ def _after_author_leaves(snapshot: Optional[Dict[str, Any]], user_key: str, keep
         for key in (*_SHARED_DRAFT_KEYS, _SHARED_META):
             if key in snapshot:
                 out[key] = snapshot[key]
-    elif isinstance(snapshot, dict) and _SHARED_META in snapshot:
-        # The shared draft is gone, its revision counter is not: it moves on, so no
-        # later token repeats one an editor may still hold (a meta alone is no draft:
-        # `has_draft` reads the shared keys).
-        out[_SHARED_META] = {"rev": _shared_meta(snapshot)["rev"] + 1, "authors": {}}
+    # Otherwise the shared draft is gone; its revision token moves on by itself
+    # (a Publish changes last_published_at; the token names the draft's content).
     return out or None
 
 
@@ -3038,7 +3043,7 @@ def update_dashboard_draft_filters(
             )
         author_name = getattr(current_user, "full_name", None) or current_user.email
         if not _has_shared_draft(snapshot):
-            meta = {"rev": meta["rev"], "authors": {}}  # a fresh draft; the counter goes on
+            meta = {"rev": 0, "authors": {}}
         meta["rev"] += 1
         meta["authors"][str(current_user.id)] = author_name
         meta["last_by_name"] = author_name

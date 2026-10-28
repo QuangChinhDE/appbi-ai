@@ -669,7 +669,8 @@ def test_a_single_author_publishes_and_discards_as_before(db):
 def test_the_shared_draft_revision_never_repeats_after_a_discard(db):
     """Customer demo 2026-10-28: a period slicer vanished. The revision counter
     restarted at 1 after a Discard, so a copy loaded before it (token "…#1") matched
-    the next edit's token and its stale slicer list replaced the colleague's."""
+    the next edit's token and its stale slicer list replaced the colleague's. The token
+    now also names the draft's content."""
     write = (lambda user, slicers, rev: api.update_dashboard_draft_filters(1, DashboardUpdateDraftFiltersRequest(
         slicers_config=slicers, base_rev=rev), db, user))
     write(A, SLICERS + [{"id": "s-extra", "field": "x", "operator": "in", "value": []}], _rev(db, A)["rev"])
@@ -684,7 +685,7 @@ def test_the_shared_draft_revision_never_repeats_after_a_discard(db):
 
 
 def _has_draft_meta_only_as_draft(db) -> bool:
-    """A Discard keeps only the revision counter, which is no draft."""
+    """A Discard leaves no draft behind (the token names the draft's content instead)."""
     _discard(db)
     db.expire_all()
     resp = api._serialize_dashboard_with_draft(db, db.query(Dashboard).filter(Dashboard.id == 1).one(), A)
