@@ -177,7 +177,7 @@ _SOURCE_MODULES = ("psycopg", "psycopg2", "pymysql", "MySQLdb", "google.", "goog
 
 
 def _is_source_error(ex: BaseException) -> bool:
-    from app.services.source_network_policy import SourceNetworkPolicyError
+    from app.core.source_network_policy import SourceNetworkPolicyError
 
     if isinstance(ex, SourceNetworkPolicyError):
         return True

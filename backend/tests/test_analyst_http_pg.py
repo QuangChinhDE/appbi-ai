@@ -914,7 +914,7 @@ def test_a_source_the_core_cannot_reach_is_a_plain_failure_never_a_crash(client,
     source that refuses or cannot be reached is a FACT about the source: `failed /
     source_unavailable`, said plainly, nothing shown as data, the turn stored once."""
     from app.services.datasource_service import DataSourceConnectionService
-    from app.services.source_network_policy import SourceNetworkPolicyError
+    from app.core.source_network_policy import SourceNetworkPolicyError
 
     def refused(*a, **k):
         raise SourceNetworkPolicyError("Destination is a private network address.")

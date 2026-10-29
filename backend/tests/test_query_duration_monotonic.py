@@ -14,7 +14,7 @@ def test_execute_query_duration_survives_a_wall_clock_step_back(monkeypatch):
     wall = {"now": 1_000_000.0}
     monkeypatch.setattr(time, "time", lambda: wall["now"])
 
-    def fake_pg(config, sql, limit, timeout, params, max_rows=None):
+    def fake_pg(config, sql, limit, timeout, params, max_rows=None, **_kw):  # on_backend_id (GQS cancel)
         wall["now"] -= 0.855  # the wall clock steps back while the query runs
         return [{"name": "x"}], [{"x": 1}]
 
