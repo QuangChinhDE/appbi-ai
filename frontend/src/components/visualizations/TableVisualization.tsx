@@ -139,6 +139,10 @@ function lookupColumnLabel(
 }
 
 const MIN_COLUMN_WIDTH = 96;
+/** A header asks for at most this much natural width to sit on one line. */
+const MAX_HEADER_NATURAL_WIDTH = 240;
+/** The stacked sort/filter control column beside a header label, gap included. */
+const HEADER_CONTROLS_PX = 24;
 // Floor when compressing columns to fit a narrow tile — smaller than the natural
 // MIN so more columns can actually fit the dragged size, but still wide enough
 // that a header wraps to 1-2 readable lines (with the word-part <wbr> breaks
@@ -175,6 +179,19 @@ function measureHeaderWordPx(label: string, el: HTMLElement): number | null {
     const text = transform(part);
     return Math.max(max, ctx.measureText(text).width + spacing * text.length);
   }, 0);
+}
+
+/** Px width of a header label on ONE line, in the font it is drawn with. */
+function measureHeaderLinePx(label: string, el: HTMLElement): number | null {
+  if (headerMeasureCtx === undefined) {
+    headerMeasureCtx = typeof document === 'undefined' ? null : document.createElement('canvas').getContext('2d');
+  }
+  const ctx = headerMeasureCtx;
+  if (!ctx) return null;
+  const cs = getComputedStyle(el);
+  ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const spacing = Number.parseFloat(cs.letterSpacing) || 0;
+  return ctx.measureText(label).width + spacing * label.length;
 }
 
 function renderWrappableHeaderLabel(label: string): React.ReactNode {
@@ -536,15 +553,27 @@ export function TableVisualization({
           return;
         }
 
-        const measuredWidth = Math.ceil(headerCellRefs.current[col]?.getBoundingClientRect().width ?? 0);
+        const cell = headerCellRefs.current[col];
+        const measuredWidth = Math.ceil(cell?.getBoundingClientRect().width ?? 0);
         if (measuredWidth > 0) {
-          next[col] = Math.max(measuredWidth, MIN_COLUMN_WIDTH);
+          // The natural width also makes room for the header on one line (its
+          // sort arrow and filter slot included, capped): sized by short numeric
+          // cells alone, "Giá trung bình / dòng" stacked one word per line in a
+          // tile with room to spare. A tile too narrow for every header still
+          // shrinks them all proportionally (fit-to-tile below).
+          const labelEl = cell?.querySelector<HTMLElement>('[data-table-header-label]');
+          const linePx = labelEl ? measureHeaderLinePx(String(lookupColumnLabel(col, columnLabels) ?? col), labelEl) : null;
+          const headerWidth = linePx != null
+            ? Math.min(MAX_HEADER_NATURAL_WIDTH, Math.ceil(linePx) + HEADER_CONTROLS_PX + 32)
+            : 0;
+          next[col] = Math.max(measuredWidth, headerWidth, MIN_COLUMN_WIDTH);
           changed = true;
         }
       });
 
       return changed ? next : current;
     });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cols, colsKey, liveColumnWidths]);
 
   useEffect(() => {
@@ -697,18 +726,51 @@ export function TableVisualization({
   // Header word widths, measured once the headers are drawn (their font comes from
   // the theme); until then the column floor falls back to a per-character estimate.
   const [headerWordPx, setHeaderWordPx] = useState<Record<string, number>>({});
+  const [valueWordPx, setValueWordPx] = useState<Record<string, number>>({});
+  const [headerLinePx, setHeaderLinePx] = useState<Record<string, number>>({});
   useLayoutEffect(() => {
     const box = containerRef.current;
     if (!box) return;
     const next: Record<string, number> = {};
+    const lines: Record<string, number> = {};
     box.querySelectorAll<HTMLElement>('[data-table-header-label]').forEach((el) => {
       const col = el.getAttribute('data-table-header-label') || '';
-      const px = measureHeaderWordPx(String(lookupColumnLabel(col, columnLabels) ?? col), el);
+      const label = String(lookupColumnLabel(col, columnLabels) ?? col);
+      const px = measureHeaderWordPx(label, el);
       if (px != null) next[col] = Math.ceil(px);
+      const line = measureHeaderLinePx(label, el);
+      if (line != null) lines[col] = Math.ceil(line);
+    });
+    setHeaderLinePx((prev) => {
+      const keys = Object.keys(lines);
+      return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === lines[k]) ? prev : lines;
     });
     setHeaderWordPx((prev) => {
       const keys = Object.keys(next);
       return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === next[k]) ? prev : next;
+    });
+    // The widest unbreakable value, in the body's real font: the per-character
+    // estimate fell a few px short and split "computers_accessories" into
+    // "computers_accessorie / s" once the headers took their share of the tile.
+    const cell = box.querySelector<HTMLElement>('tbody td');
+    const values: Record<string, number> = {};
+    if (cell) {
+      const sample = rows.slice(0, 60);
+      for (const col of cols) {
+        let max = 0;
+        for (const r of sample) {
+          const v = formatCellValue((r as any)?.[col], { numberFormat: getColumnFormat(col), decimalPlaces, currencySymbol });
+          for (const word of String(v ?? '').split(/\s+/)) {
+            if (!word) continue;
+            max = Math.max(max, measureHeaderLinePx(word, cell) ?? 0);
+          }
+        }
+        if (max > 0) values[col] = Math.ceil(max) + 2;
+      }
+    }
+    setValueWordPx((prev) => {
+      const keys = Object.keys(values);
+      return keys.length === Object.keys(prev).length && keys.every((k) => prev[k] === values[k]) ? prev : values;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colsKey, columnLabels, exporting, rows.length]);
@@ -842,16 +904,15 @@ export function TableVisualization({
         return Math.max(m, longest);
       }, 0);
       // The header's longest word sits beside its controls — the sort arrow
-      // (12px + gap) and, since it has its own slot, the filter button (16px +
-      // gap) — so budget them in px: a 2-char allowance split "region" into
-      // "regio / n" once the filter stopped overlapping the arrow.
-      const headerPx = (headerWordPx[col] ?? Math.ceil(headerWord * charPx)) + 18 + (enableColumnFilters ? 22 : 0);
+      // over the filter button, one stacked column — so budget them in px: a
+      // 2-char allowance split "region" into "regio / n".
+      const headerPx = (headerWordPx[col] ?? Math.ceil(headerWord * charPx)) + HEADER_CONTROLS_PX;
       out[col] = Math.min(240, Math.max(MIN_FIT_COLUMN_WIDTH - (16 - cellPadX) * 2,
-        Math.max(headerPx, Math.ceil(valueLen * charPx)) + cellPadX * 2));
+        Math.max(headerPx, valueWordPx[col] ?? Math.ceil(valueLen * charPx)) + cellPadX * 2));
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters, headerWordPx]);
+  }, [colsKey, rows, columnLabels, decimalPlaces, currencySymbol, cellPadX, enableColumnFilters, headerWordPx, valueWordPx]);
   const renderColumnWidths = useMemo(() => {
     if (!shouldFitToContainer) {
       // Room to spare: still never narrower than a column's own unbreakable content.
@@ -866,15 +927,31 @@ export function TableVisualization({
     // the still-free (wider) columns. Wide columns absorb most of the shrink;
     // already-narrow columns stay readable. If every column bottoms out at the
     // floor and they still don't fit, the table falls back to horizontal scroll.
+    // When the tile has room for it, a column is not shrunk below the width
+    // that keeps its header on two lines: a uniform scale squeezed a short
+    // header ("Số dòng hàng") onto three lines while a long one kept spare room.
+    const twoLineFloors: Record<string, number> = {};
+    for (const col of cols) {
+      const line = headerLinePx[col];
+      const twoLines = line ? Math.ceil(line / 2) + 12 + HEADER_CONTROLS_PX + cellPadX * 2 : 0;
+      twoLineFloors[col] = Math.min(liveColumnWidths[col], Math.max(columnFloors[col], twoLines));
+    }
+    // The hard floors only when they are what lets the table fit: if it must
+    // scroll sideways anyway, scrolling a little further beats headers stacked
+    // one word per line.
+    const sumOf = (f: Record<string, number>) => cols.reduce((sum, col) => sum + f[col], 0);
+    const floors = sumOf(twoLineFloors) > containerWidth && sumOf(columnFloors) <= containerWidth
+      ? columnFloors
+      : twoLineFloors;
     const out: Record<string, number> = {};
     const frozen = new Set<string>();
     for (let pass = 0; pass <= cols.length; pass++) {
       const free = cols.filter((col) => !frozen.has(col));
-      const frozenWidth = cols.filter((col) => frozen.has(col)).reduce((sum, col) => sum + columnFloors[col], 0);
+      const frozenWidth = cols.filter((col) => frozen.has(col)).reduce((sum, col) => sum + floors[col], 0);
       const freeNatural = free.reduce((sum, col) => sum + liveColumnWidths[col], 0);
       if (freeNatural <= 0) break;
       const scale = (containerWidth - frozenWidth) / freeNatural;
-      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < columnFloors[col]);
+      const toFreeze = free.filter((col) => liveColumnWidths[col] * scale < floors[col]);
       if (toFreeze.length === 0) {
         for (const col of free) out[col] = Math.floor(liveColumnWidths[col] * scale);
         break;
@@ -882,12 +959,12 @@ export function TableVisualization({
       toFreeze.forEach((col) => frozen.add(col));
     }
     for (const col of cols) {
-      if (out[col] == null) out[col] = columnFloors[col];
+      if (out[col] == null) out[col] = floors[col];
     }
     return out;
     // colsKey captures the column set; liveColumnWidths/containerWidth drive the scale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors]);
+  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors, headerLinePx, cellPadX]);
 
   const tableWidth = allColumnWidthsResolved
     // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
@@ -986,6 +1063,11 @@ export function TableVisualization({
                       >
                         {renderWrappableHeaderLabel(lookupColumnLabel(col, columnLabels))}
                       </span>
+                      {/* Sort over filter, stacked: one narrow control column
+                          instead of two side by side gives the label ~22px more
+                          per column ("Doanh thu (sản phẩm)" stacked one word
+                          per line). The hit areas still never overlap. */}
+                      <span className="flex flex-none flex-col items-center gap-1">
                       <span className="shrink-0" data-testid="table-sort-indicator">{getSortIndicator(col)}</span>
                       {/* The column filter sits IN the row, after the sort
                           indicator: the layout reserves its own hit area, so it
@@ -1019,6 +1101,7 @@ export function TableVisualization({
                           />
                         </button>
                       )}
+                      </span>
                     </div>
 
                     {enableColumnResize && (
