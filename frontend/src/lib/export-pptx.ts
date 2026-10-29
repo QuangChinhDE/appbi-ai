@@ -175,7 +175,7 @@ async function captureChart(tile: HTMLElement, state: TileReadiness): Promise<st
       logging: false,
       backgroundColor: '#ffffff',
       onclone: (_doc, el) => {
-        el.querySelectorAll<HTMLElement>('[data-pdf-tile-title], [data-export-hide], button')
+        el.querySelectorAll<HTMLElement>('[data-pdf-tile-title], [data-export-hide], button:not([data-chart-mark])')
           .forEach((n) => { n.style.visibility = 'hidden'; });
       },
     });

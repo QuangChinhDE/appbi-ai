@@ -383,3 +383,13 @@ def datasets_with_grants(db: Session, dataset_ids) -> set:
     if not ids:
         return set()
     return {r[0] for r in db.query(DatasetGrant.dataset_id).filter(DatasetGrant.dataset_id.in_(ids)).distinct()}
+
+
+# Core authorization reaches this policy through the core.authz.dataset_policy
+# port (core may not import services). Registering the MODULE keeps every
+# lookup late-bound, exactly like the lazy imports it replaces.
+import sys as _sys  # noqa: E402
+
+from app.core.authz.dataset_policy import register_dataset_policy  # noqa: E402
+
+register_dataset_policy(_sys.modules[__name__])

@@ -6,9 +6,15 @@ status). Keep this suite versioned; refresh when the dashboard/semantic layer
 changes. Every fixed bug should add a locking case here (Regression-Catalog
 discipline, extended into measurable eval).
 """
+import os
+
 from app.services.dashboard_ai_bot.eval.schema import GoldCase, GoldSuite
 
-OLIST_TOKEN = "EpgdXheFXfu3pe61hSIqF3MULlo2xwOU"
+# The public-link token of the eval fixture dashboard. It is a working read
+# credential for that dashboard wherever the link exists, so it is supplied by
+# the environment that runs the eval, never committed (a committed value was
+# live and unprotected on the dev database; revoke that link where it exists).
+OLIST_TOKEN = os.environ.get("APPBI_EVAL_OLIST_TOKEN", "")
 
 OLIST_SUITE = GoldSuite(
     name="olist_public_v1",

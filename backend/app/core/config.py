@@ -202,6 +202,9 @@ class Settings(BaseSettings):
     # Govern = Metrics/Glossary/Classification; Observability = Data Quality/Incidents/Alerts.
     GOVERN_ENABLED: bool = True
     OBSERVABILITY_ENABLED: bool = True
+    # The 02:00 UTC anomaly re-scan (anomaly_scheduler). Off only where detector
+    # state must stay as seeded (the e2e rig); alert dispatch is unaffected.
+    ANOMALY_DAILY_SCAN_ENABLED: bool = True
     # Wall-clock budget of ONE scan's monitor phase. Each monitor query is
     # already bounded (60 s timeout; BigQuery: dry-run + billing cap); this bounds
     # their sum, so a slow source cannot keep the scan (and its lock) for hours.

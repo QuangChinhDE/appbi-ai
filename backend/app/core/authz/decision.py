@@ -20,7 +20,8 @@ Policies:
   core.dependencies.get_effective_permission (none < view < edit < full,
   where full = owner with the module at edit, or the module administrator).
 * "dataset" - the canonical Dataset capability model
-  (services.dataset_grants_service.dataset_capabilities).
+  (services.dataset_grants_service.dataset_capabilities, reached through
+  the core.authz.dataset_policy port).
 """
 from __future__ import annotations
 
@@ -118,9 +119,9 @@ def can(db, user, action: Action, resource) -> Decision:
         need = _DATASET_NEEDS.get(action)
         if need is None:
             return Decision(False, f"action {action.value} is not defined for datasets")
-        from app.services.dataset_grants_service import dataset_capabilities
+        from app.core.authz.dataset_policy import dataset_policy
 
-        caps = dataset_capabilities(db, user, resource)
+        caps = dataset_policy().dataset_capabilities(db, user, resource)
         return Decision(need in caps, f"needs {need}", "dataset_policy")
     if spec.policy == "generic":
         need = _GENERIC_NEEDS.get(action)
@@ -160,9 +161,9 @@ def capabilities(db, user, resource, actions: Optional[Iterable[Action]] = None)
     table = _DATASET_NEEDS if spec.policy == "dataset" else _GENERIC_NEEDS
     acts = list(actions) if actions is not None else list(table)
     if spec.policy == "dataset":
-        from app.services.dataset_grants_service import dataset_capabilities
+        from app.core.authz.dataset_policy import dataset_policy
 
-        caps = dataset_capabilities(db, user, resource)
+        caps = dataset_policy().dataset_capabilities(db, user, resource)
         return {a.value: table.get(a) in caps for a in acts if a in table}
     from app.core.dependencies import LEVEL_ORDER, get_effective_permission
 
@@ -183,13 +184,12 @@ def capabilities_for_level(level: str | None) -> Dict[str, bool]:
 def scope(db, user, model):
     """Rows of ``model`` the caller may READ - the same policy as ``can(READ)``."""
     from app.core.authz.registry import spec_for_model
-    from app.core.permissions import _owned_or_shared
-    from app.models.resource_share import ResourceType
+    from app.core.permissions import _owned_or_shared_by_type
 
     spec = spec_for_model(model)
     if spec is None:
         return db.query(model).filter(False)
-    return _owned_or_shared(db, model, ResourceType(spec.resource_type), user)
+    return _owned_or_shared_by_type(db, model, spec.resource_type, user)
 
 
 
@@ -220,9 +220,9 @@ def attach_capabilities(db, user, resources) -> None:
     if spec is None:
         return
     if spec.policy == "dataset":
-        from app.services.dataset_grants_service import batch_dataset_capabilities
+        from app.core.authz.dataset_policy import dataset_policy
 
-        caps = batch_dataset_capabilities(db, user, rs)
+        caps = dataset_policy().batch_dataset_capabilities(db, user, rs)
         for r in rs:
             have = caps.get(r.id, set())
             setattr(r, caps_attr(spec), {a.value: need in have for a, need in _DATASET_NEEDS.items()})

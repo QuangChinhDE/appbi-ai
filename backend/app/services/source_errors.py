@@ -203,7 +203,7 @@ def classify_source_error(exc: Any) -> str:
         if isinstance(exc, str):
             return _classify_text(exc)
         # Policy / capability refusals first: they are ValueErrors too.
-        from app.services.source_network_policy import SourceNetworkPolicyError
+        from app.core.source_network_policy import SourceNetworkPolicyError
         if isinstance(exc, SourceNetworkPolicyError):
             return "policy_blocked"
         try:

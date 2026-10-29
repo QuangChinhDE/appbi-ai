@@ -101,10 +101,13 @@ def startup():
     """Start the anomaly detection scheduler. Called from app lifespan."""
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
-    # Run daily at 2 AM UTC. A deterministic test deployment turns the wall-clock
-    # scan off (APPBI_DAILY_SCAN=off): firing mid-suite it re-evaluates every
-    # seeded metric and rewrites the states the tests assert on.
-    daily = os.environ.get("APPBI_DAILY_SCAN", "on").strip().lower() != "off"
+    # Run daily at 2 AM UTC - unless switched off by either control: a deterministic
+    # test deployment (APPBI_DAILY_SCAN=off), or the e2e rig's setting
+    # (ANOMALY_DAILY_SCAN_ENABLED=false). Firing mid-suite it re-evaluates every seeded
+    # metric and rewrites the states the tests assert on (a run straddling 02:00 flaked O08b/O25).
+    from app.core.config import settings
+    daily = (os.environ.get("APPBI_DAILY_SCAN", "on").strip().lower() != "off"
+             and getattr(settings, "ANOMALY_DAILY_SCAN_ENABLED", True))
     if daily:
         _scheduler.add_job(
             _run_anomaly_scan,
@@ -113,7 +116,7 @@ def startup():
             replace_existing=True,
         )
     else:
-        logger.warning("APPBI_DAILY_SCAN=off: the daily anomaly + observability scan is not scheduled")
+        logger.warning("daily anomaly + observability scan is not scheduled (APPBI_DAILY_SCAN=off or ANOMALY_DAILY_SCAN_ENABLED=false)")
     _scheduler.add_job(
         _dispatch_alerts,
         trigger=IntervalTrigger(minutes=10),

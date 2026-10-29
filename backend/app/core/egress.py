@@ -7,7 +7,7 @@ Every connection whose DESTINATION a user can influence goes through here:
 * database connections to a datasource's configured host - ``pg_connect`` /
   ``mysql_connect`` (same keyword arguments as psycopg2 / pymysql). Their
   DESTINATION decision is the Source module's policy
-  (``services/source_network_policy.py``) - one DB policy, one operator knob
+  (``core/source_network_policy.py``) - one DB policy, one operator knob
   (``ALLOWED_PRIVATE_SOURCE_CIDRS`` / ``SOURCE_ALLOW_PRIVATE_NETWORK``); this
   module only refuses DSN / caller-chosen ``hostaddr`` / unix-socket forms and
   pins the checked address.
@@ -205,7 +205,7 @@ async def http_post_async(client, url: str, **kwargs):
 # ── Databases ────────────────────────────────────────────────────────────────
 
 #: DATABASE destinations are decided by ONE policy: the Source module's
-#: ``services/source_network_policy.py`` (every A/AAAA candidate checked,
+#: ``core/source_network_policy.py`` (every A/AAAA candidate checked,
 #: metadata/link-local/tunnel prefixes hard-denied, loopback and private ranges
 #: only through ``ALLOWED_PRIVATE_SOURCE_CIDRS`` / ``SOURCE_ALLOW_PRIVATE_NETWORK``).
 #: This module adds only what a connection call itself must refuse (a DSN, a
@@ -214,7 +214,7 @@ async def http_post_async(client, url: str, **kwargs):
 #: above. (Converged with origin/demo's source hardening: one DB policy, one knob.)
 
 def _db_destination(host, port) -> str:
-    from app.services.source_network_policy import resolve_and_check
+    from app.core.source_network_policy import resolve_and_check
 
     return resolve_and_check(host, int(port) if port else None)
 

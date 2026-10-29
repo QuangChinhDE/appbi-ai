@@ -3096,6 +3096,7 @@ function ExploreChartInner({
             return (
               <div
                 key={i}
+                data-chart-mark=""
                 onClick={onSelectDataPoint ? () => emitSelection(nameField, name) : undefined}
                 className={`flex flex-col items-center rounded-2xl border p-4 transition-opacity ${onSelectDataPoint ? 'cursor-pointer' : ''}`}
                 style={{

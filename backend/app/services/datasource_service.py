@@ -1098,7 +1098,7 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
-        start_time = time.time()
+        start_time = time.perf_counter()
 
         try:
             if ds_type == DataSourceType.POSTGRESQL.value:
@@ -1134,14 +1134,14 @@ class DataSourceConnectionService:
             columns, data = result[0], result[1]
             if max_rows is not None and len(data) > max_rows:
                 data = data[:max_rows]
-            execution_time_ms = (time.time() - start_time) * 1000
+            execution_time_ms = (time.perf_counter() - start_time) * 1000
             return columns, data, execution_time_ms
 
         except Exception as e:
             # No SQL, no raw driver text: provider, duration and the redacted cause.
             logger.error(
                 "Query execution failed provider=%s duration_ms=%d cause=%s",
-                ds_type, int((time.time() - start_time) * 1000), describe_source_error(e, config),
+                ds_type, int((time.perf_counter() - start_time) * 1000), describe_source_error(e, config),
             )
             raise
 
@@ -1238,7 +1238,7 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         config = decrypt_config(config)
 
-        start_time = time.time()
+        start_time = time.perf_counter()
         if ds_type == DataSourceType.POSTGRESQL.value:
             columns, rows, rowcount = DataSourceConnectionService._execute_postgresql_write(
                 config, sql_query, query_params, timeout_seconds
@@ -1252,7 +1252,7 @@ class DataSourceConnectionService:
                 f"Write operations are not supported on datasource type '{ds_type}'."
             )
 
-        execution_time_ms = (time.time() - start_time) * 1000
+        execution_time_ms = (time.perf_counter() - start_time) * 1000
         return columns, rows, rowcount, execution_time_ms
 
     @staticmethod
@@ -1291,7 +1291,7 @@ class DataSourceConnectionService:
         from app.core.crypto import decrypt_config
         cfg = decrypt_config(config)
 
-        start = time.time()
+        start = time.perf_counter()
 
         if ds_type == DataSourceType.GOOGLE_SHEETS.value:
             from app.services.google_sheets_connector import (
@@ -1310,7 +1310,7 @@ class DataSourceConnectionService:
                     values if isinstance(values, dict) else {},
                     auto_pk_columns=auto_pk_columns,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return row, 1, ms
             if op == "insert_many":
                 rows = values if isinstance(values, list) else []
@@ -1318,7 +1318,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, rows,
                     auto_pk_columns=auto_pk_columns,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {"rows": result.get("rows") or []}, int(result.get("appended") or 0), ms
             if op == "update":
                 if not pk:
@@ -1327,7 +1327,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, pk, values or {},
                     lock_column=lock_column, lock_token=lock_token,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return row, 1, ms
             if op == "update_many":
                 rows = values if isinstance(values, list) else []
@@ -1337,7 +1337,7 @@ class DataSourceConnectionService:
                     rows,
                     lock_column=lock_column,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {"rows": result.get("rows") or []}, int(result.get("updated") or 0), ms
             if op == "delete":
                 if not pk:
@@ -1346,7 +1346,7 @@ class DataSourceConnectionService:
                     spreadsheet_id, sheet_name, pk,
                     lock_column=lock_column, lock_token=lock_token,
                 )
-                ms = (time.time() - start) * 1000
+                ms = (time.perf_counter() - start) * 1000
                 return {}, 1, ms
             raise ValueError(f"Unsupported op '{op}'.")
 
@@ -3720,7 +3720,7 @@ class DataSourceConnectionService:
                 import duckdb
                 import pyarrow as pa
 
-                _duck_start = time.time()
+                _duck_start = time.perf_counter()
                 from app.services.sql_validator import open_locked_duckdb
                 con = open_locked_duckdb()  # S1: no host files / settings
 
@@ -3792,7 +3792,7 @@ class DataSourceConnectionService:
                 con.close()
 
                 rows = [dict(zip(columns, row)) for row in raw_rows]
-                _duck_ms = (time.time() - _duck_start) * 1000
+                _duck_ms = (time.perf_counter() - _duck_start) * 1000
                 # [perf] full cold cost of a Sheets tile: build N tabs into
                 # DuckDB + run the SQL. Compare against the cache=HIT line to
                 # see what Fix #3 saves on the next identical request.

@@ -51,6 +51,7 @@ docs/*
 # usually while something is wrong. A runbook that is only on the author's disk
 # is not a runbook.
 !docs/ops-runbook.md
+!docs/production-release-runbook.md
 # …and the embed integration contract: code (middleware, nginx, .env.example,
 # tests) points external developers at it, so a clone must carry it.
 !docs/embed-integration-api.md
@@ -210,6 +211,7 @@ backend/scripts/regression_*.py
 # a dev's laptop. (Negations must follow the ignores; later match wins.)
 !backend/tests/
 !backend/tests/test_locked_contract.py
+!backend/tests/test_query_duration_monotonic.py
 !backend/tests/test_phase2_filter_propagation.py
 !backend/tests/test_phase4_symmetric_aggregates.py
 !backend/tests/test_time_grain_whitelist.py
@@ -247,6 +249,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_error_taxonomy_and_empty.py
 !backend/tests/test_chart_discovery_and_figure_correction.py
 !backend/tests/test_chat_thread_sharing.py
+!backend/tests/test_chat_availability_single_rule.py
 !backend/tests/test_coordinator_is_visible_to_the_flow.py
 !backend/tests/test_flow_attached_but_unreadable.py
 !backend/tests/test_flow_coordinate.py
@@ -483,6 +486,7 @@ backend/_verify_gate.db
 !backend/tests/test_authz_egress.py
 !backend/tests/test_authz_observability_http_pg.py
 !backend/tests/test_observability_lifecycle_pg.py
+!backend/tests/test_anomaly_detector_status_pg.py
 !backend/tests/test_observability_monitors_pg.py
 !backend/tests/test_observability_monitors_mysql_pg.py
 !backend/tests/test_permission_caps.py
@@ -565,3 +569,5 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_govern_doc_answerability.py
 !backend/tests/test_knowledge_hit_contract.py
 !backend/tests/test_semantic_level0.py
+!backend/tests/test_migration_gate.py
+!backend/tests/test_source_inventory.py

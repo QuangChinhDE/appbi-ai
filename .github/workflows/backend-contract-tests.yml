@@ -158,6 +158,7 @@ jobs:
           set -o pipefail
           python -m pytest -q --tb=short \
             tests/test_locked_contract.py \
+            tests/test_query_duration_monotonic.py \
             tests/test_phase2_filter_propagation.py \
             tests/test_phase4_symmetric_aggregates.py \
             tests/test_filter_entry_schemas.py \
@@ -193,6 +194,7 @@ jobs:
             tests/test_error_taxonomy_and_empty.py \
             tests/test_chart_discovery_and_figure_correction.py \
             tests/test_chat_thread_sharing.py \
+            tests/test_chat_availability_single_rule.py \
             tests/test_coordinator_is_visible_to_the_flow.py \
             tests/test_flow_attached_but_unreadable.py \
             tests/test_flow_coordinate.py \
@@ -291,6 +293,8 @@ jobs:
             tests/test_dashboard_responsive_layouts.py \
             tests/test_sql_literal_security.py \
             tests/test_trusted_proxy_client_ip.py \
+            tests/test_migration_gate.py \
+            tests/test_source_inventory.py \
             tests/test_embed_integration_security.py \
             tests/test_dashboard_parameter_parity.py \
             tests/test_report_content_widgets.py \
@@ -822,6 +826,7 @@ jobs:
             tests/test_authz_workspace_route_matrix_pg.py \
             tests/test_authz_observability_http_pg.py \
             tests/test_observability_lifecycle_pg.py \
+            tests/test_anomaly_detector_status_pg.py \
             tests/test_observability_monitors_pg.py \
             tests/test_permission_caps.py \
             tests/test_pat_session_binding.py \
