@@ -1362,8 +1362,6 @@
   background-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 10%, transparent);
   color: rgb(var(--text-primary));
   border-bottom: 1.5px solid color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 45%, transparent);
-  text-transform: uppercase;
-  letter-spacing: .04em;
 }
 [data-dashboard-tablestyle="executive"] .dashboard-tile table tbody tr:hover td {
   background-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 6%, transparent);
@@ -1447,10 +1445,12 @@
   letter-spacing: var(--dash-label-tracking, 0);
   opacity: var(--dash-label-opacity, 1);
 }
-[data-dashboard-labelstyle='eyebrow'] .dashboard-tile table thead th,
-[data-dashboard-labelstyle='caps'] .dashboard-tile table thead th {
-  text-transform: var(--dash-label-transform, none);
-  letter-spacing: var(--dash-label-tracking, 0);
+/* Table headers stay in sentence case whatever the label style: a column name is
+   read, not glanced at, and tracked caps on long multi-word names (Vietnamese
+   especially) forced narrow columns to break words letter by letter. */
+[data-dashboard-labelstyle] .dashboard-tile table thead th {
+  text-transform: none;
+  letter-spacing: normal;
 }
 
 /* ── Figures ──────────────────────────────────────────────────────────────
