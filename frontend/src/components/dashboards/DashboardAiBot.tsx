@@ -18,7 +18,7 @@
  * Public bundle rule: only the public client (`lib/api/public`) - no authed API.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, FileText, Plus, RotateCcw, Send, Sparkles, Square, ThumbsDown, ThumbsUp, X } from 'lucide-react';
+import { AlertCircle, Bot, FileText, Plus, RotateCcw, Send, Sparkles, Square, ThumbsDown, ThumbsUp, X } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
 import {
@@ -43,7 +43,13 @@ interface Props {
   pageId?: string | null;
   /** Titles of the charts on the viewer's page: the welcome's starter questions. */
   chartTitles?: string[];
+  /** Brings a chart of the report into view (its page, its tile): a source chip under an
+   *  answer opens the chart it was read from. Absent: the chips are plain labels. */
+  onShowChart?: (chartName: string) => void;
 }
+
+/** The report's "show this chart" action, for the source chips of every answer. */
+const ShowChartContext = React.createContext<((chartName: string) => void) | null>(null);
 
 interface Exchange {
   id: string;
@@ -93,7 +99,7 @@ function fmt(v: unknown, locale: string): string {
   return String(v);
 }
 
-export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilters, pageId, chartTitles }: Props) {
+export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilters, pageId, chartTitles, onShowChart }: Props) {
   const { t, locale } = useI18n();
   const convStorage = `appbi.aiAnswer.conv.${token}`;
   const msgStorage = `appbi.aiAnswer.msgs.${token}`;
@@ -252,7 +258,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
     .map((name) => t('dashboards.aiBot.core.starter', { chart: name })), [chartTitles, t]);
 
   return (
-    <>
+    <ShowChartContext.Provider value={onShowChart ?? null}>
       {!open && (
         <button
           type="button"
@@ -374,7 +380,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
           </form>
         </section>
       )}
-    </>
+    </ShowChartContext.Provider>
   );
 }
 
@@ -416,6 +422,44 @@ function SourceChip({ kind, t }: { kind: 'core' | 'guide' | 'unsupported' | 'pol
     <span className={`mb-1 inline-block rounded px-1.5 py-0.5 text-micro font-strong uppercase tracking-wide ${look}`}
           data-testid="ai-bot-source" data-source={kind}>
       {t(`dashboards.aiBot.core.${key}`)}
+    </span>
+  );
+}
+
+/** A chart an answer was read from, as a chip: a click brings the chart into view on the
+ *  report (customer feedback 2026-10-29: "click the chart name to see it in detail"). */
+function ChartChip({ name, t }: { name: string; t: Translate }) {
+  const show = React.useContext(ShowChartContext);
+  const label = chartTitle(name);
+  const look = 'mx-0.5 inline-flex max-w-full items-center rounded-full border border-brand/25 bg-brand/5 px-2 py-0.5 '
+    + 'align-middle text-micro font-emphasis text-brand';
+  return show ? (
+    <button type="button" className={`${look} hover:bg-brand/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40`}
+            onClick={() => show(name)} title={t('dashboards.aiBot.core.showChart')} data-testid="ai-bot-chart-chip"
+            data-chart={name}>
+      <span className="truncate">{label}</span>
+    </button>
+  ) : <span className={look} data-testid="ai-bot-chart-chip" data-chart={name}><span className="truncate">{label}</span></span>;
+}
+
+/** Why the system did not compute an answer itself, behind a (!) - the reason is there on
+ *  hover / tap, not spelled out above every analysis (customer feedback 2026-10-29). */
+function ReasonHint({ reason, t }: { reason: string; t: Translate }) {
+  const [open, setOpen] = useState(false);
+  const text = t('dashboards.aiBot.core.coreReason', { reason });
+  return (
+    <span className="relative inline-flex" onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
+      <button type="button" aria-label={text} aria-expanded={open} title={text} data-testid="ai-bot-core-reason"
+              onClick={() => setOpen((v) => !v)} onBlur={() => setOpen(false)}
+              className="inline-flex h-4 w-4 items-center justify-center rounded-full text-text-tertiary hover:text-warning focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40">
+        <AlertCircle className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      {open && (
+        <span role="tooltip" data-testid="ai-bot-core-reason-tip"
+              className="absolute left-0 top-5 z-20 w-60 rounded-md border border-[rgb(var(--border-line))] bg-surface-1 px-2.5 py-1.5 text-label font-normal normal-case tracking-normal text-text-secondary shadow-linear">
+          {text}
+        </span>
+      )}
     </span>
   );
 }
@@ -618,7 +662,7 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
           )}
           {ev && (
             <div className="mt-2 space-y-0.5 text-label text-text-tertiary" data-testid="ai-bot-evidence">
-              {ev.source && <p>{t('dashboards.aiBot.core.source', { source: ev.source })}</p>}
+              {ev.source && <p>{t('dashboards.aiBot.core.sourceLabel')} <ChartChip name={ev.source} t={t} /></p>}
               {(ev.pages || []).length > 0 && <p>{t('dashboards.aiBot.core.pages', { pages: (ev.pages || []).join(', ') })}</p>}
               {filters.length > 0 && <p>{t('dashboards.aiBot.core.filters', { filters: filters.join('; ') })}</p>}
               {(ev.filters_dropped || []).length > 0 && (
@@ -642,14 +686,11 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
           <div data-testid="ai-bot-analysis">
             <p className="mb-1.5 flex items-center gap-1 text-micro font-strong uppercase tracking-wide text-brand">
               <Sparkles className="h-3 w-3" aria-hidden="true" />{t('dashboards.aiBot.core.analysisLabel')}
+              {e.code === 'ai_analysis' && data.message && (data.analysis.charts || []).length > 0 && (
+                // the system's own reason it could not compute this directly, behind a (!)
+                <ReasonHint reason={data.message} t={t} />
+              )}
             </p>
-            {e.code === 'ai_analysis' && data.message && (data.analysis.charts || []).length > 0 && (
-              // the system's own reason it could not compute this directly - kept beside an
-              // analysis of the charts (an answer from the publisher's guide alone needs none)
-              <p className="mb-1.5 text-label text-text-tertiary" data-testid="ai-bot-core-reason">
-                {t('dashboards.aiBot.core.coreReason', { reason: data.message })}
-              </p>
-            )}
             <MiniMarkdown text={data.analysis.text} />
             {(data.analysis.unverified_figures || []).length > 0 && (
               <p className="mt-1.5 text-label text-warning" data-testid="ai-bot-unverified">
@@ -657,12 +698,17 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
               </p>
             )}
             <p className="mt-1.5 text-micro text-text-tertiary">
-              {(data.analysis.charts || []).length > 0
-                // "figures read from these charts" only when every figure was found in them
-                ? t((data.analysis.unverified_figures || []).length > 0
-                  ? 'dashboards.aiBot.core.analysisFromPartly' : 'dashboards.aiBot.core.analysisFrom',
-                    { charts: (data.analysis.charts || []).map(chartTitle).join(', ') })
-                : t('dashboards.aiBot.core.analysisNote')}
+              {(data.analysis.charts || []).length > 0 ? (
+                <>
+                  {t('dashboards.aiBot.core.analysisFromLabel')}
+                  <span className="inline" data-testid="ai-bot-analysis-sources">
+                    {(data.analysis.charts || []).map((name) => <ChartChip key={name} name={name} t={t} />)}
+                  </span>
+                  {/* "figures read from these charts" only when every figure was found in them */}
+                  {' '}{t((data.analysis.unverified_figures || []).length > 0
+                    ? 'dashboards.aiBot.core.analysisFromPartlyTail' : 'dashboards.aiBot.core.analysisFromTail')}
+                </>
+              ) : t('dashboards.aiBot.core.analysisNote')}
               {data.analysis.used_notes && <> {t('dashboards.aiBot.core.analysisNotes')}</>}
             </p>
           </div>
