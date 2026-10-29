@@ -84,6 +84,9 @@ interface ChartPreviewProps {
   onStyleConfigChange?: (nextStyleConfig: ChartStyleConfig) => void;
   embedded?: boolean;
   kpiLabelInHeader?: boolean;
+  /** A TABLE keeps the viewer's dragged column widths under this key
+   *  (TableVisualization `columnWidthsStorageKey`). */
+  tableWidthsStorageKey?: string;
 }
 
 const DEFAULT_COLORS = [
@@ -267,6 +270,7 @@ export function ChartPreview({
   onStyleConfigChange,
   embedded = false,
   kpiLabelInHeader = false,
+  tableWidthsStorageKey,
 }: ChartPreviewProps) {
   const style = useMemo(
     () => normalizeChartStyleConfig(styleConfig, config.conditional_formatting),
@@ -922,6 +926,7 @@ export function ChartPreview({
             summaryLabelColumn={style.tableSummaryLabelColumn}
             columnWidths={style.tableColumnWidths}
             onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
+            columnWidthsStorageKey={tableWidthsStorageKey}
             columnAlignments={style.tableColumnAlignments}
             hyperlinkRules={style.tableHyperlinkRules}
             numberFormat={tableNumberFormat}

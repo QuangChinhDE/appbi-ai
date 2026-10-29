@@ -1559,6 +1559,9 @@ export interface ExploreChartProps {
   /** #KPI-header — the host tile renders the KPI metric label in its header
    *  row (level with the toolbar), so KpiCard hides its own label. */
   kpiLabelInHeader?: boolean;
+  /** A TABLE keeps the viewer's dragged column widths under this key
+   *  (TableVisualization `columnWidthsStorageKey`). */
+  tableWidthsStorageKey?: string;
 }
 
 /** Chart types whose marks are positioned by a measure value on an axis. */
@@ -1631,6 +1634,7 @@ function ExploreChartInner({
   lockDateGrain = false,
   kpiLabelInHeader = false,
   timeCompleteness,
+  tableWidthsStorageKey,
 }: ExploreChartProps) {
   const { t } = useI18n();
   const baseStyle = useMemo(() => normalizeChartStyleConfig(_style), [_style]);
@@ -3456,6 +3460,7 @@ function ExploreChartInner({
             summaryLabelColumn={style.tableSummaryLabelColumn}
             columnWidths={style.tableColumnWidths}
             onColumnWidthsChange={onStyleConfigChange ? handleTableColumnWidthsChange : undefined}
+            columnWidthsStorageKey={tableWidthsStorageKey}
             columnAlignments={style.tableColumnAlignments}
             hyperlinkRules={style.tableHyperlinkRules}
             numberFormat={tableNumberFormat}

@@ -1647,6 +1647,7 @@ function ChartTileBase({
               timeCompleteness={chartData?.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
+              tableWidthsStorageKey={`appbi.tableColumnWidths.tile.${dashboardChartId}`}
               onViewerDrill={setViewerGrain}
               viewerGrain={viewerGrain}
               lockDateGrain={dateGrainLocked}
@@ -1665,6 +1666,7 @@ function ChartTileBase({
               styleConfig={chartRenderStyleConfig}
               embedded
               kpiLabelInHeader={isKpiCard}
+              tableWidthsStorageKey={`appbi.tableColumnWidths.tile.${dashboardChartId}`}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}
