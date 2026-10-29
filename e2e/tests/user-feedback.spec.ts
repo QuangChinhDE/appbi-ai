@@ -132,6 +132,51 @@ for (const width of [1440, 1280, 1024, 820, 390]) {
   });
 }
 
+// "kéo chỉnh độ rộng cột và lưu trạng thái" + "IN HOA → Sentence case": a viewer's
+// dragged column keeps its width after a reload (double-click gives it back), and
+// no theme sets table headers in tracked caps.
+test('public table: a dragged column keeps its width after reload; headers are never upper-cased', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/d/${TOKEN}`);
+  await revealDetailTable(page);
+  const th = () => detailTable(page).locator('thead th').filter({ hasText: 'region' }).first();
+  await expect(th()).toBeVisible({ timeout: 60_000 });
+
+  // The caps/eyebrow label styles and the executive table style used to upper-case it.
+  const transforms = await th().evaluate((el) => {
+    const host = el.closest('[data-dashboard-labelstyle]') ?? el.closest('.dashboard-tile')?.parentElement;
+    const out: string[] = [];
+    for (const [attr, value] of [['data-dashboard-labelstyle', 'caps'], ['data-dashboard-labelstyle', 'eyebrow'], ['data-dashboard-tablestyle', 'executive']]) {
+      host?.setAttribute(attr, value);
+      out.push(getComputedStyle(el).textTransform);
+    }
+    return out;
+  });
+  expect(transforms, 'a theme upper-cases table headers').toEqual(['none', 'none', 'none']);
+
+  const width = async () => Math.round((await th().boundingBox())!.width);
+  const before = await width();
+  const handle = th().locator('button[aria-label^="Resize"]');
+  await th().hover();
+  const box = (await handle.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 150, box.y + box.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const dragged = await width();
+  expect(dragged, 'the drag did not widen the column').toBeGreaterThan(before + 40);
+
+  await page.reload();
+  await revealDetailTable(page);
+  await expect(th()).toBeVisible({ timeout: 60_000 });
+  await expect.poll(width, { message: 'the dragged width was lost on reload' }).toBeGreaterThan(dragged - 6);
+
+  await th().hover();
+  await th().locator('button[aria-label^="Resize"]').dblclick();
+  await expect.poll(width, { message: 'double-click did not give the column back' }).toBeLessThan(before + 6);
+});
+
 test('builder table: sort and filter have separate hit areas', async ({ page, request }) => {
   test.setTimeout(120_000);
   const id = await dashboardIdByName(request, 'E2E feedback executive');

@@ -617,6 +617,7 @@ export function ReadonlyChartTile({
               timeCompleteness={chartData.time_completeness ?? undefined}
               embedded
               kpiLabelInHeader={isKpiCard}
+              tableWidthsStorageKey={dashboardChartId != null ? `appbi.tableColumnWidths.tile.${dashboardChartId}` : chart?.id != null ? `appbi.tableColumnWidths.chart.${chart.id}` : undefined}
               viewerGrain={viewerGrain}
               onViewerDrill={onViewerDrill}
               lockDateGrain={lockDateGrain}
@@ -633,6 +634,7 @@ export function ReadonlyChartTile({
               styleConfig={chartRenderStyleConfig}
               embedded
               kpiLabelInHeader={isKpiCard}
+              tableWidthsStorageKey={dashboardChartId != null ? `appbi.tableColumnWidths.tile.${dashboardChartId}` : chart?.id != null ? `appbi.tableColumnWidths.chart.${chart.id}` : undefined}
               onSelectDataPoint={onSelectCrossFilter && chartSemanticBinding?.datasetId != null
                 ? handleCrossFilterSelection
                 : undefined}
