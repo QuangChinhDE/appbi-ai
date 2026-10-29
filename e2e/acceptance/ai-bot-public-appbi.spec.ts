@@ -352,3 +352,29 @@ test('P15 · add-on failure isolation: injected instructions and invented figure
   expect(['refused', 'answered']).toContain(await missing.getAttribute('data-status'));
   await shot(page, info, 'P15-addon-isolation');
 });
+
+test('P16 · a source chip opens the chart it was read from; the system reason sits behind a (!)', async ({ page }, info) => {
+  // Customer feedback 2026-10-29: chart names under an answer are chips that bring the
+  // chart into view (its page, its tile); "Hệ thống chưa tính trực tiếp được: …" is not
+  // spelled out above an analysis - it is behind a (!) on hover / tap.
+  await openBot(page);
+  const ex = await ask(page, 'Doanh thu theo nhóm sản phẩm');          // a chart of the OTHER page
+  const chip = ex.getByTestId('ai-bot-evidence').getByTestId('ai-bot-chart-chip');
+  await expect(chip).toHaveCount(1);
+  await expect(chip).toContainText('Doanh thu theo nhóm sản phẩm');
+  await chip.click();
+  // the report switched to the chart's page and marked its tile
+  const focused = page.locator('.ai-bot-focus');
+  await expect(focused).toHaveCount(1, { timeout: 15_000 });
+  await expect(focused).toContainText('Doanh thu theo nhóm sản phẩm');
+  await expect(focused).toBeInViewport();
+  await shot(page, info, 'P16-chip-opens-chart');
+
+  // no reason paragraph anywhere: where the system gave one, it is behind the (!)
+  await expect(page.getByTestId('ai-bot-panel').getByText(/^Hệ thống chưa tính trực tiếp được/)).toHaveCount(0);
+  const hint = page.getByTestId('ai-bot-core-reason');
+  if (await hint.count()) {
+    await hint.first().hover();
+    await expect(page.getByTestId('ai-bot-core-reason-tip').first()).toContainText('Hệ thống chưa tính trực tiếp được');
+  }
+});

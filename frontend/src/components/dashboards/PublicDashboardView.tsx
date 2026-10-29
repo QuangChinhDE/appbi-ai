@@ -1856,6 +1856,46 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     startTransition(() => setCurrentPageId(pageId));
   }, [activePageId, crossFilterState, hasSettledPageCache, pendingPageId]);
 
+  // A source chip under an AI Bot answer brings the chart it was read from into view
+  // (customer feedback 2026-10-29): its page first if it is elsewhere, then its tile,
+  // marked for a moment. The viewer's page wins when the same chart is on several.
+  const [chartFocus, setChartFocus] = useState<{ tileId: number; nonce: number } | null>(null);
+  const showChartByName = useCallback((chartName: string) => {
+    const charts = dashboard?.dashboard_charts;
+    if (!charts) return;
+    const bare = (s: string) => s.replace(/(\s*\(\d+\))+\s*$/, '').trim().toLowerCase();
+    const nameOf = (dc: unknown) => String((dc as { chart?: { name?: string } }).chart?.name || '');
+    const pageIds = [activePageId, ...dashboardPages.map((p) => p.id).filter((id) => id !== activePageId)];
+    for (const same of [(n: string) => n === chartName, (n: string) => bare(n) === bare(chartName)]) {
+      for (const pid of pageIds) {
+        const hit = getDashboardChartsForPage(charts, pid).find((dc) => same(nameOf(dc)));
+        if (!hit) continue;
+        if (pid !== activePageId) handlePageSelect(pid);
+        setChartFocus({ tileId: hit.id, nonce: Date.now() });
+        return;
+      }
+    }
+  }, [activePageId, dashboard?.dashboard_charts, dashboardPages, handlePageSelect]);
+  useEffect(() => {
+    if (!chartFocus) return undefined;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const find = () => {
+      const el = document.querySelector<HTMLElement>(`[data-tile-id="${chartFocus.tileId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const frame = el.closest<HTMLElement>('.dashboard-tile') ?? el;
+        frame.classList.add('ai-bot-focus');
+        setTimeout(() => frame.classList.remove('ai-bot-focus'), 2400);
+        return;
+      }
+      // the page it is on may still be switching in: look again for a few seconds
+      if (++tries < 50) timer = setTimeout(find, 100);
+    };
+    find();
+    return () => { if (timer) clearTimeout(timer); };
+  }, [chartFocus]);
+
   if (!mounted || pageState === 'unknown' || loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
@@ -2865,6 +2905,7 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
           chartTitles={visibleDashboardCharts
             .map((dc) => String((dc as { chart?: { name?: string } }).chart?.name || ''))
             .filter(Boolean)}
+          onShowChart={showChartByName}
         />
       )}
     </DashboardThemeProvider>

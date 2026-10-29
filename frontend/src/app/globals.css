@@ -1278,6 +1278,13 @@
   border-width: var(--dashboard-card-border-width, 1px);
   border-color: var(--dashboard-card-border-color, rgb(var(--border-line)));
 }
+/* The tile an AI Bot source chip brought into view, marked for a moment. */
+.ai-bot-focus {
+  outline: 2px solid var(--dashboard-accent, rgb(var(--brand)));
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--dashboard-accent, rgb(var(--brand))) 18%, transparent) !important;
+  transition: outline-color .3s ease, box-shadow .3s ease;
+}
 
 /* ── Per-tile frame (tileFrame / AI Design) ──────────────────────────────────
    Set by lib/dashboard-presentation/tile-frame.ts on BOTH the builder tile and
