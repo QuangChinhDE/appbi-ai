@@ -643,11 +643,11 @@ export function TableVisualization({
     delete next[column];
     writeViewerColumnWidths(viewerWidthsKey, next);
     setViewerColumnWidths(next);
-    setLiveColumnWidths((current) => {
-      const rest = { ...current };
-      delete rest[column];
-      return rest;
-    });
+    // Keep only the widths someone set (the chart's, the viewer's other drags)
+    // and let every other column be measured again as on first load: measuring
+    // just this one beside the others' fixed widths handed it their leftover
+    // space (105px came back as 132px).
+    setLiveColumnWidths(sanitizeColumnWidths({ ...(columnWidths ?? {}), ...next }));
   };
 
   const resolvedSummaryLabelColumn = useMemo(() => {
@@ -940,9 +940,15 @@ export function TableVisualization({
     // scroll sideways anyway, scrolling a little further beats headers stacked
     // one word per line.
     const sumOf = (f: Record<string, number>) => cols.reduce((sum, col) => sum + f[col], 0);
-    const floors = sumOf(twoLineFloors) > containerWidth && sumOf(columnFloors) <= containerWidth
+    const floors = { ...(sumOf(twoLineFloors) > containerWidth && sumOf(columnFloors) <= containerWidth
       ? columnFloors
-      : twoLineFloors;
+      : twoLineFloors) };
+    // A column the viewer dragged keeps the width they gave it — the others
+    // fit around it, or the table scrolls. Fitting it back used to undo the
+    // drag in a tight tile: the column snapped back the moment it was released.
+    for (const col of cols) {
+      if ((viewerColumnWidths[col] || col === activeResizeColumn) && liveColumnWidths[col]) floors[col] = liveColumnWidths[col];
+    }
     const out: Record<string, number> = {};
     const frozen = new Set<string>();
     for (let pass = 0; pass <= cols.length; pass++) {
@@ -964,7 +970,7 @@ export function TableVisualization({
     return out;
     // colsKey captures the column set; liveColumnWidths/containerWidth drive the scale.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors, headerLinePx, cellPadX]);
+  }, [shouldFitToContainer, containerWidth, colsKey, liveColumnWidths, columnFloors, headerLinePx, cellPadX, viewerColumnWidths, activeResizeColumn]);
 
   const tableWidth = allColumnWidthsResolved
     // Each measured width is Math.ceil'd (see the measure effect), so the raw sum
