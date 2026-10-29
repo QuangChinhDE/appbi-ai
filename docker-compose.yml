@@ -155,7 +155,13 @@ services:
       # not directly from the public internet.
       - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     networks:
-      - appbi-net
+      appbi-net:
+      # The optional MCP integration (docker-compose.mcp.yml) reaches the API
+      # through this internal network only. The database is not on it, so the
+      # MCP container has no route to Postgres. Unused while MCP is not deployed.
+      appbi-mcp-link:
+        aliases:
+          - appbi-backend-api
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -181,6 +187,9 @@ services:
         # Home ("Trang chủ") module. Off = no sidebar row, `/` lands on
         # Dashboards, and /overview redirects instead of loading.
         NEXT_PUBLIC_HOME_MODULE_ENABLED: ${NEXT_PUBLIC_HOME_MODULE_ENABLED:-false}
+        # Same build identity the backend bakes (APPBI_BUILD_SHA): the bundle
+        # can then say which commit it was built from, however it is started.
+        APPBI_BUILD_SHA: ${GIT_SHA:-}
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000/api/v1
@@ -264,3 +273,9 @@ networks:
   appbi-net:
     name: appbi-net
     driver: bridge
+  # Backend <-> MCP integration only (see docker-compose.mcp.yml). `internal`:
+  # no outbound route; only the backend and the MCP container attach to it.
+  appbi-mcp-link:
+    name: ${APPBI_MCP_LINK_NETWORK:-appbi-mcp-link}
+    driver: bridge
+    internal: true

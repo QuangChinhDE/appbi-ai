@@ -172,7 +172,7 @@ async def run_flow(
     # THE QUESTION HAS TO REACH THE TOOL BOUNDARY.
     #
     # Set on the ONE backbone every dispatch site goes through, rather than in
-    # each of `run_for_link`, `run_preview` and `run_for_chat_thread` — three
+    # each of `run_for_link`, `run_preview` and the chat runner — three
     # copies is three chances for a surface to be silently ungated. The
     # dimension gate in `tools/registry.execute` reads it to tell a grouped call
     # that answers the question from one that answers a different one.

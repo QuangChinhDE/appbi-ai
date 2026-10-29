@@ -335,7 +335,7 @@ function ViewCard({
             onClick={onEdit}
             className={`p-1 rounded transition-colors shrink-0 ${
               isSelected
-                ? 'bg-brand text-white hover:bg-brand'
+                ? 'bg-brand-container text-brand-on-container hover:bg-brand-container-hover'
                 : 'hover:bg-surface-1 text-text-quaternary hover:text-text-secondary'
             }`}
             title={isSelected ? t('datasets.dataModel.editingThisView') : t('datasets.dataModel.editThisView')}

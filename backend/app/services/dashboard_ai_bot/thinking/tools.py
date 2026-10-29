@@ -32,7 +32,8 @@ def chart_cache_identity(ctx, chart_id) -> list:
     (an editor's run) must never answer a public viewer who is bounded by one."""
     from app.services.dashboard_ai_bot.summary_cache import scope_hash
     from app.services.dashboard_ai_bot.summary_cache import semantic_epoch
-    return [*(getattr(ctx, "public_filters", None) or []),
+    _by_chart = getattr(ctx, "public_filters_by_chart", None) or {}
+    return [*(_by_chart.get(chart_id, getattr(ctx, "public_filters", None)) or []),
             {"__ai_scope__": scope_hash(getattr(ctx, "excluded_columns", None))},
             {"__page_scope__": (getattr(ctx, "page_scope_by_chart", None) or {}).get(chart_id) or []},
             {"__snapshot_ttl__": getattr(ctx, "snapshot_ttl_minutes", None)},

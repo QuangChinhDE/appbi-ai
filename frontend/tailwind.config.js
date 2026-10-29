@@ -102,7 +102,7 @@ module.exports = {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // Linear semantic tokens exposed to Tailwind
+        // App semantic tokens (Ocean Blue) — values live in globals.css :root
         surface: {
           0: 'rgb(var(--surface-0) / <alpha-value>)',
           1: 'rgb(var(--surface-1) / <alpha-value>)',
@@ -123,14 +123,34 @@ module.exports = {
           hover:   'rgb(var(--brand-hover) / <alpha-value>)',
           active:  'rgb(var(--brand-active) / <alpha-value>)',
           soft:    'rgb(var(--brand-soft) / <alpha-value>)',
+          navy:    'rgb(var(--brand-navy) / <alpha-value>)',
+          container: 'rgb(var(--brand-container) / <alpha-value>)',
+          'container-hover': 'rgb(var(--brand-container-hover) / <alpha-value>)',
+          'on-container': 'rgb(var(--on-brand-container) / <alpha-value>)',
         },
         success: {
           DEFAULT: 'rgb(var(--success) / <alpha-value>)',
           soft:    'rgb(var(--success-soft) / <alpha-value>)',
+          bg:      'rgb(var(--success-bg) / <alpha-value>)',
         },
-        warning: 'rgb(var(--warning) / <alpha-value>)',
-        danger:  'rgb(var(--danger) / <alpha-value>)',
-        info:    'rgb(var(--info) / <alpha-value>)',
+        warning: {
+          DEFAULT: 'rgb(var(--warning) / <alpha-value>)',
+          bg:      'rgb(var(--warning-bg) / <alpha-value>)',
+        },
+        danger: {
+          DEFAULT: 'rgb(var(--danger) / <alpha-value>)',
+          bg:      'rgb(var(--danger-bg) / <alpha-value>)',
+        },
+        info: {
+          DEFAULT: 'rgb(var(--info) / <alpha-value>)',
+          bg:      'rgb(var(--info-bg) / <alpha-value>)',
+        },
+        // Borders by role: line = divider, strong = card/group, control = input boundary.
+        stroke: {
+          line:    'rgb(var(--border-line) / <alpha-value>)',
+          strong:  'rgb(var(--border-strong) / <alpha-value>)',
+          control: 'rgb(var(--border-control) / <alpha-value>)',
+        },
       },
       borderRadius: {
         micro: '2px',
@@ -147,12 +167,13 @@ module.exports = {
         '11':  '2.75rem',   // 44px optical spacing
       },
       boxShadow: {
-        'linear-sm':  '0 1px 2px rgb(8 9 10 / 0.04), 0 1px 1px rgb(8 9 10 / 0.03)',
-        'linear':     '0 2px 4px rgb(8 9 10 / 0.04), 0 1px 2px rgb(8 9 10 / 0.03), 0 0 0 1px rgb(8 9 10 / 0.04)',
-        'linear-lg':  '0 8px 24px rgb(8 9 10 / 0.08), 0 2px 6px rgb(8 9 10 / 0.04), 0 0 0 1px rgb(8 9 10 / 0.06)',
-        'popover':    '0 0 0 1px rgb(8 9 10 / 0.06), 0 2px 4px rgb(8 9 10 / 0.04), 0 8px 24px rgb(8 9 10 / 0.10)',
-        'focus-brand':'0 0 0 3px rgb(94 106 210 / 0.18)',
-        'inset-subtle':'inset 0 0 0 1px rgb(8 9 10 / 0.06)',
+        'linear-sm':  '0 1px 2px rgb(23 38 60 / 0.04), 0 1px 1px rgb(23 38 60 / 0.03)',
+        'linear':     '0 2px 4px rgb(23 38 60 / 0.04), 0 1px 2px rgb(23 38 60 / 0.03), 0 0 0 1px rgb(23 38 60 / 0.04)',
+        'linear-lg':  '0 8px 24px rgb(23 38 60 / 0.08), 0 2px 6px rgb(23 38 60 / 0.04), 0 0 0 1px rgb(23 38 60 / 0.06)',
+        'popover':    '0 0 0 1px rgb(23 38 60 / 0.06), 0 2px 4px rgb(23 38 60 / 0.04), 0 8px 24px rgb(23 38 60 / 0.10)',
+        // Reads the token, so it follows the app brand (it was a literal indigo).
+        'focus-brand':'0 0 0 3px rgb(var(--brand) / 0.28)',
+        'inset-subtle':'inset 0 0 0 1px rgb(23 38 60 / 0.06)',
       },
       keyframes: {
         "accordion-down": {

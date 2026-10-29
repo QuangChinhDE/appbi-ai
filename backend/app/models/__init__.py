@@ -48,9 +48,14 @@ from app.models.governance import Glossary, GlossaryTerm, Classification, Classi
 from app.models.ai_chat_session import AiChatSession
 from app.models.ai_chat_turn_log import AiChatTurnLog
 from app.models.agent_brain import AgentBrainVersion
-from app.models.agent_flow_chat_thread import AgentFlowChatThread
+from app.models.governed_query_execution import GovernedQueryExecution
+from app.models.analyst_feedback import AnalystFeedback  # noqa: E402
+from app.models.analyst_session import AnalystSession, AnalystSessionTurn  # noqa: E402,F401
+from app.models.agent_flow_chat_thread import AgentFlowChatThread  # noqa: F401 - legacy, imported by 20261027_0001
+from app.models.chat_conversation import ChatConversation, ChatExtensionInvocation, ChatFeedback, ChatTurn  # noqa: E402,F401
 from app.models.agent_flow_delegation import AgentFlowDelegation  # noqa: F401
 from app.models.ai_provider_credential import AiProviderCredential
+from app.models.ai_runtime import AiUsageLedger, PublicAnswerTurn  # noqa: E402,F401
 from app.models.manual_source_asset import ManualSourceAsset
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of

@@ -284,6 +284,11 @@ class ToolError(Exception):
         self.code = code
 
 
+class DataReadForbidden(ToolError):
+    """A chart-data read from a context that may not read business data (a Flow
+    running as an AI Chat extension)."""
+
+
 @dataclass
 class ToolContext:
     db: Session
@@ -322,6 +327,10 @@ class ToolContext:
     # column never reaches ANY tool — filtering only the prompt's field list
     # (the pre-P0-05 behaviour) left the raw values readable via get_chart_data.
     excluded_columns: set[str] = field(default_factory=set)
+    #: True when the GovernAIScope lookup FAILED for this context (SEC-05). The
+    #: exclusion set is then unknown, not empty, so every chart read refuses with
+    #: `policy_unavailable` instead of serving columns the business may have hidden.
+    ai_scope_unavailable: bool = False
     #: The surface's snapshot freshness (a public link's ``cache_ttl_minutes``:
     #: None = current snapshot, 0 = realtime) — the AI reads a chart exactly as
     #: the viewer's tile does, never a different execution state.
@@ -341,6 +350,10 @@ class ToolContext:
     #: (public links: `public._public_page_scope_by_chart`). Applied at the one
     #: fetch boundary below, so no tool reads a chart wider than its page.
     page_scope_by_chart: dict[int, list[dict]] = field(default_factory=dict)
+    #: Public links: per chart, the filters of the page(s) it is on when they
+    #: differ from `public_filters` (a custom-scope slicer filters only its
+    #: pages). A chart not listed reads `public_filters`.
+    public_filters_by_chart: dict[int, list[dict]] = field(default_factory=dict)
     #: Public links: ``(exposed qualified refs, bare control fields)`` — the
     #: fields the served report exposes (`public._viewer_allowed`). A filter the
     #: MODEL adds may name only those; None = not a public context (no rule).
@@ -402,6 +415,11 @@ class ToolContext:
     #: The most tokens one tool RESULT may carry, from the binding. None
     #: falls back to the registry default. Set per run, like the row cap.
     max_result_tokens: int | None = None
+    #: SET WHEN THE FLOW RUNS AS AN EXTENSION OF AN AI CHAT TURN (services/chat/
+    #: extension.py). Business numbers in Chat come from the Data Core through GQS
+    #: under the asker's identity, never from a Flow: ChartService reads with no
+    #: principal, so from here it is refused before any scope or cache is consulted.
+    data_reads_forbidden: bool = False
     _chart_data_cache: dict[tuple, dict] = field(default_factory=dict)
 
     @classmethod
@@ -414,6 +432,7 @@ class ToolContext:
         actor_type: str = "public_session",
         actor_ref: str | None = None,
         page_scope_by_chart: dict[int, list[dict]] | None = None,
+        public_filters_by_chart: dict[int, list[dict]] | None = None,
         exposed_fields: tuple | None = None,
         snapshot_ttl_minutes: int | None = None,
     ) -> "ToolContext":
@@ -475,6 +494,10 @@ class ToolContext:
                 "chart_ids": cids,
             })
 
+        try:
+            excluded, scope_unavailable = _resolve_excluded_columns(db, dashboard), False
+        except AIScopeUnavailable:
+            excluded, scope_unavailable = set(), True
         return cls(
             db=db,
             dashboard=dashboard,
@@ -484,9 +507,11 @@ class ToolContext:
             pages=pages,
             actor_type=actor_type,
             actor_ref=actor_ref,
-            excluded_columns=_resolve_excluded_columns(db, dashboard),
+            excluded_columns=excluded,
+            ai_scope_unavailable=scope_unavailable,
             served_table_ids=served_tables,
             page_scope_by_chart=dict(page_scope_by_chart or {}),
+            public_filters_by_chart=dict(public_filters_by_chart or {}),
             exposed_fields=exposed_fields,
             snapshot_ttl_minutes=snapshot_ttl_minutes,
         )
@@ -570,9 +595,12 @@ class ToolContext:
         # UNION, never replace. On a report this context already carries the
         # exclusions for the datasets behind its tiles; the attached datasets are
         # additional, and a chart is hidden if EITHER source hides it.
-        self.excluded_columns = set(self.excluded_columns or set()) | (
-            _exclusions_for_datasets(self.db, dataset_ids)
-        )
+        try:
+            added = _exclusions_for_datasets(self.db, dataset_ids)
+        except AIScopeUnavailable:
+            added = set()
+            self.ai_scope_unavailable = True
+        self.excluded_columns = set(self.excluded_columns or set()) | added
 
     def assert_chart_in_scope(self, chart_id: int) -> None:
         if chart_id not in self.allowed_chart_ids:
@@ -653,11 +681,20 @@ def resolve_value(ctx: Any, value: Any, values: list[Any]) -> Any:
     return value
 
 
+class AIScopeUnavailable(Exception):
+    """The GovernAIScope exclusions could not be read. Unknown is not empty."""
+
+
 def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     """Columns GovernAIScope hides from the AI, for the datasets behind this
-    dashboard's charts. Best-effort: a resolve failure must never break a turn,
-    but it MUST fail OPEN-with-a-log rather than silently pretend nothing is
-    excluded on a partial read — so we log loudly.
+    dashboard's charts.
+
+    FAILS CLOSED (SEC-05). This used to return an empty set on any error — the
+    same value as "nothing is hidden" — so a governance lookup that broke handed
+    the AI every column the business had excluded. It now raises
+    `AIScopeUnavailable`; the context records that the scope is unknown and every
+    chart read refuses with `policy_unavailable`. The turn still runs: it just
+    cannot read data it cannot prove it may read.
     """
     if db is None or getattr(dashboard, "id", None) is None:
         # Unit-test / synthetic context with no metadata store to consult.
@@ -690,11 +727,11 @@ def _resolve_excluded_columns(db: Session, dashboard: Dashboard) -> set[str]:
     except Exception:  # noqa: BLE001
         logger.warning(
             "dashboard_ai_bot: AI-scope resolve failed dashboard_id=%s — "
-            "no column exclusion applied this turn",
+            "chart reads refused this turn (policy_unavailable)",
             getattr(dashboard, "id", None),
             exc_info=True,
         )
-        return set()
+        raise AIScopeUnavailable(f"dashboard {getattr(dashboard, 'id', None)}")
 
 
 def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
@@ -702,9 +739,9 @@ def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
 
     That one starts from a dashboard and walks tiles → charts → tables → datasets to
     reach the same question. Direct Chat already knows the datasets, so it asks
-    directly. Fails OPEN with a loud log, exactly as its sibling does: a governance
-    lookup that breaks must not take the turn down with it, and must not quietly
-    look like "nothing is excluded".
+    directly. Fails CLOSED exactly as its sibling does (SEC-05): a lookup that
+    breaks raises `AIScopeUnavailable` — it must not look like "nothing is
+    excluded", and it does not take the turn down with it either.
     """
     ids = [int(x) for x in (dataset_ids or []) if str(x).strip().lstrip("-").isdigit()]
     if db is None or not ids:
@@ -716,10 +753,10 @@ def _exclusions_for_datasets(db: Session, dataset_ids: list[int]) -> set[str]:
         return {fold_column(c) for c in cols}
     except Exception:  # noqa: BLE001
         logger.warning(
-            "chat: AI-scope resolve failed dataset_ids=%s — no column exclusion "
-            "applied this turn", ids, exc_info=True,
+            "chat: AI-scope resolve failed dataset_ids=%s — chart reads refused "
+            "this turn (policy_unavailable)", ids, exc_info=True,
         )
-        return set()
+        raise AIScopeUnavailable(f"datasets {ids}")
 
 
 def _ok(data: Any) -> dict:
@@ -779,10 +816,26 @@ def _fetch_chart_data(
 
     Returns ``{columns: list[str], rows: list[list], filters_applied: list[dict]}``.
     """
+    if getattr(ctx, "data_reads_forbidden", False):
+        raise DataReadForbidden(
+            "Trong AI Chat, số liệu do lõi dữ liệu đọc qua quyền của người hỏi; luồng hỗ trợ không đọc "
+            "dữ liệu biểu đồ (In AI Chat, business data is read by the data core under the asker's "
+            "rights; a supporting flow does not read chart data).",
+            code="data_read_forbidden",
+        )
     ctx.assert_chart_in_scope(chart_id)
+    # Before every cache: an entry read while the scope WAS known must not answer
+    # a context whose scope is not (SEC-05).
+    if getattr(ctx, "ai_scope_unavailable", False):
+        raise ToolError(
+            f"chart {chart_id}: không xác định được phạm vi dữ liệu AI được phép đọc "
+            "(GovernAIScope) nên không đọc dữ liệu biểu đồ này — thử lại sau",
+            code="policy_unavailable",
+        )
 
     merged: list[dict] = []
-    for f in ctx.public_filters:
+    _by_chart = getattr(ctx, "public_filters_by_chart", None) or {}
+    for f in _by_chart.get(chart_id, ctx.public_filters):
         if isinstance(f, dict):
             merged.append(dict(f))
     # On a public link a filter the MODEL adds is held to the viewer's rule: only

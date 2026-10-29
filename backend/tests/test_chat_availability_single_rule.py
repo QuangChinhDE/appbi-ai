@@ -10,13 +10,13 @@ answers apart:
   the reader may only READ (shared at `view`, or overseen with `chat: full`), so a
   working assistant opened read-only.
 
-Now one predicate (`chat_row_availability`) decides for both, and every thread in
-the list carries the reader's `access`, so the client opens one they can ask in.
+Now one predicate (`chat_row_availability`) decides for both. (The thread-list
+`access` test went with the Direct Chat route, `chat_api`, which the unified AI
+Chat replaced.)
 """
 from __future__ import annotations
 
 import types
-import uuid
 
 import pytest
 
@@ -91,18 +91,3 @@ def test_one_predicate_decides_for_both():
     assert "chat_row_availability(" in lst and "chat_row_availability(" in res
     for src in (lst, res):
         assert "is_eligible(" not in src, "a second copy of the availability rule"
-
-
-def test_thread_list_carries_the_readers_access(monkeypatch):
-    from app.modules.agent_flows import chat_api
-
-    owner = uuid.UUID("11111111-1111-1111-1111-111111111111")
-    mine = types.SimpleNamespace(id=1, user_id=owner, brain_key="olist", title="", created_at=None, last_active_at=None)
-    theirs = types.SimpleNamespace(id=2, user_id=uuid.uuid4(), brain_key="olist", title="", created_at=None, last_active_at=None)
-    monkeypatch.setattr(direct_chat, "list_threads", lambda db, user, key=None: [theirs, mine])
-    monkeypatch.setattr(
-        direct_chat, "thread_access",
-        lambda db, user, t: "owner" if t.user_id == owner else "full",
-    )
-    out = chat_api.list_threads(brain_key=None, db=None, user=types.SimpleNamespace(id=owner), _=None)
-    assert [(t["id"], t["access"]) for t in out["threads"]] == [(2, "full"), (1, "owner")]

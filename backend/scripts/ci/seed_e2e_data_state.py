@@ -122,8 +122,14 @@ def _source_tables() -> None:
         # hidden by an equal adjacent window.
         # UTC, matching APP_TIMEZONE=UTC — a host-local date (e.g. Vietnam just
         # after midnight) is a different calendar day than the server's 'today'.
-        today = datetime.now(timezone.utc).date()
+        # Browser tests anchor on LOGICAL_DAY (published on the dashboard, see
+        # _closure_pdf_fixture) instead of their own clock, so a run that crosses
+        # UTC midnight still reads the day that was seeded. The PDF worker uses
+        # the server clock, which during one run is LOGICAL_DAY or the day after:
+        # the next day repeats today's values so that export's oracle holds too.
+        today = LOGICAL_DAY
         yesterday = today - timedelta(days=1)
+        tomorrow = today + timedelta(days=1)
         c.execute(sa.text(f"DROP TABLE IF EXISTS {SCHEMA}.closure_pdf"))
         c.execute(sa.text(
             f"CREATE TABLE {SCHEMA}.closure_pdf "
@@ -133,9 +139,11 @@ def _source_tables() -> None:
             f"INSERT INTO {SCHEMA}.closure_pdf VALUES "
             "(:today,'A',300,'Bắc Áo'),(:today,'B',70,'Nam Bộ'),"
             "(:today,'C',350,'Tổng cộng'),"
+            "(:tomorrow,'A',300,'Bắc Áo'),(:tomorrow,'B',70,'Nam Bộ'),"
+            "(:tomorrow,'C',350,'Tổng cộng'),"
             "(:yesterday,'A',11,'Cũ A'),(:yesterday,'B',22,'Cũ B'),"
             "(:yesterday,'C',33,'Cũ C')"
-        ), {"today": today, "yesterday": yesterday})
+        ), {"today": today, "yesterday": yesterday, "tomorrow": tomorrow})
         regions = ["Miền Bắc", "Miền Trung", "Miền Nam", "Tây Nguyên"]
         channels = ["Organic Search", "Paid Social — Facebook Ads", "Referral partner program", "Direct"]
         c.execute(sa.text(f"DROP TABLE IF EXISTS {SCHEMA}.feedback_exec"))
@@ -483,6 +491,12 @@ def _pptx_export_fixture(db, user, ds) -> dict:
     return {"dashboard_id": int(dashboard.id), "token": token}
 
 
+# The fixture's one calendar day (UTC), fixed when the seed runs. Tests read it
+# back from the closure dashboard's description rather than calling new Date().
+LOGICAL_DAY = datetime.now(timezone.utc).date()
+LOGICAL_DAY_NOTE = "E2E fixture logical day (UTC): {}"
+
+
 def _closure_pdf_fixture(db, user, ds) -> dict:
     """Three real worker pages with page bounds plus a relative Today filter."""
     token = "e2e-closure-pdf"
@@ -491,6 +505,8 @@ def _closure_pdf_fixture(db, user, ds) -> dict:
     )
     existing = db.query(DashboardPublicLink).filter(DashboardPublicLink.token == token).first()
     if existing is not None:
+        # Re-seeding rewrites the rows for today's day, so the note follows it.
+        db.get(Dashboard, existing.dashboard_id).description = LOGICAL_DAY_NOTE.format(LOGICAL_DAY.isoformat())
         return {"dataset_id": dataset_id, "table_id": table_id,
                 "dashboard_id": int(existing.dashboard_id), "token": token,
                 "oracle": {"A": 300, "B": 70, "C": 350}}
@@ -504,6 +520,7 @@ def _closure_pdf_fixture(db, user, ds) -> dict:
     ]
     dashboard = Dashboard(
         name="E2E Closure PDF — Báo cáo", owner_id=user.id,
+        description=LOGICAL_DAY_NOTE.format(LOGICAL_DAY.isoformat()),
         pages_config=pages, slicers_config=[],
         filters_config=[{
             "field": "day", "operator": "between", "value": [None, None],

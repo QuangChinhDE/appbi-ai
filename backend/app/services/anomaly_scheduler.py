@@ -7,6 +7,7 @@ due (first sends after a failed scan dispatch, and retries with backoff).
 Uses APScheduler for background scheduling.
 """
 import logging
+import os
 from datetime import datetime
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -100,10 +101,14 @@ def startup():
     """Start the anomaly detection scheduler. Called from app lifespan."""
     global _scheduler
     _scheduler = BackgroundScheduler(timezone="UTC")
+    # Run daily at 2 AM UTC - unless switched off by either control: a deterministic
+    # test deployment (APPBI_DAILY_SCAN=off), or the e2e rig's setting
+    # (ANOMALY_DAILY_SCAN_ENABLED=false). Firing mid-suite it re-evaluates every seeded
+    # metric and rewrites the states the tests assert on (a run straddling 02:00 flaked O08b/O25).
     from app.core.config import settings
-    # Run daily at 2 AM UTC — unless disabled (the e2e rig: a run straddling
-    # 02:00 re-ran the detector over its seeded statuses and flaked O08b/O25).
-    if getattr(settings, "ANOMALY_DAILY_SCAN_ENABLED", True):
+    daily = (os.environ.get("APPBI_DAILY_SCAN", "on").strip().lower() != "off"
+             and getattr(settings, "ANOMALY_DAILY_SCAN_ENABLED", True))
+    if daily:
         _scheduler.add_job(
             _run_anomaly_scan,
             trigger=CronTrigger(hour=2, minute=0),
@@ -111,7 +116,7 @@ def startup():
             replace_existing=True,
         )
     else:
-        logger.info("[anomaly] daily scan disabled (ANOMALY_DAILY_SCAN_ENABLED=false)")
+        logger.warning("daily anomaly + observability scan is not scheduled (APPBI_DAILY_SCAN=off or ANOMALY_DAILY_SCAN_ENABLED=false)")
     _scheduler.add_job(
         _dispatch_alerts,
         trigger=IntervalTrigger(minutes=10),
@@ -121,7 +126,7 @@ def startup():
         coalesce=True,
     )
     _scheduler.start()
-    logger.info("Anomaly detection scheduler started (daily at 02:00 UTC; alert dispatch every 10 min)")
+    logger.info("Anomaly detection scheduler started (daily scan %s; alert dispatch every 10 min)", "at 02:00 UTC" if daily else "OFF")
 
 
 def shutdown():

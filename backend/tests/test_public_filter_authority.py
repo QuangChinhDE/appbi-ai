@@ -297,11 +297,12 @@ def test_a_dropdown_keeps_every_hard_bound_on_its_own_field_and_drops_only_picks
     assert any(f.get("field") == "channel" for f in cascade), "a filter on another field stopped cascading"
 
 
-def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=()):
+def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=(), page_id="p1"):
     import json
     monkeypatch.setattr(public_api, "_get_dashboard_by_token", lambda *_a, **_k: (dash, [], None, {}))
     monkeypatch.setattr(public_api, "_build_public_filter_fields",
-                        lambda *_a, **_k: [{"datasetId": 1, "semanticField": "t1.region"}])
+                        lambda *_a, **_k: [{"datasetId": 1, "semanticField": "t1.region"},
+                                           {"datasetId": 1, "semanticField": "t1.staff"}])
     seen: dict = {}
 
     def fake_distinct(_db, _ds, _field, **kw):
@@ -312,7 +313,7 @@ def _public_dropdown(monkeypatch, dash, viewer_filters, dropped=()):
     endpoint = public_api.get_public_filter_distinct_values
     endpoint = getattr(endpoint, "__wrapped__", endpoint)  # past the rate limiter
     out = endpoint("tok", None, dataset_id=1, field="t1.region", limit=200, offset=0, search=None,
-                   filters=json.dumps(viewer_filters), page_id="p1", db=None, x_public_session=None)
+                   filters=json.dumps(viewer_filters), page_id=page_id, db=None, x_public_session=None)
     return out, seen["filters"]
 
 
@@ -738,3 +739,149 @@ def test_the_ai_is_told_only_disclosable_filters_and_caches_by_page_scope():
     unbounded = SimpleNamespace(public_filters=[], excluded_columns=None, page_scope_by_chart={})
     assert chart_cache_identity(bounded, 7) != chart_cache_identity(unbounded, 7), \
         "a pack read without a page scope would answer a viewer bound by one"
+
+
+# ── A report slicer with custom page scope filters only the pages it is set to ─
+#
+# Builder rule (dashboards/[id]/page.tsx slicerFiltersPage, public-page-filters.ts
+# slicerFiltersOnPage): scope 'custom' constrains a page only when
+# pageScope[page].filter is true; 'all'/unset constrains every page. The public
+# path used to apply EVERY stored slicer to every chart, so a slicer switched off
+# for a page (often over another table) reached that page's charts and the engine
+# refused them: 400 "Filter không áp được" on most tiles of the link.
+
+STAFF = {"field": "staff", "semanticField": "t1.staff", "datasetId": 1,
+         "operator": "in", "value": ["An"], "label": "Nhân sự"}
+SCOPE = {"field": "scope", "semanticField": "t1.scope", "datasetId": 1,
+         "operator": "in", "value": ["HN"], "label": "Phạm vi"}
+PERIOD = {"field": "period", "semanticField": "t1.period", "datasetId": 1,
+          "operator": "in", "value": ["2026-10"], "label": "Kỳ"}
+
+
+def _scoped_slicers():
+    return [
+        {**PERIOD, "scope": "all"},
+        {**SCOPE, "scope": "custom", "pageScope": {"p1": {"filter": True, "visible": True},
+                                                   "p2": {"filter": True, "visible": False}}},
+        {**STAFF, "scope": "custom", "pageScope": {"p1": {"filter": True, "visible": True},
+                                                   "p2": {"filter": False, "visible": False}}},
+    ]
+
+
+def _fields(merged):
+    return sorted(f["field"] for f in merged)
+
+
+def test_a_custom_scope_slicer_does_not_filter_a_page_it_is_switched_off_for():
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p2"])) == ["period", "scope"]
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p1"])) == ["period", "scope", "staff"]
+
+
+def test_a_custom_scope_slicer_without_an_entry_for_the_page_does_not_filter_it():
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=[{**STAFF, "scope": "custom", "pageScope": {"p1": {"filter": True}}}])
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p2"])) == []
+
+
+def test_a_chart_on_several_pages_keeps_a_slicer_any_of_them_applies():
+    # No page named → every page of the chart bounds it (never wider than any).
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    assert _fields(public_api._build_public_chart_filters(dash, [], [], page_ids=["p1", "p2"])) == [
+        "period", "scope", "staff"]
+
+
+def _staff_shown_but_not_filtering_p2():
+    return [{**STAFF, "id": "s-staff", "scope": "custom",
+             "pageScope": {"p1": {"filter": True, "visible": True},
+                           "p2": {"filter": False, "visible": True}}}]
+
+
+def test_a_viewer_pick_on_a_slicer_switched_off_for_the_page_does_not_filter_it():
+    # Dashboard 89: the "Nhân sự" control is shown on the overview page but
+    # filters only the scorecard page. The viewer's pick on it came back as a
+    # viewer slicer and filtered the overview anyway (page scope was checked
+    # only for the stored slicers).
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_staff_shown_but_not_filtering_p2())
+    pick = [{**STAFF, "id": "s-staff", "value": ["Hải"]}]
+    assert _fields(public_api._build_public_chart_filters(dash, [], pick, page_ids=["p2"])) == []
+    assert _fields(public_api._build_public_chart_filters(dash, [], pick, page_ids=["p1"])) == ["staff"]
+
+
+def test_a_dropdown_on_a_page_is_not_cascaded_by_a_slicer_switched_off_for_it(monkeypatch):
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_staff_shown_but_not_filtering_p2())
+    _out, sent = _public_dropdown(monkeypatch, dash, [{**STAFF, "id": "s-staff", "value": ["Hải"]}], page_id="p2")
+    assert not [f for f in sent if f.get("field") == "staff"], sent
+
+
+def test_the_public_ai_reads_each_chart_with_the_slicers_of_its_own_page(monkeypatch):
+    # Same bug on the AI path: one filter list for every chart carried the
+    # switched-off slicer to the p2 chart, which the engine refused.
+    from app.services.agent_flows.tools import context as ctx_mod
+    from app.services.agent_flows.tools.context import ToolContext
+    from app.services.dashboard_ai_bot.thinking.tools import chart_cache_identity
+    dash = _dash(pages_config=[{"id": "p1", "filters": []}, {"id": "p2", "filters": []}],
+                 slicers_config=_scoped_slicers())
+    monkeypatch.setattr(public_api, "_viewer_allowed", lambda *_a, **_k: (set(), set()))
+    monkeypatch.setattr(public_api, "_public_page_scope_by_chart", lambda *_a, **_k: {})
+    monkeypatch.setattr(ToolContext, "from_dashboard", classmethod(lambda cls, **kw: cls(
+        db=None, dashboard=None, public_filters=kw["public_filters"],
+        public_filters_by_chart=kw["public_filters_by_chart"])))
+    ctx = public_api._public_link_tool_context(None, dash, [], {})
+    seen: dict[int, list] = {}
+    monkeypatch.setattr(ctx_mod.ChartService, "get_chart_data", staticmethod(
+        lambda _db, cid, extra_filters=None, **_k: seen.__setitem__(cid, extra_filters) or {"data": [{"v": 1}]}))
+    monkeypatch.setattr(ToolContext, "assert_chart_in_scope", lambda self, cid: None)
+    ctx_mod._fetch_chart_data(ctx, 7)   # on p1
+    ctx_mod._fetch_chart_data(ctx, 8)   # on p2
+    assert _fields(seen[7]) == ["period", "scope", "staff"]
+    assert _fields(seen[8]) == ["period", "scope"], seen[8]
+    # A cached result of one chart's filter set never answers the other's.
+    assert chart_cache_identity(ctx, 7) != chart_cache_identity(ctx, 8)
+
+
+def test_a_report_without_custom_scope_slicers_builds_no_per_chart_sets(monkeypatch):
+    from app.services.agent_flows.tools.context import ToolContext
+    dash = _dash(slicers_config=[{**PERIOD, "scope": "all"}])
+    monkeypatch.setattr(public_api, "_viewer_allowed", lambda *_a, **_k: (set(), set()))
+    monkeypatch.setattr(public_api, "_public_page_scope_by_chart", lambda *_a, **_k: {})
+    monkeypatch.setattr(ToolContext, "from_dashboard", classmethod(lambda cls, **kw: kw))
+    assert public_api._public_link_tool_context(None, dash, [], {})["public_filters_by_chart"] == {}
+
+
+def test_a_raw_column_slicer_of_an_imported_report_gets_its_values_scoped_as_the_tiles(monkeypatch):
+    """Customer demo 2026-10-28: an imported report's slicers are {field: "Kỳ"} - no
+    dataset, no view.field - so `_augment_with_slicer_fields` skipped them and every
+    public dropdown read "Không có giá trị khả dụng". The raw field is resolved the way
+    the engine filters the tiles (the chart binding's fieldMap / base view), over the
+    PUBLISHED charts only, keyed by the raw field so the filter bar matches it; the
+    slicer config is not rewritten; a raw field no published chart reads opens nothing."""
+    def chart(cid, dataset, base, fields, field_map=None):
+        return SimpleNamespace(chart_id=cid, chart=SimpleNamespace(config={"semanticBinding": {
+            "datasetId": dataset, "baseViewName": base, "dimensionFields": fields, "fieldMap": field_map or {}}}))
+
+    dash = SimpleNamespace(
+        slicers_config=[{"id": "s1", "field": "Kỳ", "scope": "all", "operator": "in", "value": []},
+                        {"id": "s2", "field": "Lương", "scope": "all", "operator": "in", "value": []}],
+        dashboard_charts=[chart(1, 122, "fact_kpi", ["fact_kpi.Kỳ", "fact_kpi.Đơn vị"]),
+                          chart(2, 122, "fact_kpi", ["fact_kpi.Kỳ"]),
+                          chart(3, 122, "fact_action", ["fact_action.Kỳ đánh giá"], {"Kỳ": "fact_action.Kỳ đánh giá"})])
+    monkeypatch.setattr(public_api, "_resolve_semantic_field_metadata",
+                        lambda db, ds, ref, dataset_models=None: {"key": ref, "name": ref.split(".", 1)[1],
+                                                                  "label": "Kỳ", "type": "dropdown", "datasetId": ds,
+                                                                  "semanticField": ref})
+    fields = public_api._augment_with_slicer_fields(None, dash, [])
+    assert [(f["key"], f["semanticField"], f["datasetId"]) for f in fields] == [("Kỳ", "fact_kpi.Kỳ", 122)]
+    assert fields[0]["chartCoverage"] == 2                       # the ref most published charts read it through
+    assert dash.slicers_config[0] == {"id": "s1", "field": "Kỳ", "scope": "all", "operator": "in", "value": []}
+
+    # its pick cascades the other dropdowns of that dataset through the resolved ref - only there
+    picked = [{"field": "Kỳ", "operator": "in", "value": ["T08"]}]
+    out = public_api._sanitize_public_viewer_filters(fields, 122, picked)
+    assert [(f["fieldKey"], f["value"]) for f in out] == [("fact_kpi.Kỳ", ["T08"])]
+    assert public_api._sanitize_public_viewer_filters(fields, 999, picked) == []
+    assert public_api._sanitize_public_viewer_filters(fields, 122, [{"field": "Lương", "value": ["x"]}]) == []

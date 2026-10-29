@@ -1,4 +1,33 @@
-import { expect } from '@playwright/test';
+import { expect, type APIRequestContext, type Page } from '@playwright/test';
+
+/** Open the full-report Studio preview: an item of the header's Preview menu. */
+export async function openStudioPreview(page: Page) {
+  await page.getByTestId('device-menu-open').click();
+  await page.getByTestId('studio-preview-open').click();
+}
+
+/**
+ * Put the Builder canvas on a device. Desktop is the canvas by default and has
+ * no device bar; Tablet/Phone are opened from the header's Preview menu, and
+ * while one is shown its device bar switches between all three (Desktop leaves
+ * the device view). Asserts the control's own state, not just the click.
+ */
+export async function chooseBuilderDevice(page: Page, mode: 'desktop' | 'tablet' | 'phone') {
+  const inBar = page.getByTestId(`device-mode-${mode}`);
+  if (await inBar.isVisible()) {
+    await inBar.click();
+  } else if (mode !== 'desktop') {
+    await page.getByTestId('device-menu-open').click();
+    await page.getByTestId(`device-menu-${mode}`).click();
+  }
+  if (mode === 'desktop') {
+    await expect(page.getByTestId('device-bar')).toHaveCount(0);
+    await expect(page.getByTestId('device-menu-open')).toHaveAttribute('data-device', 'desktop');
+  } else {
+    await expect(page.getByTestId(`device-mode-${mode}`)).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByTestId('device-menu-open')).toHaveAttribute('data-device', mode);
+  }
+}
 
 /**
  * Shared helpers. Chiefly: a suite must leave the database as it found it.
@@ -9,6 +38,22 @@ import { expect } from '@playwright/test';
  * view — a product failure reported by a suite that had caused it.
  */
 export const API = process.env.E2E_API_URL || 'http://localhost:8000';
+
+/** The calendar day (UTC, `YYYY-MM-DD`) seed_e2e_data_state.py fixed its relative-date
+ *  rows on, shifted by `offsetDays`. Read from the fixture, never from this process's
+ *  clock: a CI run that crosses UTC midnight would otherwise ask for a day not seeded. */
+export async function fixtureLogicalDay(request: APIRequestContext, offsetDays = 0): Promise<string> {
+  const response = await request.get(`${API}/api/v1/dashboards/`);
+  expect(response.status(), await response.text()).toBe(200);
+  const body = await response.json();
+  const rows = Array.isArray(body) ? body : body.items ?? body.dashboards ?? [];
+  const note = rows.find((row: any) => row.name === 'E2E Closure PDF — Báo cáo')?.description ?? '';
+  const day = /logical day \(UTC\): (\d{4}-\d{2}-\d{2})/.exec(note)?.[1];
+  expect(day, `closure fixture carries no logical day (${JSON.stringify(note)}) — run seed_e2e_data_state.py`).toBeTruthy();
+  const d = new Date(`${day}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + offsetDays);
+  return d.toISOString().slice(0, 10);
+}
 export const BRAINS = `${API}/api/v1/agent-flows/brains`;
 
 /** Upsert a draft through the real write route. */

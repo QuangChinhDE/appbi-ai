@@ -1,33 +1,33 @@
-"""Spend and rate ceilings for the PUBLIC AI chat — denial-of-wallet guard.
+"""Spend and rate ceilings of a PUBLIC link's AI bot - the cheap pre-check.
 
-The threat is specific and already live: a shared link's `appearance_config`
-can carry the ORGANISATION's provider key (`ai_bot_key`), the chat endpoint is
-public and anonymous, and the only existing brake is a 20/minute limit keyed by
-IP. Twenty IPs walk straight past that and spend the customer's money all day.
+The threat is specific: a shared link is public and anonymous, and every turn it
+starts spends the organisation's money. The ceilings are keyed by the thing
+being abused - the LINK - not by the caller:
 
-So the ceilings here are keyed by the thing being abused — the LINK — not by the
-caller:
+  * **USD per rolling 24h** - the cost brake;
+  * **turns per rolling 1h** - catches a burst before it becomes a bill.
 
-  • **USD per rolling 24h** — the real cost brake.
-  • **Turns per rolling 1h** — catches a burst before it becomes a bill, and
-    covers the case where usage reporting lags.
+This is the fast gate in front of a turn. The AUTHORITY is the Model Gateway
+(`services/ai_runtime/gateway.py`): every paid call reserves its worst case in the
+usage ledger under a lock, per link, per user, per turn and globally, so two
+concurrent turns cannot both pass a ceiling this pre-check let through.
 
-Both read `ai_chat_turn_logs`, which the chat endpoint already writes at the end
-of every turn, so no new bookkeeping is introduced.
+Two rules, both found on PR #77 and locked by tests/test_public_answer_core.py:
 
-**A viewer using their OWN key (`X-User-Ai-Key`) is never blocked on cost** —
-they are paying, not the organisation. The turn ceiling still applies, because
-that one protects our CPU and the warehouse, not the wallet.
+  * **No header chooses the ceiling.** `X-User-Ai-Key` used to set the USD
+    ceiling to 0 ("unlimited") while the turn could still run on the
+    organisation's key. A viewer cannot bring a key any more; the credential
+    and the ceiling belong to the same billing principal, the link.
+  * **Fail closed.** When the spend cannot be read, no paid turn starts.
 
 Resolution order for the USD ceiling:
-    appearance_config.ai_bot_budget_usd_per_day
-    → settings.AI_DEFAULT_BUDGET_USD_PER_DAY
-    → 0 means unlimited (explicit opt-out for a customer who wants no cap)
+    appearance_config.ai_bot_budget_usd_per_day (> 0)
+    → settings.AI_DEFAULT_BUDGET_USD_PER_DAY (> 0)
+    → AI_LINK_FALLBACK_USD_PER_DAY: a link is never unlimited.
 """
 from __future__ import annotations
 
 import logging
-from app.core.log_safety import token_ref
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -35,14 +35,18 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.log_safety import token_ref
 
 logger = logging.getLogger(__name__)
+
+#: The ceiling of a link when neither the link nor the server sets one.
+AI_LINK_FALLBACK_USD_PER_DAY = 1.0
 
 
 @dataclass
 class BudgetVerdict:
     allowed: bool
-    reason: str = ""          # "" | "usd_per_day" | "turns_per_hour"
+    reason: str = ""          # "" | "usd_per_day" | "turns_per_hour" | "budget_unavailable"
     message: str = ""
     spent_usd: float = 0.0
     turns_last_hour: int = 0
@@ -66,16 +70,24 @@ _MSG_TURNS = (
     "Trợ lý AI của báo cáo này đang nhận quá nhiều câu hỏi cùng lúc. "
     "Bạn thử lại sau vài phút nhé."
 )
+_MSG_UNAVAILABLE = (
+    "Trợ lý AI tạm thời không kiểm tra được hạn mức chi phí nên chưa trả lời. "
+    "Bạn thử lại sau ít phút nhé."
+)
 
 
-def _resolve_usd_limit(appearance_config: dict | None) -> float:
+def resolve_usd_limit(appearance_config: dict | None) -> float:
+    """The link's USD ceiling per rolling 24h - always > 0."""
     raw = (appearance_config or {}).get("ai_bot_budget_usd_per_day")
     if raw is not None:
         try:
-            return max(0.0, float(raw))
+            value = float(raw)
+            if value > 0:
+                return value
         except (TypeError, ValueError):
             logger.warning("ai budget: bad ai_bot_budget_usd_per_day=%r", raw)
-    return max(0.0, float(settings.AI_DEFAULT_BUDGET_USD_PER_DAY or 0))
+    default = float(settings.AI_DEFAULT_BUDGET_USD_PER_DAY or 0)
+    return default if default > 0 else AI_LINK_FALLBACK_USD_PER_DAY
 
 
 def _resolve_turn_limit(appearance_config: dict | None) -> int:
@@ -93,19 +105,10 @@ def check_budget(
     *,
     token: str,
     appearance_config: dict | None,
-    viewer_supplied_key: bool,
 ) -> BudgetVerdict:
-    """Decide whether this link may start another turn right now.
-
-    Best-effort by design: if the usage table cannot be read we ALLOW the turn.
-    A monitoring failure must not take the assistant offline — the 20/minute IP
-    limit and the per-turn ceilings are still in force underneath.
-    """
-    limit_usd = 0.0 if viewer_supplied_key else _resolve_usd_limit(appearance_config)
+    """Decide whether this link may start another turn right now (fail closed)."""
+    limit_usd = resolve_usd_limit(appearance_config)
     limit_turns = _resolve_turn_limit(appearance_config)
-    if limit_usd <= 0 and limit_turns <= 0:
-        return BudgetVerdict(allowed=True)
-
     try:
         from app.models.ai_chat_turn_log import AiChatTurnLog
 
@@ -114,8 +117,7 @@ def check_budget(
         since_1h = now - timedelta(hours=1)
 
         # One pass over the 24h window (covered by ix_ai_chat_turn_logs_token_created),
-        # with the 1h turn count folded in via CASE so this stays one round-trip
-        # and one index scan on the hot path of every question.
+        # with the 1h turn count folded in via CASE: one round-trip, one index scan.
         row = (
             db.query(
                 func.coalesce(func.sum(AiChatTurnLog.usd), 0.0),
@@ -131,11 +133,12 @@ def check_budget(
         )
         spent = float(row[0] or 0.0)
         turns = int(row[1] or 0)
-    except Exception:  # noqa: BLE001
-        logger.warning("ai budget: usage read failed for link=%s — allowing", token_ref(token), exc_info=True)
-        return BudgetVerdict(allowed=True)
+    except Exception:  # noqa: BLE001 - unknown spend is not zero spend
+        logger.warning("ai budget: usage read failed for link=%s - refusing", token_ref(token), exc_info=True)
+        return BudgetVerdict(allowed=False, reason="budget_unavailable", message=_MSG_UNAVAILABLE,
+                             limit_usd=limit_usd, limit_turns=limit_turns)
 
-    if limit_usd > 0 and spent >= limit_usd:
+    if spent >= limit_usd:
         return BudgetVerdict(
             allowed=False, reason="usd_per_day", message=_MSG_USD,
             spent_usd=spent, turns_last_hour=turns,

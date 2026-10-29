@@ -11,6 +11,7 @@
     "install-browsers": "playwright install chromium"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.10.1",
     "@playwright/test": "^1.63.0",
     "pg": "^8.23.1"
   }

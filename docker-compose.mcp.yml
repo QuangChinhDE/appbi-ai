@@ -1,0 +1,80 @@
+# AppBI MCP integration (optional, independent of Core).
+#
+#   docker compose -p appbi-mcp -f docker-compose.mcp.yml up -d --build
+#   docker compose -p appbi-mcp -f docker-compose.mcp.yml down        # Core keeps running
+#
+# Runs as its OWN compose project: starting, stopping, upgrading or rolling it back
+# never recreates or restarts a Core service. It needs Core to be up first, because
+# it joins Core's internal `appbi-mcp-link` network (declared in docker-compose.yml,
+# attached to the backend only — the database is not on it).
+#
+# Configuration comes from the operator's environment (see
+# integrations/appbi-mcp/README.md, "Configuration"). It never reads Core's .env and
+# needs none of Core's secrets.
+name: appbi-mcp
+
+services:
+  appbi-mcp:
+    build:
+      context: ./integrations/appbi-mcp
+      args:
+        APPBI_MCP_BUILD_SHA: ${GIT_SHA:-unknown}
+    image: appbi-mcp:${GIT_SHA:-local}
+    restart: unless-stopped
+    environment:
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:?set MCP_PUBLIC_URL (public origin Claude connects to)}
+      APPBI_PUBLIC_URL: ${APPBI_PUBLIC_URL:-}
+      APPBI_API_URL: ${APPBI_API_URL:-http://appbi-backend-api:8000/api/v1}
+      MCP_STATE_KEY: ${MCP_STATE_KEY:?set MCP_STATE_KEY (Fernet key; see README)}
+      MCP_STATE_DIR: /data
+      MCP_COOKIE_SECURE: ${MCP_COOKIE_SECURE:-}
+      MCP_CIMD_ALLOWED_HOSTS: ${MCP_CIMD_ALLOWED_HOSTS:-claude.ai}
+      MCP_EXTRA_REDIRECT_URIS: ${MCP_EXTRA_REDIRECT_URIS:-}
+      MCP_EXTRA_ALLOWED_HOSTS: ${MCP_EXTRA_ALLOWED_HOSTS:-}
+      MCP_RATE_LIMIT_PER_MINUTE: ${MCP_RATE_LIMIT_PER_MINUTE:-60}
+      MCP_MAX_CONCURRENT_OPERATIONS: ${MCP_MAX_CONCURRENT_OPERATIONS:-2}
+      MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
+    volumes:
+      - appbi_mcp_state:/data
+    ports:
+      # Loopback only: host nginx terminates TLS and proxies /mcp, /mcp-oauth/ and
+      # /.well-known/oauth-* here.
+      - "127.0.0.1:${MCP_PORT:-8090}:8090"
+    networks:
+      - mcp-ingress
+      - appbi-mcp-link
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: "0.5"
+    mem_limit: 512m
+    pids_limit: 128
+    stop_grace_period: 25s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/mcp-oauth/healthz', timeout=2).status == 200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # Published port + outbound HTTPS (fetching Claude's client metadata document).
+  mcp-ingress:
+    name: ${APPBI_MCP_INGRESS_NETWORK:-appbi-mcp-ingress}
+    driver: bridge
+  # Core's internal backend-only network (docker-compose.yml).
+  appbi-mcp-link:
+    external: true
+    name: ${APPBI_MCP_LINK_NETWORK:-appbi-mcp-link}
+
+volumes:
+  appbi_mcp_state:

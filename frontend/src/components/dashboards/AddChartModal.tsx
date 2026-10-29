@@ -472,7 +472,7 @@ export function AddChartModal({
                 onClick={() => setMode('existing')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
                   mode === 'existing'
-                    ? 'bg-brand text-white shadow-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-sm'
                     : 'text-text-secondary hover:bg-surface-2'
                 }`}
               >
@@ -484,7 +484,7 @@ export function AddChartModal({
                 onClick={() => setMode('create')}
                 className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
                   mode === 'create'
-                    ? 'bg-brand text-white shadow-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-sm'
                     : 'text-text-secondary hover:bg-surface-2'
                 }`}
               >
@@ -668,7 +668,7 @@ export function AddChartModal({
                                   </div>
 
                                   <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                    isSelected ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary'
+                                    isSelected ? 'bg-brand-container text-brand-on-container' : 'bg-surface-2 text-text-secondary'
                                   }`}>
                                     {isSelected ? t('dashboards.addChart.selected') : t('dashboards.addChart.select')}
                                   </span>

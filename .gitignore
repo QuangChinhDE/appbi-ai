@@ -214,6 +214,10 @@ backend/scripts/regression_*.py
 !backend/tests/test_query_duration_monotonic.py
 !backend/tests/test_phase2_filter_propagation.py
 !backend/tests/test_phase4_symmetric_aggregates.py
+!backend/tests/test_time_grain_whitelist.py
+!backend/tests/test_time_grain_whitelist_http_pg.py
+!backend/tests/test_chart_config_write_validation.py
+!backend/tests/test_chart_config_write_validation_http_pg.py
 !backend/tests/test_filter_entry_schemas.py
 !backend/tests/test_phase1_relationship_metadata.py
 !backend/tests/test_distinct_self_target.py
@@ -407,6 +411,7 @@ backend/_verify_gate.db
 !backend/tests/test_public_token_lifecycle.py
 !backend/tests/test_dashboard_responsive_layouts.py
 !backend/tests/test_dashboard_responsive_layouts_pg.py
+!backend/tests/test_dashboard_import_draft_build_pg.py
 !backend/tests/test_sql_literal_security.py
 !backend/tests/test_trusted_proxy_client_ip.py
 !backend/tests/test_embed_integration_security.py
@@ -429,6 +434,7 @@ backend/_verify_gate.db
 !backend/tests/test_publish_candidate_generation.py
 !backend/tests/test_gc_fails_closed.py
 !backend/tests/test_calendar_removal_cleans_the_model.py
+!backend/tests/test_semantic_view_version.py
 !backend/tests/test_delete_drops_physical_snapshots.py
 !backend/tests/test_publish_lease_renewal.py
 !backend/tests/test_every_refresh_path_is_recorded.py
@@ -454,10 +460,14 @@ backend/_verify_gate.db
 !backend/tests/test_pair2_golden_topology_pg.py
 !backend/tests/test_pair3_chartservice_pg.py
 !backend/tests/test_chart_final_hardening_pg.py
+!backend/tests/test_chart_dryrun_style_keys.py
 !backend/tests/test_semantic_foundation_pg.py
 !backend/tests/test_semantic_cross_view_formula_pg.py
 !backend/tests/test_semantic_cross_view_formula_mysql_pg.py
+!backend/tests/test_semantic_cross_view_measure_filter_save_pg.py
 !backend/tests/test_pair4_surfaces_pg.py
+!backend/tests/test_semantic_sync_preserves_dimensions.py
+!backend/tests/test_semantic_sync_authored_dims_pg.py
 !backend/tests/test_pair5_data_state_pg.py
 !backend/tests/test_core_product_contracts.py
 !backend/tests/test_report_pptx_service.py
@@ -480,8 +490,10 @@ backend/_verify_gate.db
 !backend/tests/test_observability_monitors_pg.py
 !backend/tests/test_observability_monitors_mysql_pg.py
 !backend/tests/test_permission_caps.py
+!backend/tests/test_pat_session_binding.py
 !backend/tests/test_authz_token_domains_http_pg.py
 !backend/tests/test_authz_publish_http_pg.py
+!backend/tests/test_authz_dashboard_viewer_live_http_pg.py
 !backend/tests/test_authz_workboard_credentials_http_pg.py
 !backend/tests/test_authz_registry.py
 !backend/tests/test_authz_chat_thread_owner_http_pg.py
@@ -505,5 +517,57 @@ backend/ci_security.db
 !backend/tests/test_source_google_identity.py
 !backend/tests/test_source_provider_contracts.py
 !backend/tests/test_source_concurrency_pg.py
+!backend/tests/test_preview_partition_lookback.py
+
+# External MCP integration (integrations/appbi-mcp): its tests live in its own
+# tree and run in its own venv (scripts/run_offline_tests.py, mcp-integration.yml).
+# `tests/` and `test_*.py` are ignored repo-wide above, so re-include them here.
+!integrations/appbi-mcp/tests/
+!integrations/appbi-mcp/tests/**/
+!integrations/appbi-mcp/tests/**/*.py
+!integrations/appbi-mcp/tests/live/rig/*
+integrations/appbi-mcp/.venv/
+
+# AppBI Intelligence Phase 0: security reproduction ledger (xfail = reproduced).
+!backend/tests/test_intelligence_phase0_security_repro.py
+!backend/tests/test_intelligence_eval_harness.py
+!backend/tests/test_intelligence_calc_field_policy.py
+!backend/tests/test_intelligence_knowledge_quarantine.py
+!backend/tests/test_intelligence_knowledge_quarantine_http_pg.py
+!backend/tests/test_intelligence_studio_test_scope_http_pg.py
+!backend/tests/test_intelligence_table_preview_http_pg.py
+!backend/tests/test_intelligence_effective_principal.py
+!backend/tests/test_intelligence_gqs_core.py
+!backend/tests/test_intelligence_gqs_execution_pg.py
+!backend/tests/test_intelligence_sec13_grain_injection_http_pg.py
+!backend/tests/test_intelligence_gqs_cancel_pg.py
+!backend/tests/test_intelligence_gqs_ledger_pg.py
+!backend/tests/test_analyst_http_pg.py
+!backend/tests/test_analyst_sessions_http_pg.py
+!backend/tests/test_unified_chat_architecture.py
+!backend/tests/test_sse_streams_unbuffered.py
+!backend/tests/test_public_answer_core.py
+!backend/tests/test_ai_runtime_gateway.py
+!backend/tests/test_answer_core_published_scope.py
+!backend/tests/test_chat_extension.py
+!backend/tests/test_chat_extension_http_pg.py
+!backend/tests/test_chat_legacy_import_pg.py
+!backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py
+!backend/tests/test_analyst_narrative.py
+!backend/tests/test_analyst_planner.py
+!backend/tests/test_analyst_catalog_reach.py
+!backend/tests/test_analyst_grounding.py
+!backend/tests/test_analyst_intent_obligations.py
+!backend/tests/test_analyst_intent.py
+!backend/tests/test_llm_test_budget.py
+!backend/tests/test_intelligence_gqs_date_range_pg.py
+!backend/tests/test_intelligence_gqs_bigquery_runtime.py
+!backend/tests/test_intelligence_gqs_ledger_schema_pg.py
+!backend/tests/test_intelligence_gqs_mysql_runtime.py
+# AppBI Intelligence 0G: evidence/answerability and metric-meaning suites that were
+# committed with `git add -f`, never allow-listed, and run by no workflow.
+!backend/tests/test_govern_doc_answerability.py
+!backend/tests/test_knowledge_hit_contract.py
+!backend/tests/test_semantic_level0.py
 !backend/tests/test_migration_gate.py
 !backend/tests/test_source_inventory.py

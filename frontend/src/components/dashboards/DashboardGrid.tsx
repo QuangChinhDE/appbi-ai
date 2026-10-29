@@ -345,6 +345,16 @@ function DashboardGridInner({
   const expectedCustom = expectedBreakpoint !== 'lg' && deviceProfiles?.[expectedBreakpoint]?.mode === 'custom';
   // The last press on a drag handle that did not move (see onDragStop: double-click).
   const lastStillPressRef = React.useRef<{ id: string; at: number } | null>(null);
+  // One press, one selection: a still press can reach both onDragStop and the
+  // tile's own click, and a Shift-click must not toggle the tile twice.
+  const lastFocusRef = React.useRef<{ id: number; at: number } | null>(null);
+  const focusOnce = React.useCallback((id: number, additive?: boolean) => {
+    const now = Date.now();
+    const last = lastFocusRef.current;
+    if (last && last.id === id && now - last.at < 400) return;
+    lastFocusRef.current = { id, at: now };
+    onFocusChart?.(id, additive);
+  }, [onFocusChart]);
 
   const storedLayouts = dashboardCharts.map((dc) => {
     const layout = dc.layout;
@@ -529,15 +539,16 @@ function DashboardGridInner({
       onDragStop={(_layout, oldItem, newItem, _placeholder, event) => {
         autoScroll.stop();
         persistItem(newItem);
-        // A press on a widget's body starts a drag, and the grid's placeholder
-        // then covers the widget, so the click never reaches it. A drag that
+        // A press on a tile's body starts a drag, and the grid's placeholder
+        // then covers the tile, so the click never reaches it. A drag that
         // ended where it began IS the click: it selects (Shift/Cmd/Ctrl adds).
+        // Charts too — their whole tile is the drag handle, so without this a
+        // click on a chart's title or body selected nothing.
         if (onFocusChart && oldItem && newItem && oldItem.x === newItem.x && oldItem.y === newItem.y) {
           const dc = dashboardCharts.find((d) => String(d.id) === newItem.i);
           const target = (event?.target ?? null) as HTMLElement | null;
-          if (dc && dc.widget_type && dc.widget_type !== 'chart'
-            && !target?.closest?.('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) {
-            onFocusChart(dc.id, Boolean(event?.shiftKey || event?.metaKey || event?.ctrlKey));
+          if (dc && !target?.closest?.('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) {
+            focusOnce(dc.id, Boolean(event?.shiftKey || event?.metaKey || event?.ctrlKey));
           }
         }
         // The same holds for a double-click on a drag handle (a widget's body, a
@@ -628,7 +639,7 @@ function DashboardGridInner({
             // gets a real click; a draggable one is selected from onDragStop.
             onClick={onFocusChart && !(canEdit && onLayoutChange && !deviceView && !(dc.layout as any)?.locked) ? (event) => {
               if ((event.target as HTMLElement).closest('button, input, select, textarea, a, [role="menu"], [data-slicer-menu]')) return;
-              onFocusChart(dc.id, event.shiftKey || event.metaKey || event.ctrlKey);
+              focusOnce(dc.id, event.shiftKey || event.metaKey || event.ctrlKey);
             } : undefined}
           >
             {slicerControl && renderSlicerControl
@@ -717,7 +728,7 @@ function DashboardGridInner({
             currentPageId={typeof dc.layout?.pageId === 'string' ? dc.layout.pageId : (availablePages[0]?.id ?? null)}
             onMoveToPage={onMoveChartToPage ? (pageId) => onMoveChartToPage(dc.id, pageId) : undefined}
             isFocused={selectedDashboardChartIds ? selectedDashboardChartIds.includes(dc.id) : focusedDashboardChartId === dc.id}
-            onFocus={onFocusChart}
+            onFocus={onFocusChart ? focusOnce : undefined}
             onToggleLock={onToggleLock}
             onPatchLayout={onPatchLayout}
             getPersistedLayout={getPersistedLayout}

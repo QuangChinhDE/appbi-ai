@@ -16,13 +16,11 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, usePathname, useRouter } from 'next/navigation';
 import {
-  AlertTriangle,
   ChevronLeft,
   ClipboardList,
   Download,
   Eye,
   Loader2,
-  MoreHorizontal,
   Settings2,
   Share2,
   ShieldCheck,
@@ -41,8 +39,11 @@ import { WorkboardPublishToggle } from '@/components/workboards/WorkboardPublish
 import WorkboardShareModal, {
   WORKBOARD_SHARE_OPEN,
 } from '@/components/workboards/WorkboardShareModal';
+import { DetailHeader } from '@/components/common/DetailHeader';
+import { DefaultOwnerCredentialsDialog } from '@/components/workboards/DefaultOwnerCredentialsDialog';
 import {
-  consumeWorkboardDefaultOwnerNotice,
+  clearWorkboardDefaultOwnerNotice,
+  peekWorkboardDefaultOwnerNotice,
   type WorkboardDefaultOwnerNotice,
 } from '@/lib/workboard-default-owner-notice';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -55,7 +56,6 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
   const id = Number(params.id);
   const [importExportMode, setImportExportMode] = useState<'export' | null>(null);
   const [showShare, setShowShare] = useState(false);
-  const [showOverflow, setShowOverflow] = useState(false);
   const [confirmUnpublish, setConfirmUnpublish] = useState(false);
   const [defaultOwnerNotice, setDefaultOwnerNotice] = useState<WorkboardDefaultOwnerNotice | null>(null);
 
@@ -72,7 +72,8 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!Number.isFinite(id) || id <= 0) return;
-    setDefaultOwnerNotice(consumeWorkboardDefaultOwnerNotice(id));
+    // Only present when the user left the create dialog without acknowledging.
+    setDefaultOwnerNotice(peekWorkboardDefaultOwnerNotice(id));
   }, [id]);
 
   if (isLoading) {
@@ -122,136 +123,109 @@ export default function WorkboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4">
-        <button
-          onClick={() => router.push('/workboards')}
-          className="flex items-center gap-1 text-sm text-text-tertiary transition-colors hover:text-text-primary"
-        >
-          <ChevronLeft className="h-4 w-4" />
-          {t('workboards.layout.workboards')}
-        </button>
-        <span className="text-text-quaternary">/</span>
-        <span className="max-w-[220px] truncate text-sm font-medium text-text-primary">
-          {workboard.name}
-        </span>
-
-        <div className="mx-1 h-5 w-px bg-surface-3" />
-
-        <div className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5">
-          <SegmentLink active={isBuild} href={baseHref}>
-            <Wrench className="h-3.5 w-3.5" />
-            {t('workboards.layout.builder')}
-          </SegmentLink>
-          <SegmentLink active={isAccess} href={`${baseHref}/users`}>
-            <ShieldCheck className="h-3.5 w-3.5" />
-            {t('workboards.layout.access')}
-          </SegmentLink>
-          <SegmentLink active={isAutomations} href={`${baseHref}/webhooks`}>
-            <Zap className="h-3.5 w-3.5" />
-            {t('workboards.layout.automations')}
-          </SegmentLink>
-          <SegmentLink active={isSettings} href={`${baseHref}/settings`}>
-            <Settings2 className="h-3.5 w-3.5" />
-            {t('workboards.layout.settings')}
-          </SegmentLink>
-        </div>
-
-        <div className="flex-1" />
-
-        {/* Preview — an action, decoupled from any Cổng: preview the Draft. */}
-        <button
-          onClick={() => router.push(`${baseHref}/preview`)}
-          className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors ${
-            isPreview
-              ? 'bg-brand/10 text-brand'
-              : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-          }`}
-          title={t('workboards.layout.preview')}
-        >
-          <Eye className="h-3.5 w-3.5" />
-          {t('workboards.layout.preview')}
-        </button>
-
-        <div className="mx-0.5 h-5 w-px bg-surface-3" />
-
-        <WorkboardPublishToggle workboard={workboard} variant="topbar" canEdit={canEdit} />
-
-        <button
-          onClick={() => setShowShare(true)}
-          className="inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-          title={t('workboards.layout.shareTitle')}
-        >
-          <Share2 className="h-3.5 w-3.5" />
-          {t('common.share')}
-        </button>
-
-        {/* Overflow (···) — low-frequency / destructive actions. */}
-        <div className="relative">
-          <button
-            onClick={() => setShowOverflow((v) => !v)}
-            className="inline-flex items-center rounded p-1.5 text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-            title={t('workboards.layout.more')}
-            aria-haspopup="menu"
-            aria-expanded={showOverflow}
+      <DetailHeader
+        tabsInlineFrom="xl"
+        testId="workboard-header"
+        back={{ label: t('workboards.layout.workboards'), onClick: () => router.push('/workboards') }}
+        title={<span title={workboard.name}>{workboard.name}</span>}
+        tabs={
+          <div
+            role="tablist"
+            aria-label={workboard.name}
+            className="inline-flex rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5"
           >
-            <MoreHorizontal className="h-4 w-4" />
-          </button>
-          {showOverflow && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setShowOverflow(false)} />
-              <div
-                role="menu"
-                className="absolute right-0 top-9 z-50 min-w-[220px] overflow-hidden rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 py-1 shadow-linear-md"
+            <SegmentLink active={isBuild} href={baseHref}>
+              <Wrench className="h-3.5 w-3.5" />
+              {t('workboards.layout.builder')}
+            </SegmentLink>
+            <SegmentLink active={isAccess} href={`${baseHref}/users`}>
+              <ShieldCheck className="h-3.5 w-3.5" />
+              {t('workboards.layout.access')}
+            </SegmentLink>
+            <SegmentLink active={isAutomations} href={`${baseHref}/webhooks`}>
+              <Zap className="h-3.5 w-3.5" />
+              {t('workboards.layout.automations')}
+            </SegmentLink>
+            <SegmentLink active={isSettings} href={`${baseHref}/settings`}>
+              <Settings2 className="h-3.5 w-3.5" />
+              {t('workboards.layout.settings')}
+            </SegmentLink>
+          </div>
+        }
+        secondaryActions={[
+          // Preview — an action, decoupled from any Cổng: preview the Draft.
+          {
+            id: 'preview',
+            testId: 'workboard-preview',
+            inlineFrom: 'md',
+            label: t('workboards.layout.preview'),
+            icon: <Eye />,
+            onSelect: () => router.push(`${baseHref}/preview`),
+            renderInline: () => (
+              <button
+                type="button"
+                data-testid="workboard-preview"
+                onClick={() => router.push(`${baseHref}/preview`)}
+                aria-pressed={isPreview}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors ${
+                  isPreview
+                    ? 'bg-brand/10 text-brand'
+                    : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                }`}
+                title={t('workboards.layout.preview')}
               >
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    setShowOverflow(false);
-                    setImportExportMode('export');
-                  }}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  {t('workboards.layout.export')}
-                </button>
-                {canEdit && liveish && (
-                  <button
-                    role="menuitem"
-                    onClick={() => {
-                      setShowOverflow(false);
-                      setConfirmUnpublish(true);
-                    }}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-danger transition-colors hover:bg-danger/10"
-                  >
-                    <Undo2 className="h-3.5 w-3.5" />
-                    {t('workboards.layout.unpublish')}
-                  </button>
-                )}
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+                <Eye className="h-3.5 w-3.5" />
+                {t('workboards.layout.preview')}
+              </button>
+            ),
+          },
+          {
+            id: 'share',
+            testId: 'workboard-share',
+            inlineFrom: 'sm',
+            label: t('common.share'),
+            icon: <Share2 />,
+            onSelect: () => setShowShare(true),
+          },
+        ]}
+        // Low-frequency / destructive actions.
+        menuItems={[
+          {
+            id: 'export',
+            testId: 'workboard-export',
+            label: t('workboards.layout.export'),
+            icon: <Download />,
+            onSelect: () => setImportExportMode('export'),
+          },
+          ...(canEdit && liveish
+            ? [
+                {
+                  id: 'unpublish',
+                  testId: 'workboard-unpublish',
+                  label: t('workboards.layout.unpublish'),
+                  icon: <Undo2 />,
+                  danger: true,
+                  onSelect: () => setConfirmUnpublish(true),
+                },
+              ]
+            : []),
+        ]}
+        overflowTestId="workboard-more"
+        actions={<WorkboardPublishToggle workboard={workboard} variant="topbar" canEdit={canEdit} />}
+      />
 
       {defaultOwnerNotice && (
-        <div className="flex items-start gap-3 border-b border-danger/20 bg-danger/5 px-4 py-3 text-sm text-danger">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div className="min-w-0 flex-1">
-            <p className="font-medium">{t('workboards.layout.defaultOwnerCreated')}</p>
-            <p className="text-xs text-danger/90">
-              {t('workboards.layout.usernameLabel')} <strong>{defaultOwnerNotice.username}</strong> |{' '}
-              {t('workboards.layout.defaultPinLabel')}{' '}
-              <strong>{defaultOwnerNotice.pin}</strong>. {t('workboards.layout.changePinInUsers')}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setDefaultOwnerNotice(null)}
-            className="rounded px-1 py-0.5 text-xs text-danger/80 transition-colors hover:bg-danger/10 hover:text-danger"
-          >
-            {t('workboards.layout.close')}
-          </button>
-        </div>
+        <DefaultOwnerCredentialsDialog
+          isOpen
+          workboardName={workboard.name}
+          username={defaultOwnerNotice.username}
+          pin={defaultOwnerNotice.pin}
+          confirmLabel={t('workboards.credentials.done')}
+          onConfirm={() => {
+            clearWorkboardDefaultOwnerNotice(id);
+            setDefaultOwnerNotice(null);
+          }}
+        />
       )}
 
       <div className="flex-1 overflow-hidden">{children}</div>
@@ -310,8 +284,11 @@ function SegmentLink({
   return (
     <button
       type="button"
+      role="tab"
+      aria-selected={active}
+      tabIndex={active ? 0 : -1}
       onClick={() => router.push(href)}
-      className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1 text-xs font-medium transition-colors ${
         active
           ? 'bg-surface-1 text-brand shadow-linear-sm'
           : 'text-text-tertiary hover:bg-surface-1'

@@ -1,5 +1,6 @@
 import '@xyflow/react/dist/style.css';
 import './globals.css';
+import { APPBI_BUILD_SHA } from '@/lib/build-info';
 import type { Metadata, Viewport } from 'next';
 import { Be_Vietnam_Pro, DM_Sans, Inter, JetBrains_Mono, Plus_Jakarta_Sans, Roboto, Source_Serif_4, Space_Grotesk } from 'next/font/google';
 import { AppProviders } from './providers';
@@ -9,14 +10,20 @@ import { AppProviders } from './providers';
 // to (a) use our icon as the home-screen icon and (b) launch full-screen
 // (standalone) when opened from the home screen.
 export const metadata: Metadata = {
-  applicationName: 'AppBI',
+  title: 'BEXAI — Business Explorer & X-factor Agent',
+  applicationName: 'BEXAI',
+  // Which build is serving this page (scripts/ops/verify_frontend_runtime.py).
+  other: { 'appbi-build': APPBI_BUILD_SHA },
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'AppBI',
+    title: 'BEXAI',
   },
+  // Versioned URLs: the service worker serves /icon-* cache-first, so a new logo
+  // needs a new URL to reach installed apps without wiping their offline cache.
   icons: {
-    apple: [{ url: '/icon-192.png' }],
+    icon: [{ url: '/icon-192.png?v=bexai1', type: 'image/png' }],
+    apple: [{ url: '/icon-192.png?v=bexai1' }],
   },
 };
 

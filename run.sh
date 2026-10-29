@@ -8,6 +8,11 @@
 #   ./run.sh --recreate      # force-recreate containers
 #   ./run.sh --down          # stop the stack and exit
 #   ./run.sh --logs          # follow logs after it's up
+#   ./run.sh --with-mcp      # also run the Claude connector behind the local edge
+#                            # (docker-compose.edge.yml + docker-compose.mcp.yml);
+#                            # needs MCP_PUBLIC_URL and MCP_STATE_KEY in YOUR shell
+#                            # environment — never read from .env. Use it on every
+#                            # run (incl. --down) once MCP is enabled.
 #   ./run.sh --migrate       # approve pending DB migrations on an EXISTING database
 #                            # (back it up first — see docs/production-release-runbook.md)
 #
@@ -26,7 +31,7 @@
 set -euo pipefail
 
 # ── flags ────────────────────────────────────────────────────────────────────
-DO_PULL=0; BUILD=1; RECREATE=0; DO_DOWN=0; FOLLOW_LOGS=0; VALIDATE=1
+DO_PULL=0; BUILD=1; RECREATE=0; DO_DOWN=0; FOLLOW_LOGS=0; VALIDATE=1; WITH_MCP=0
 for a in "$@"; do case "$a" in
   --pull)          DO_PULL=1;;
   --no-build)      BUILD=0;;
@@ -35,7 +40,8 @@ for a in "$@"; do case "$a" in
   --logs)          FOLLOW_LOGS=1;;
   --migrate)       export APPBI_MIGRATE_APPROVED=auto;;
   --skip-validate) VALIDATE=0;;
-  -h|--help)       sed -n '2,20p' "$0"; exit 0;;
+  --with-mcp)      WITH_MCP=1;;
+  -h|--help)       sed -n '2,25p' "$0"; exit 0;;
   *) echo "Unknown option: $a (see --help)" >&2; exit 2;;
 esac; done
 
@@ -79,8 +85,25 @@ COMPOSE=(docker compose)
 USE_LOCAL_DB=0
 grep -qE '^[[:space:]]*DATABASE_URL=.+' .env 2>/dev/null || { COMPOSE+=(--profile local-db); USE_LOCAL_DB=1; }
 
+# ── --with-mcp: Core + local edge overlay, and the MCP as its own project ────
+# The MCP compose project is driven with an EMPTY env file so Core's .env is never
+# read for it: its configuration comes only from the operator's shell environment
+# (integrations/appbi-mcp/README.md, "Configuration").
+MCP_INGRESS_NET="${APPBI_MCP_INGRESS_NETWORK:-appbi-mcp-ingress}"
+MCP_COMPOSE=()
+if [ "$WITH_MCP" = "1" ]; then
+  COMPOSE+=(-f docker-compose.yml -f docker-compose.edge.yml)
+  MCP_EMPTY_ENV="$(mktemp)"; trap 'rm -f "$MCP_EMPTY_ENV"' EXIT
+  MCP_COMPOSE=(docker compose -p appbi-mcp --env-file "$MCP_EMPTY_ENV" -f docker-compose.mcp.yml)
+fi
+
 # ── --down short-circuit ──────────────────────────────────────────────────────
 if [ "$DO_DOWN" = "1" ]; then
+  if [ "$WITH_MCP" = "1" ]; then
+    say "Stopping the MCP integration"
+    # The project's env-var guards (`:?`) also apply to `down`; dummies are fine here.
+    MCP_PUBLIC_URL="${MCP_PUBLIC_URL:-http://unused}" MCP_STATE_KEY="${MCP_STATE_KEY:-unused}"       "${MCP_COMPOSE[@]}" down || true
+  fi
   say "Stopping the stack"; "${COMPOSE[@]}" down; ok "stopped"; exit 0
 fi
 
@@ -135,10 +158,33 @@ else
 fi
 export GIT_SHA
 
+# ── 3b. --with-mcp prerequisites (fail before touching any container) ─────────
+if [ "$WITH_MCP" = "1" ]; then
+  say "Checking MCP integration configuration (operator environment)"
+  mcp_missing=0
+  for v in MCP_PUBLIC_URL MCP_STATE_KEY; do
+    if [ -n "${!v:-}" ]; then ok "$v is set"; else bad "$v is not set in this shell (see integrations/appbi-mcp/README.md)"; mcp_missing=1; fi
+  done
+  [ -n "${APPBI_PUBLIC_URL:-}" ] && ok "APPBI_PUBLIC_URL is set" || ok "APPBI_PUBLIC_URL not set (defaults to MCP_PUBLIC_URL)"
+  [ "$mcp_missing" = "0" ] || exit 1
+  # The edge joins the MCP ingress network, so it must exist before Core starts.
+  # It is owned by the appbi-mcp project; create it with that project's labels so
+  # `docker compose -p appbi-mcp` adopts it instead of refusing it.
+  if ! docker network inspect "$MCP_INGRESS_NET" >/dev/null 2>&1; then
+    docker network create --driver bridge       --label com.docker.compose.project=appbi-mcp       --label com.docker.compose.network=mcp-ingress "$MCP_INGRESS_NET" >/dev/null
+    ok "created network $MCP_INGRESS_NET (owned by the appbi-mcp project)"
+  fi
+fi
+
 # ── 4. build + up ─────────────────────────────────────────────────────────────
 UP=(up -d); [ "$BUILD" = "1" ] && UP+=(--build); [ "$RECREATE" = "1" ] && UP+=(--force-recreate)
 say "Starting stack: ${COMPOSE[*]} ${UP[*]}"
 "${COMPOSE[@]}" "${UP[@]}"
+if [ "$WITH_MCP" = "1" ]; then
+  # After Core: the MCP joins Core's appbi-mcp-link network.
+  say "Starting MCP integration: ${MCP_COMPOSE[*]} ${UP[*]}"
+  "${MCP_COMPOSE[@]}" "${UP[@]}"
+fi
 
 # ── 5. validate health ────────────────────────────────────────────────────────
 if [ "$VALIDATE" = "0" ]; then
@@ -148,6 +194,8 @@ fi
 say "Validating services"
 FRONTEND_PORT="$(grep -m1 -E '^FRONTEND_PORT=' .env | cut -d= -f2 2>/dev/null)"; FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 BACKEND_PORT="$(grep -m1 -E '^BACKEND_PORT=' .env | cut -d= -f2 2>/dev/null)"; BACKEND_PORT="${BACKEND_PORT:-8000}"
+# Behind the edge the browser entry point is the edge's port, not the frontend's.
+[ "$WITH_MCP" = "1" ] && FRONTEND_PORT="${APPBI_HTTP_PORT:-3000}"
 
 # Poll an HTTP endpoint until it answers 2xx/3xx, or timeout. $1=url $2=label $3=timeout_s
 poll_http(){
@@ -168,10 +216,14 @@ fail=0
 # so backend answering /health implies the DB is connected + migrated.
 poll_http "http://127.0.0.1:${BACKEND_PORT}/health" "backend + database" 180 || fail=1
 poll_http "http://127.0.0.1:${FRONTEND_PORT}"       "frontend"           90  || fail=1
+if [ "$WITH_MCP" = "1" ]; then
+  poll_http "http://127.0.0.1:${FRONTEND_PORT}/mcp-oauth/healthz" "MCP via edge" 90 || fail=1
+fi
 
 # container-state sanity: nothing exited/restarting
 say "Container status"
 "${COMPOSE[@]}" ps
+[ "$WITH_MCP" = "1" ] && "${MCP_COMPOSE[@]}" ps
 if "${COMPOSE[@]}" ps --format '{{.Name}} {{.State}}' 2>/dev/null | grep -viE 'running|healthy' | grep -qiE 'exit|restart|dead'; then
   bad "one or more containers are not running (see status above)"; fail=1
 fi

@@ -51,7 +51,8 @@ export function Modal({
   const heightClass = size === 'full' ? 'h-[94vh] max-h-[94vh]' : 'max-h-[90vh]';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
+    // app-chrome: a dialog is AppBI UI even when opened inside a re-themed report.
+    <div className="app-chrome fixed inset-0 z-50 flex items-center justify-center animate-fade-in">
       <div
         // No backdrop-filter here: Firefox 150 routes native <select>
         // dropdown popups through a composite layer that gets clipped

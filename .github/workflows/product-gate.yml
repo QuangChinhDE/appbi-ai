@@ -32,10 +32,22 @@
 # `cancelled`, `failure` and the empty string are all failures for a relevant
 # suite. That asymmetry is the whole point — the failure mode being designed
 # against is a required gate going green because an expected job disappeared.
+#
+# LOCALLY VERIFIED E2E (owner decision, 2026-10-28).
+#
+# A PR labelled `verified-locally` whose head carries `.verified/local-e2e.json`
+# (scripts/ci/record_local_verification.py) may skip the PR's end-to-end shards -
+# ONLY when that evidence names a tested commit that is an ancestor of the head,
+# the head differs from it by nothing but the evidence file itself, and every
+# recorded suite passed with nothing failed. Anything else and the waiver is
+# refused, loudly, and e2e runs as before. The backend suites are never waived, and
+# the full e2e still runs on every push to `demo` (e2e.yml) as the net after merge.
 name: Product gate
 
 on:
   pull_request:
+    # labelled/unlabelled: adding or removing `verified-locally` re-decides the gate
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -46,7 +58,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.map.outputs.backend }}
-      e2e: ${{ steps.map.outputs.e2e }}
+      e2e: ${{ steps.waiver.outputs.e2e }}
+      e2e_waived: ${{ steps.waiver.outputs.waived }}
       changed: ${{ steps.map.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
@@ -122,7 +135,24 @@ jobs:
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # THE SEVENTY-SUITE COMMAND LIVES IN ONE PLACE AND IS CALLED FROM HERE.
+      - name: Locally verified E2E waiver (label verified-locally + evidence of the tested commit)
+        id: waiver
+        env:
+          NEEDED_E2E: ${{ steps.map.outputs.e2e }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # THE DECIDER RUNS FROM THE BASE, never from the PR: a PR that rewrote it to
+        # always waive would otherwise pass its own gate. No trusted copy at the base
+        # (the PR that introduces it) means no waiver: E2E runs as classified.
+        run: |
+          if git show "$BASE:scripts/ci/e2e_waiver.py" > "$RUNNER_TEMP/e2e_waiver.py" 2>/dev/null; then
+            python3 "$RUNNER_TEMP/e2e_waiver.py"
+          else
+            echo "e2e=$NEEDED_E2E" >> "$GITHUB_OUTPUT"
+            echo "waived=false" >> "$GITHUB_OUTPUT"
+            echo "no trusted e2e_waiver.py at the base: E2E as classified"
+          fi
   # `backend-contract-tests.yml` keeps its own push trigger and path filter; this
   # is a second entry point onto the same jobs, not a copy of them.
   backend:
@@ -149,6 +179,7 @@ jobs:
         env:
           NEEDED_BACKEND: ${{ needs.classify.outputs.backend }}
           NEEDED_E2E: ${{ needs.classify.outputs.e2e }}
+          E2E_WAIVED: ${{ needs.classify.outputs.e2e_waived }}
           RESULT_CLASSIFY: ${{ needs.classify.result }}
           RESULT_BACKEND: ${{ needs.backend.result }}
           RESULT_E2E: ${{ needs.e2e.result }}
@@ -173,6 +204,9 @@ jobs:
           ):
               needed = os.environ.get(needed_key) == "true"
               result = os.environ.get(result_key) or "(did not run)"
+              if not needed and needed_key == "NEEDED_E2E" and os.environ.get("E2E_WAIVED") == "true":
+                  rows.append((label, "waived - verified locally (see classify)", result, "ok"))
+                  continue
               if not needed:
                   rows.append((label, "not relevant", result, "ok"))
                   continue

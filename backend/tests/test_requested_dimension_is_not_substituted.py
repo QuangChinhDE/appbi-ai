@@ -147,6 +147,11 @@ class _Ctx:
 
     def __init__(self, allowed, question=""):
         self.allowed_chart_ids = set(allowed)
+        # The binding these cases model grants row reads (the `rows` cases below say
+        # so) and no web. Declared, because an undeclared capability is now refused
+        # (SEC-04): a stand-in has to say what its binding grants.
+        self.read_rows = True
+        self.web_search = False
         self.db = _Db([_Chart(c) for c in allowed])
         self.knowledge_scope = {}
         self.question = question

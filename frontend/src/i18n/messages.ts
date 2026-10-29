@@ -36,6 +36,7 @@ const baseEn: MessageCatalog = {
   'sidebar.nav.settings': 'Settings',
   'sidebar.group.build': 'Build',
   'sidebar.group.operate': 'Operate',
+  'sidebar.group.ai': 'AI',
   'sidebar.group.intelligence': 'Intelligence',
   'sidebar.group.trust': 'Trust',
   'sidebar.settings.description': 'Workspace administration & access control.',
@@ -182,7 +183,7 @@ const baseVi: MessageCatalog = {
   'sidebar.nav.datasets': 'Dataset',
   'sidebar.nav.knowledgeHub': 'Knowledge Hub',
   'sidebar.nav.agentFlows': 'Agent Flows',
-  'sidebar.nav.aiChat': 'Chat AI',
+  'sidebar.nav.aiChat': 'AI Chat',
   'sidebar.nav.observability': 'Observability',
   'sidebar.nav.explore': 'Khám phá',
   'sidebar.nav.dashboards': 'Dashboard',
@@ -190,6 +191,7 @@ const baseVi: MessageCatalog = {
   'sidebar.nav.settings': 'Cài đặt',
   'sidebar.group.build': 'Xây dựng',
   'sidebar.group.operate': 'Vận hành',
+  'sidebar.group.ai': 'AI',
   'sidebar.group.intelligence': 'Trí tuệ',
   'sidebar.group.trust': 'Tin cậy',
   'sidebar.settings.description': 'Quản trị workspace & phân quyền truy cập.',
@@ -328,6 +330,7 @@ import { dashboardsGridCatalog } from './catalog/dashboards-grid';
 import { reportExperienceCatalog } from './catalog/report-experience';
 import { datasetsCatalog } from './catalog/datasets';
 import { exploreCatalog } from './catalog/explore';
+import { aiChatCatalog } from './catalog/ai-chat';
 import { governCatalog } from './catalog/govern';
 import { agentFlowsCatalog } from './catalog/agent-flows';
 import { workboardsCatalog } from './catalog/workboards';
@@ -348,6 +351,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   reportExperienceCatalog,
   datasetsCatalog,
   exploreCatalog,
+  aiChatCatalog,
   governCatalog,
   agentFlowsCatalog,
   workboardsCatalog,

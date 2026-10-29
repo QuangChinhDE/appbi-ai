@@ -9,8 +9,8 @@ import type { MetadataRoute } from 'next';
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'AppBI — Mini-App',
-    short_name: 'AppBI',
+    name: 'BEXAI — Mini-App',
+    short_name: 'BEXAI',
     description: 'Ứng dụng nhập liệu & báo cáo (mini-app)',
     start_url: '/m',
     scope: '/',
@@ -19,9 +19,9 @@ export default function manifest(): MetadataRoute.Manifest {
     background_color: '#0D3B7A',
     theme_color: '#0D3B7A',
     icons: [
-      { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
-      { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
-      { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      { src: '/icon-192.png?v=bexai1', sizes: '192x192', type: 'image/png' },
+      { src: '/icon-512.png?v=bexai1', sizes: '512x512', type: 'image/png' },
+      { src: '/icon-maskable-512.png?v=bexai1', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
     ],
   };
 }

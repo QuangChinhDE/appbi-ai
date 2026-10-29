@@ -1012,6 +1012,30 @@ def _plain_field_is_supported_by_binding(
     return not has_binding_scope
 
 
+#: Report-level CONVENIENCE layers (filter_layered_merge): a default or a
+#: viewer's choice, never an author bound. One of these naming a field the
+#: chart's table does not have is unrelated to that chart — PowerBI parity, and
+#: what the builder already does (filters.ts resolveFilterForChartData sends it
+#: to no chart that cannot resolve it).
+_CONVENIENCE_FILTER_LAYERS = frozenset({
+    "dashboard_filter", "dashboard_slicer", "viewer_slicer", "viewer_filter",
+})
+
+
+def _unrelated_field_drop_reason(filt: dict) -> str:
+    """Why a filter whose field is not on the chart's table is dropped: a
+    convenience filter is IGNORED for this chart (soft, still reported); any
+    other — an authoritative bound, a chart's own filter, an untagged caller's
+    — stays the hard ``binding_unsupported`` that refuses the query."""
+    if (
+        isinstance(filt, dict)
+        and not filt.get(AUTHORITATIVE_KEY)
+        and filt.get("_layer_source") in _CONVENIENCE_FILTER_LAYERS
+    ):
+        return "unreachable_view"
+    return "binding_unsupported"
+
+
 def _normalize_runtime_filters_for_chart(
     chart_config: dict | None,
     filters: list | None,
@@ -1188,7 +1212,7 @@ def _normalize_runtime_filters_for_chart(
                 _record_dropped_filter(
                     diagnostics,
                     filt,
-                    "binding_unsupported",
+                    _unrelated_field_drop_reason(filt),
                     f"semantic field {semantic_field!r} is not exposed by this chart's binding",
                 )
                 continue
@@ -1208,7 +1232,7 @@ def _normalize_runtime_filters_for_chart(
                 _record_dropped_filter(
                     diagnostics,
                     filt,
-                    "binding_unsupported",
+                    _unrelated_field_drop_reason(filt),
                     f"plain field {filt.get('field')!r} is not in the chart's base view",
                 )
                 continue

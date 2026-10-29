@@ -107,6 +107,42 @@ the signal to rebuild, not a fault in the report.
 that source is the running process, which is what makes this an objective test of
 whether a deploy took effect rather than a report of what someone intended.
 
+### The frontend is a separate build — check it separately
+
+The backend health above says nothing about the UI. The frontend image is built on
+its own and keeps serving the bundle it was built with until it is rebuilt, so
+"I merged it but the page looks old" is almost always a frontend image that was
+not rebuilt (or a different working copy was built). Check it from the artifact,
+never from the source tree:
+
+```bash
+python scripts/ops/verify_frontend_runtime.py          # exit 1 on any mismatch
+```
+
+It compares the deploy working copy's HEAD with, in order: the single `frontend`
+container of the project, the owner of the entry port (the `edge` with the edge
+overlay, else `frontend` — a stray `next dev` or second frontend shows here), the
+image label `org.opencontainers.image.revision`, `<meta name="appbi-build">` in the
+served HTML, and the SHA inside a served JS chunk (what the browser runs). The
+backend SHA is printed beside it: the two are allowed to differ.
+
+`appbi-pipeline-frontend` (port 3100) is a different product, and the `edge`
+(nginx) is a proxy in front of the one AppBI frontend — neither is a second AppBI
+frontend. `Dockerfile.dev` / `docker-compose.dev.yml` are the hot-reload mode of the
+same app; never run them on the main port while the production-style stack is up.
+
+To rebuild only the frontend at the deploy commit (no backend/DB restart):
+
+```bash
+GIT_SHA=$(git rev-parse HEAD) docker compose -p appbi-ai -f docker-compose.yml   -f docker-compose.edge.yml build frontend
+docker compose -p appbi-ai -f docker-compose.yml -f docker-compose.edge.yml   up -d --no-build --no-deps --force-recreate frontend
+python scripts/ops/verify_frontend_runtime.py
+```
+
+The admin app is never served by the service worker (`public/sw.js` only handles
+the public mini-app `/m`, `/ws/**` and content-hashed static assets), so a correct
+image is what the browser gets — no hard reload is needed.
+
 ---
 
 ## Logs
@@ -231,6 +267,57 @@ volume removal. Generated files (`appbi_data`) are not in that dump; they are
 regenerable output, not source of truth.
 
 ---
+
+## Claude connector (MCP integration) — optional
+
+The Claude connector is a separate container. Everything about it is in
+`integrations/appbi-mcp/README.md`; the short version:
+
+- **Stop it:** `docker compose -p appbi-mcp -f docker-compose.mcp.yml down`.
+  AppBI keeps running. `/mcp` answers 502 and nothing else changes.
+- **Is it healthy?** Check `curl -s https://<host>/mcp-oauth/readyz`. A 503 with
+  `"appbi": "unavailable…"` means the AppBI backend is down, not the connector.
+- **A user says Claude cannot connect:** check the connector's logs
+  (`docker logs appbi-mcp-appbi-mcp-1`), and that Anthropic's egress range
+  `160.79.104.0/21` can reach the host.
+- **Cut off one user's Claude access:** revoke their "Claude MCP · …" token in
+  Settings → API tokens (admins: *All tokens*). It takes effect on the next call.
+- **Cut off everyone:** stop the container. To also forget the stored
+  connections, remove its `appbi_mcp_state` volume, then revoke the "Claude MCP"
+  tokens.
+
+### Local single-host entry point with the connector (`--with-mcp`)
+
+On a single host without a host nginx (local / pilot), the connector and the app
+must share one browser origin, so one process owns `127.0.0.1:3000`:
+
+- **Owner:** the `edge` service from `docker-compose.edge.yml` (nginx, config
+  `deploy/nginx.local-edge.conf`). It routes `/mcp`, `/mcp-oauth/*` and the OAuth
+  discovery paths to the MCP project and everything else, unchanged, to the
+  frontend, which then has **no host port**. Port: `APPBI_HTTP_PORT` (default 3000).
+- **Start / update:** export `MCP_PUBLIC_URL`, `MCP_STATE_KEY` (and optionally
+  `APPBI_PUBLIC_URL`) in your shell, then `./run.sh --with-mcp`. It starts Core with
+  the overlay, then the MCP project (`-p appbi-mcp`) with an empty env file — Core's
+  `.env` is never read for the MCP.
+- **Stop:** `./run.sh --with-mcp --down` (MCP first, then Core).
+- **Restart:** `docker compose -f docker-compose.yml -f docker-compose.edge.yml restart edge`
+  (or `frontend`); the MCP: `docker compose -p appbi-mcp -f docker-compose.mcp.yml restart`.
+- **Reboot:** every container is `restart: unless-stopped`, so after a host / Docker
+  restart the edge, Core and the MCP come back on their own in their last shape.
+- **MCP stopped:** the edge keeps serving the app; only the MCP paths answer 502
+  (upstreams are resolved per request).
+- **Never run plain `docker compose up` (without `-f docker-compose.edge.yml`) while
+  the MCP is enabled.** It recreates the frontend with port 3000 and the edge loses
+  its port. Always use `./run.sh --with-mcp`, or pass both `-f` files.
+- **Independent upgrades:** Core (`./run.sh --with-mcp`) and the MCP
+  (`docker compose -p appbi-mcp -f docker-compose.mcp.yml up -d --build`) are separate
+  projects; upgrading or rolling back one does not recreate the other's containers.
+- **Roll back to frontend-on-3000:**
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.edge.yml rm -sf edge
+  docker compose -p appbi-mcp -f docker-compose.mcp.yml down   # optional
+  ./run.sh                                                     # frontend takes 3000 again
+  ```
 
 ## Emergency stop
 

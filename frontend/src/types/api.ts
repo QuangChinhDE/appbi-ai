@@ -714,6 +714,33 @@ export interface DashboardFilterField {
  * Retired fields (marked @deprecated) are still read from stored configs so old
  * links parse, but the runtime ignores them; the editor never writes new values.
  */
+/** A provider and the models the Answer Core can run on (AI Chat, public bot). */
+export interface AiModelProvider {
+  provider: 'openai' | 'anthropic' | 'gemini' | string;
+  label: string;
+  models: { model: string; label: string; lifecycle?: string | null; recommended?: boolean }[];
+}
+
+/** The publisher's structured guide for a link's AI Bot: each section has one use
+ *  (docs/features/public-bot-trust-guide/spec.md). Never served to viewers. */
+export interface PublisherGuide {
+  v?: number;
+  context?: { purpose?: string; audience?: string; unit?: string; period_note?: string };
+  glossary?: { term: string; ref: string }[];
+  definitions?: { name: string; aliases?: string[]; formula: string; note?: string }[];
+  targets?: { ref: string; value: number; period?: string; unit?: string; label?: string }[];
+  cause_sources?: { chart_id: number; note?: string }[];
+  facts?: { title: string; content: string }[];
+  style?: { length?: 'short' | 'normal' | 'detailed'; tone?: 'executive' | 'operational' | 'neutral'; language?: 'auto' | 'vi' | 'en' };
+  out_of_scope?: { topic: string; reason?: string }[];
+}
+
+/** What a link's AI Bot can read (GET …/public-links/{id}/ai/catalog): the guide's pickers. */
+export interface PublicLinkAiCatalog {
+  charts: { chart_id: number; name: string; pages: string[] }[];
+  fields: { ref: string; label: string; kind: 'dimension' | 'measure'; aggregation?: string | null; charts: number[] }[];
+}
+
 export interface PublicLinkAppearanceConfig {
   /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
@@ -776,6 +803,8 @@ export interface PublicLinkAppearanceConfig {
    * `ai_bot_report_context_note` for backward compatibility.)
    */
   ai_bot_report_context_note?: string | null;
+  /** The publisher's structured guide (backend `answer_core/publisher_guide.py`). */
+  ai_bot_guide?: PublisherGuide | null;
   /**
   /**
    * Allow the Thinking bot to search the public web for domain/market
@@ -783,16 +812,23 @@ export interface PublicLinkAppearanceConfig {
    */
   ai_bot_web_search_enabled?: boolean | null;
   /**
-   * Admin-configured API key. Written via the authenticated admin API.
-   * The public API NEVER returns this field — it strips it and sets
-   * `ai_bot_key_configured: true` instead.
+   * WRITE-ONLY, legacy: a key typed by an older client. The server never stores
+   * it as text - it is moved into the encrypted credential store and the link
+   * keeps `ai_bot_credential_id`. No API returns it.
    */
   ai_bot_key?: string;
-  /**
-   * Read-only, public-safe flag. True when the admin has pre-configured an
-   * API key for this link so public viewers don't need to enter one.
-   */
+  /** The link's own provider key in the encrypted store (null = the server's key). */
+  ai_bot_credential_id?: number | null;
+  /** Admin view: the link has its own key. Public view: the assistant is ready. */
   ai_bot_key_configured?: boolean;
+  /** The last characters of the link's stored key (admin only), to recognise it. */
+  ai_bot_key_hint?: string;
+  /** Public view only: the assistant can answer now (model and budget available). */
+  ai_bot_ready?: boolean;
+  /** The link's USD ceiling per rolling 24h (> 0; empty = the server default). */
+  ai_bot_budget_usd_per_day?: number | null;
+  /** The link's question ceiling per rolling hour (empty = the server default). */
+  ai_bot_turns_per_hour?: number | null;
 }
 
 // --- Chart Metadata (semantic/business layer) ---

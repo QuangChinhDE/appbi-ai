@@ -42,8 +42,10 @@ from app.schemas.schemas import DataSourceCreate
 from app.services.chart_semantic_service import with_chart_semantic_binding
 from app.services.dashboard_service import (
     DEFAULT_DASHBOARD_PAGE,
+    is_draft_only_item,
     normalize_dashboard_theme_config,
     normalize_dashboard_widget_config,
+    strip_draft_row_keys,
 )
 from app.services.dataset_crud import DatasetCRUDService
 from app.services.datasource_crud_service import DataSourceCRUDService
@@ -5155,6 +5157,180 @@ def _apply_calculated_fields_to_tables(
         db.flush()
 
 
+class UnresolvedImportFields(ValueError):
+    """A strict build refused: chart plans reference fields (or sources) the
+    dataset does not have. ``unresolved`` lists each offending chart:
+    ``{"block_id", "source_key", "fields": [...]}``."""
+
+    def __init__(self, unresolved: List[Dict[str, Any]]):
+        self.unresolved = list(unresolved)
+        super().__init__(
+            "Import refused: chart plans reference fields the dataset does not have: "
+            + "; ".join(f"{u.get('block_id')}: {u.get('fields')}" for u in self.unresolved)
+        )
+
+
+def _table_column_names(db_table: Any) -> Set[str]:
+    raw = getattr(db_table, "columns_cache", None)
+    cols = raw.get("columns") if isinstance(raw, dict) else raw if isinstance(raw, list) else None
+    return {str(c.get("name")) for c in (cols or []) if isinstance(c, dict) and c.get("name")}
+
+
+def find_unresolved_import_fields(
+    db: Session,
+    *,
+    analysis: Dict[str, Any],
+    chart_plans: List[Dict[str, Any]],
+    table_id_map: Dict[str, int],
+    default_table_id: Optional[int],
+) -> List[Dict[str, Any]]:
+    """Every chart plan whose source or field references do not resolve against
+    the bound dataset — the build-time check behind ``strict_fields``.
+
+    Known columns of a chart = its table's cached columns, plus the import's own
+    calculated fields; a chart bound to one of the import's derived tables reads
+    that table's declared ``output_columns``. A table whose columns are unknown
+    cannot be verified and is reported as such (a strict build does not guess)."""
+    calc_names = {
+        str(cf.get("name")) for cf in (analysis.get("calculated_fields") or [])
+        if isinstance(cf, dict) and cf.get("name")
+    }
+    derived_cols: Dict[str, Set[str]] = {}
+    for dt in analysis.get("derived_tables") or []:
+        if isinstance(dt, dict) and dt.get("source_key"):
+            derived_cols[str(dt["source_key"])] = {
+                str(c.get("name") if isinstance(c, dict) else c)
+                for c in (dt.get("output_columns") or []) if (c.get("name") if isinstance(c, dict) else c)
+            }
+    table_cols: Dict[int, Set[str]] = {}
+
+    def _cols_of(table_id: Optional[int]) -> Set[str]:
+        if table_id is None:
+            return set()
+        if table_id not in table_cols:
+            row = db.query(DatasetTable).filter(DatasetTable.id == table_id).first()
+            table_cols[table_id] = _table_column_names(row) if row is not None else set()
+        return table_cols[table_id]
+
+    out: List[Dict[str, Any]] = []
+    for plan in chart_plans:
+        if str(plan.get("widget_type") or "chart").strip().lower() not in ("", "chart"):
+            continue
+        source_key = str(plan.get("source_key") or "").strip() or None
+        refs = [value for _label, value in _iter_plan_field_references(plan)]
+        if source_key and source_key in derived_cols:
+            known = derived_cols[source_key]
+        elif source_key and table_id_map and source_key not in table_id_map:
+            out.append({"block_id": plan.get("block_id"), "source_key": source_key,
+                        "fields": refs, "reason": "unknown_source"})
+            continue
+        else:
+            table_id = table_id_map.get(source_key) if (source_key and table_id_map) else default_table_id
+            override = plan.get("dataset_table_id_override")
+            if isinstance(override, int) and override > 0:
+                table_id = override
+            known = _cols_of(table_id)
+            if not known:
+                out.append({"block_id": plan.get("block_id"), "source_key": source_key,
+                            "fields": refs, "reason": "columns_unknown"})
+                continue
+        known = known | calc_names
+        missing = sorted({v for v in refs if v not in known})
+        if missing:
+            out.append({"block_id": plan.get("block_id"), "source_key": source_key,
+                        "fields": missing, "reason": "unknown_fields"})
+    return out
+
+
+def _lock_import_idempotency_key(db: Session, owner_id: Any, key: str) -> None:
+    """Serialise concurrent builds carrying the same (owner, key) until the
+    build commits; the unique index is the backstop."""
+    bind = db.get_bind()
+    if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+        return
+    from sqlalchemy import text as _sql_text
+    db.execute(_sql_text("SELECT pg_advisory_xact_lock(hashtext(:k))"),
+               {"k": f"dashboard-import:{owner_id}:{key}"})
+
+
+def _replayed_import_result(db: Session, dashboard_obj: Dashboard) -> Dict[str, Any]:
+    """What a repeat of an idempotent build returns: the first build's
+    dashboard, described from its rows. Nothing is created."""
+    from app.services.dashboard_service import DashboardService
+
+    rows = list(dashboard_obj.dashboard_charts or [])
+    pages = [p for p in (dashboard_obj.pages_config or []) if isinstance(p, dict)]
+    first_page = pages[0] if pages else {}
+    table_ids: List[int] = []
+    for row in rows:
+        chart = getattr(row, "chart", None)
+        if chart is not None and chart.dataset_table_id is not None:
+            table_ids.append(int(chart.dataset_table_id))
+    dataset_id: Optional[int] = None
+    if table_ids:
+        first_table = db.query(DatasetTable).filter(DatasetTable.id == table_ids[0]).first()
+        dataset_id = first_table.dataset_id if first_table is not None else None
+    return {
+        "dashboard": DashboardService.get_by_id(db, dashboard_obj.id),
+        "dashboard_id": dashboard_obj.id,
+        "created_chart_count": sum(1 for r in rows if r.chart_id is not None),
+        "created_widget_count": sum(1 for r in rows if r.chart_id is None),
+        "layout_mode": dashboard_obj.layout_mode,
+        "type_changes": [],
+        "page_id": str(first_page.get("id") or ""),
+        "page_name": str(first_page.get("name") or ""),
+        "dataset_id": dataset_id,
+        "dataset_table_id": table_ids[0] if table_ids else None,
+        "dataset_table_ids": None,
+        "idempotent_replay": True,
+        "draft_only": any(is_draft_only_item(r) for r in rows),
+    }
+
+
+def _stage_import_as_draft(dashboard_obj: Dashboard, current_user: User) -> None:
+    """Make everything a draft_only build created the caller's unpublished
+    draft, in the representation the Builder uses: every tile, widget and
+    control row is ``draftOnly`` + ``draftOwner`` (public/embed skip it,
+    Publish by the caller makes it live, Discard deletes it), and the report's
+    filters, filter dock and theme are staged in the SHARED draft
+    (``draft_snapshot``) instead of the live columns, as PUT draft-filters
+    stages them. No commit."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    user_key = str(current_user.id)
+    for row in list(dashboard_obj.dashboard_charts or []):
+        layout = strip_draft_row_keys(dict(row.layout or {}))
+        layout["draftOnly"] = True
+        layout["draftOwner"] = user_key
+        row.layout = layout
+        flag_modified(row, "layout")
+
+    snapshot: Dict[str, Any] = dict(dashboard_obj.draft_snapshot or {})
+    staged = False
+    if dashboard_obj.slicers_config:
+        snapshot["slicers_config"] = list(dashboard_obj.slicers_config)
+        dashboard_obj.slicers_config = []
+        staged = True
+    if dashboard_obj.filters_config:
+        snapshot["filters_config"] = list(dashboard_obj.filters_config)
+        dashboard_obj.filters_config = []
+        staged = True
+    if isinstance(dashboard_obj.slicer_cluster_layout, dict) and dashboard_obj.slicer_cluster_layout:
+        snapshot["slicer_cluster_layout"] = dict(dashboard_obj.slicer_cluster_layout)
+        dashboard_obj.slicer_cluster_layout = None
+        staged = True
+    if isinstance(dashboard_obj.theme_config, dict) and dashboard_obj.theme_config:
+        snapshot["theme_config"] = dict(dashboard_obj.theme_config)
+        dashboard_obj.theme_config = {}
+        staged = True
+    if staged:
+        author_name = getattr(current_user, "full_name", None) or getattr(current_user, "email", None) or user_key
+        snapshot["shared_draft_meta"] = {"rev": 1, "authors": {user_key: author_name}, "last_by_name": author_name}
+        dashboard_obj.draft_snapshot = snapshot
+        for col in ("slicers_config", "filters_config", "slicer_cluster_layout", "theme_config", "draft_snapshot"):
+            flag_modified(dashboard_obj, col)
+
+
 def build_dashboard_from_import(
     db: Session,
     *,
@@ -5171,7 +5347,33 @@ def build_dashboard_from_import(
     target_mode: TargetMode,
     target_dashboard_id: Optional[int],
     included_block_ids: List[str],
+    draft_only: bool = False,
+    strict_fields: bool = False,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Materialize analyzed chart plans into a native dashboard.
+
+    Opt-in, all default off (the wizard's call is unchanged):
+      * ``draft_only`` — new dashboard only: every created tile/widget/control
+        is the caller's draft and the filters/theme are in the shared draft;
+        nothing is live until the caller publishes.
+      * ``strict_fields`` — chart plans whose fields do not resolve against the
+        dataset refuse the build (UnresolvedImportFields) instead of warning.
+      * ``idempotency_key`` — new dashboard only: a repeat by the same owner
+        with the same key returns the first build's dashboard, creating nothing.
+    """
+    if (draft_only or idempotency_key) and target_mode != "new_dashboard":
+        raise ValueError("draft_only and idempotency_key are only supported with target_mode=new_dashboard.")
+    if idempotency_key:
+        _lock_import_idempotency_key(db, current_user.id, idempotency_key)
+        existing = (
+            db.query(Dashboard)
+            .filter(Dashboard.owner_id == current_user.id, Dashboard.import_idempotency_key == idempotency_key)
+            .first()
+        )
+        if existing is not None:
+            return _replayed_import_result(db, existing)
+
     chart_plans = [plan for plan in (analysis.get("chart_plans") or []) if isinstance(plan, dict)]
     if included_block_ids:
         selected_ids = {str(item) for item in included_block_ids}
@@ -5257,6 +5459,17 @@ def build_dashboard_from_import(
 
     if resolved_dataset_table_id is None and not table_id_map:
         raise ValueError("No dataset table is available for chart creation.")
+
+    if strict_fields:
+        unresolved_fields = find_unresolved_import_fields(
+            db,
+            analysis=analysis,
+            chart_plans=chart_plans,
+            table_id_map=table_id_map,
+            default_table_id=resolved_dataset_table_id,
+        )
+        if unresolved_fields:
+            raise UnresolvedImportFields(unresolved_fields)
 
     # Apply AI-suggested calculated fields as transformation steps
     calc_fields = analysis.get("calculated_fields") or []
@@ -5422,6 +5635,9 @@ def build_dashboard_from_import(
         # Custom SQL is datasource authority, not dataset authority.
         from app.services.chart_sql_authority import require_custom_sql_authority
         require_custom_sql_authority(db, current_user, chart_table_id, chart_config)
+        # The ChartCreate role-config contract, before the config is stored.
+        from app.services.chart_config_guard import require_valid_chart_config
+        require_valid_chart_config(chart_config)
         db_chart = Chart(
             name=internal_name,
             description=chart_description or None,
@@ -5509,6 +5725,8 @@ def build_dashboard_from_import(
             "pages_config": [{"id": page_id, "name": import_page_name}],
             "layout_mode": plan_layout_mode,
         }
+        if idempotency_key:
+            dashboard_kwargs["import_idempotency_key"] = idempotency_key
         if plan_canvas_config is not None:
             dashboard_kwargs["canvas_config"] = plan_canvas_config
         if plan_theme_config is not None:
@@ -5578,6 +5796,10 @@ def build_dashboard_from_import(
         db.add(dashboard_chart)
 
     _place_slicer_controls(db, dashboard_obj)
+    if draft_only:
+        db.flush()
+        db.refresh(dashboard_obj)
+        _stage_import_as_draft(dashboard_obj, current_user)
     db.commit()
     db.refresh(dashboard_obj)
 
@@ -5618,7 +5840,34 @@ def build_dashboard_from_import(
         "dataset_id": resolved_dataset_id,
         "dataset_table_id": resolved_dataset_table_id,
         "dataset_table_ids": table_id_map if table_id_map else None,
+        "idempotent_replay": False,
+        "draft_only": bool(draft_only),
     }
+
+
+def _prevalidate_batch_chart_configs(documents: List[Dict[str, Any]]) -> None:
+    """Apply the ChartCreate role-config contract to every chart plan of every
+    batch document, before any page is built. Mirrors the per-document plan
+    selection (``included_block_ids``) so a deselected block is not checked.
+    Raises the same 422 the single-build guard raises, with nothing persisted."""
+    from app.services.chart_config_guard import require_valid_chart_config
+
+    for index, raw_document in enumerate(documents):
+        if not isinstance(raw_document, dict):
+            continue
+        analysis = raw_document.get("analysis")
+        if not isinstance(analysis, dict):
+            continue
+        plans = [p for p in (analysis.get("chart_plans") or []) if isinstance(p, dict)]
+        included = raw_document.get("included_block_ids") or []
+        if isinstance(included, list) and included:
+            selected = {str(item) for item in included}
+            plans = [p for p in plans if str(p.get("block_id")) in selected]
+        for plan in plans:
+            widget_type = str(plan.get("widget_type") or "chart").strip().lower()
+            if widget_type in IMPORT_WIDGET_TYPES and widget_type != "chart":
+                continue
+            require_valid_chart_config(_build_chart_config(plan, None))
 
 
 def build_dashboard_from_import_batch(
@@ -5646,6 +5895,16 @@ def build_dashboard_from_import_batch(
     normalized_documents = [item for item in (documents or []) if isinstance(item, dict)]
     if not normalized_documents:
         raise ValueError("At least one analyzed document is required for batch build.")
+
+    # Each document commits its own page (per-document build), so a document that
+    # fails AFTER an earlier one committed would leave a half-built dashboard. The
+    # write-time config contract is validated for EVERY chart of EVERY document up
+    # front, before anything is built, so an out-of-contract config (e.g. an
+    # invalid time grain) in a later document refuses the whole batch and stores
+    # nothing. This does NOT make the batch atomic against other mid-build
+    # failures; full atomicity (removing the per-document commits) is a separate,
+    # larger change tracked in the atomicity design note.
+    _prevalidate_batch_chart_configs(normalized_documents)
 
     page_results: List[Dict[str, Any]] = []
     current_target_mode: TargetMode = target_mode
@@ -6363,6 +6622,9 @@ def rebuild_dashboard_from_snapshot(
             from app.services.chart_sql_authority import require_custom_sql_authority
             require_custom_sql_authority(db, current_user, chart_spec.get("dataset_table_id"),
                                          chart_spec.get("config") or {})
+            # The ChartCreate role-config contract, before the config is stored.
+            from app.services.chart_config_guard import require_valid_chart_config
+            require_valid_chart_config(chart_spec.get("config") or {})
             new_chart = Chart(
                 name=chart_name,
                 description=_normalize_text(chart_spec.get("description"), max_len=1024) or None,

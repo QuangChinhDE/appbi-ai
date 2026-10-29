@@ -198,6 +198,7 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.draftSaved': 'Draft saved.',
     // device layouts (Desktop authored; Tablet/Phone AUTO or CUSTOM)
     'dashboards.device.label': 'Device layout',
+    'dashboards.device.menuHint': 'Preview the full report, or check and customise its layout on tablet and phone',
     'dashboards.device.desktop': 'Desktop',
     'dashboards.device.tablet': 'Tablet',
     'dashboards.device.phone': 'Phone',
@@ -248,6 +249,8 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.sharedChoice.publishedMine': 'Your changes are published. The shared filters, pages and theme draft is still pending.',
     'dashboards.detail.sharedChoice.discardedMine': 'Your changes are discarded. The shared filters, pages and theme draft is kept.',
     'dashboards.detail.sharedStale.title': 'This report changed while you were editing',
+    'dashboards.detail.slicerRemoval.confirm': 'Publishing removes these report-wide filters, which have a default value. The report will then show every value of these fields:\n{{list}}\n\nPublish anyway?',
+    'dashboards.detail.slicerRemoval.kept': 'Not published: the report-wide filters were kept.',
     'dashboards.detail.sharedStale.body': '{{editor}} changed the report’s filters, pages or theme since you opened it, so your last change was not saved. Reload to continue from their version.',
     'dashboards.detail.conflictOverwrite': 'Overwrite',
     // grid wrapper
@@ -465,6 +468,7 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.draftSaved': 'Đã lưu bản nháp.',
     // bố cục theo thiết bị (Desktop là bản gốc; Tablet/Phone tự động hoặc tuỳ chỉnh)
     'dashboards.device.label': 'Bố cục theo thiết bị',
+    'dashboards.device.menuHint': 'Xem trước toàn bộ báo cáo, hoặc kiểm tra và tuỳ chỉnh bố cục trên tablet và điện thoại',
     'dashboards.device.desktop': 'Desktop',
     'dashboards.device.tablet': 'Tablet',
     'dashboards.device.phone': 'Điện thoại',
@@ -515,6 +519,8 @@ export const dashboardsDetailCatalog: ModuleCatalog = {
     'dashboards.detail.sharedChoice.publishedMine': 'Đã publish thay đổi của bạn. Bản nháp dùng chung (bộ lọc, trang, theme) vẫn đang chờ.',
     'dashboards.detail.sharedChoice.discardedMine': 'Đã bỏ thay đổi của bạn. Bản nháp dùng chung (bộ lọc, trang, theme) được giữ lại.',
     'dashboards.detail.sharedStale.title': 'Báo cáo vừa được người khác sửa',
+    'dashboards.detail.slicerRemoval.confirm': 'Xuất bản sẽ gỡ các bộ lọc toàn báo cáo đang có giá trị mặc định dưới đây. Sau đó báo cáo sẽ hiển thị tất cả giá trị của các trường này:\n{{list}}\n\nVẫn xuất bản?',
+    'dashboards.detail.slicerRemoval.kept': 'Chưa xuất bản: các bộ lọc toàn báo cáo vẫn được giữ.',
     'dashboards.detail.sharedStale.body': '{{editor}} đã sửa bộ lọc, trang hoặc theme sau khi bạn mở báo cáo, nên thay đổi vừa rồi của bạn chưa được lưu. Tải lại để tiếp tục từ bản của họ.',
     'dashboards.detail.conflictOverwrite': 'Ghi đè',
     'dashboards.grid.dragToMove': 'Kéo để di chuyển',

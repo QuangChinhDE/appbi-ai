@@ -251,6 +251,53 @@ def make_dashboard_layers(
     ]
 
 
+def slicers_filtering_pages(slicers: list[dict] | None, page_ids: list[str] | None) -> list[dict]:
+    """The report slicers that constrain a chart shown on ``page_ids``.
+
+    The builder's rule (dashboards/[id]/page.tsx ``slicerFiltersPage``,
+    public-page-filters.ts ``slicerFiltersOnPage``): scope ``'custom'`` filters a
+    page only when ``pageScope[page].filter`` is true; ``'all'``/unset filters
+    every page. A chart on several pages keeps a slicer any of them applies —
+    never wider than any page. Without page ids (a report with no pages) every
+    slicer applies, as before.
+    """
+    out: list[dict] = []
+    for s in slicers or []:
+        if not isinstance(s, dict):
+            out.append(s)  # left for the merge to diagnose, as before
+            continue
+        if (s.get("scope") or "all") != "custom" or not page_ids:
+            out.append(s)
+            continue
+        page_scope = s.get("pageScope") if isinstance(s.get("pageScope"), dict) else {}
+        if any(isinstance(page_scope.get(p), dict) and page_scope[p].get("filter") for p in page_ids):
+            out.append(s)
+    return out
+
+
+def viewer_picks_filtering_pages(
+    viewer_filters: list[dict] | None, slicers: list[dict] | None, page_ids: list[str] | None,
+) -> list[dict]:
+    """The viewer's picks that may constrain ``page_ids``: a pick on a report
+    slicer (same ``id``) that ``slicers_filtering_pages`` keeps off those pages
+    is dropped — its control can be shown on a page it does not filter, and the
+    pick must not filter that page's charts or cascade its dropdowns. Picks with
+    no matching stored slicer (page slicers, cross-filters) are untouched.
+    """
+    stored_ids = {str(s.get("id")) for s in slicers or [] if isinstance(s, dict) and s.get("id")}
+    if not stored_ids or not page_ids:
+        return list(viewer_filters or [])
+    filtering_ids = {
+        str(s.get("id")) for s in slicers_filtering_pages(slicers, page_ids)
+        if isinstance(s, dict) and s.get("id")
+    }
+    return [
+        f for f in viewer_filters or []
+        if not (isinstance(f, dict) and f.get("id") and str(f["id"]) in stored_ids
+                and str(f["id"]) not in filtering_ids)
+    ]
+
+
 def make_public_layers(
     *,
     chart_base: Optional[List[Dict[str, Any]]] = None,

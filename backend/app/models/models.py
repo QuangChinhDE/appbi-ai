@@ -213,6 +213,20 @@ class Dashboard(Base):
     # Ownership
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
+    # The caller-supplied key of the HTML-import build that created this
+    # dashboard (POST /dashboards/import-html/build, `idempotency_key`). A
+    # repeat of that build by the same owner with the same key returns this
+    # dashboard instead of creating a second one. Unique per owner
+    # (uq_dashboards_owner_import_key); NULL for every other dashboard. Not in
+    # any response schema, not copied by duplicate/export.
+    import_idempotency_key = Column(String(128), nullable=True)
+
+    __table_args__ = (
+        Index("uq_dashboards_owner_import_key", "owner_id", "import_idempotency_key", unique=True,
+              postgresql_where=text("import_idempotency_key IS NOT NULL"),
+              sqlite_where=text("import_idempotency_key IS NOT NULL")),
+    )
+
     # RETIRED legacy public token. Nothing reads or writes it: the public
     # resolver's fallback to it was removed and migration 20261004_0001 nulled
     # every value (each one had been copied into a DashboardPublicLink by 0019,

@@ -96,6 +96,16 @@ layers:
     label: "Backend scripts / QA harnesses (NOT runtime; not committed as app code)"
     may_depend_on: ["*"]
 
+  # The external MCP integration (docker-compose.mcp.yml). An independent service:
+  # it reaches AppBI ONLY over HTTP with the user's delegated token, so it may not
+  # import anything from backend/ or frontend/ (see
+  # docs/features/mcp-integration-layer/spec.md). Its tests read backend route
+  # declarations as text (AST), never by import.
+  - id: integrations_mcp
+    match: ["integrations/appbi-mcp/**", "docker-compose.mcp.yml"]
+    label: "External MCP integration (independent container, HTTP-only client of AppBI)"
+    may_depend_on: ["integrations_mcp"]
+
   - id: repo_infra
     match: ["scripts/ci/**", "scripts/guardrail/**", "scripts/cert/**",
             ".github/**", ".githooks/**",
@@ -180,6 +190,7 @@ protected:
       - backend/app/services/relationship_key_guard.py    # runtime proof of every to-one key a query trusts
       - backend/app/services/semantic_arithmetic.py       # division = true division, NULL on /0, every engine
       - backend/app/services/execution_plan.py            # live / snapshot / published decision; one live statement = one connection
+      - backend/app/services/calculated_field_policy.py   # what user-written calculated SQL may say (SEC-01 allow-list)
     directive: >
       DO NOT rewrite or replace the semantic layer. It is golden-proven
       (multi-fact fan-out, snowflake, calendar, measure isolation). Make the
@@ -192,11 +203,12 @@ protected:
     # distinct_cascade_bq remain declared (`status: missing`) — they describe the
     # coverage this subsystem should have, and their absence is reported by
     # `guardrail_check.py --health` rather than hidden.
-    required_tests: [measure_render, dialect_structural, semantic_state_contracts, filter_matrix,
-                     golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
+    required_tests: [measure_render, dialect_structural, time_grain_whitelist, time_grain_whitelist_pg, chart_config_write_validation, chart_config_write_validation_pg, semantic_state_contracts,
+                     filter_matrix, golden_sql, galaxy_golden, distinct_cascade_bq, surface_parity,
                      relationship_contract, relationship_contract_pg, pair1_baseline_parity,
                      public_authoritative_bounds, pair2_golden_topology, pair3_chartservice,
-                     chart_final_hardening, semantic_foundation, pair4_surfaces]
+                     chart_final_hardening, semantic_foundation, pair4_surfaces,
+                     intelligence_calc_field_policy]
 
   - id: public_link_security
     label: "Public-link filter merge / access (data-exposure surface)"
@@ -249,6 +261,12 @@ protected:
 #    description (validate_fix_plan) to the right owner files.
 # ─────────────────────────────────────────────────────────────────────────────
 features:
+  - id: mcp_integration
+    label: "External MCP integration (Claude connector): OAuth, delegated PAT, plans/approvals, Dataset + Dashboard tools"
+    files: ["integrations/appbi-mcp/**", "docker-compose.mcp.yml", "frontend/src/app/connect/mcp/**"]
+    keywords: [mcp, "remote mcp", connector, claude, "mcp-oauth", "connect claude", "plan_dataset", "plan_dashboard", "execute_plan"]
+    required_tests: [mcp_integration_offline, mcp_integration_live]
+
   - id: schema_migrations
     label: "Alembic schema migrations (single head, parent committed, additive)"
     files: ["backend/alembic/**"]
@@ -267,7 +285,7 @@ features:
     files: [backend/app/services/semantic_query_engine.py, backend/app/services/semantic_query_compiler.py]
     keywords: [measure, aggregate, group by, sql, fan-out, fanout, "sai so", "double count", grain, having]
     invariants: [fanout_exists_not_join, agg_default_auto, sum_over_string_gate, symmetric_flag_default]
-    required_tests: [golden_sql, galaxy_golden, measure_render, filter_matrix]
+    required_tests: [golden_sql, galaxy_golden, measure_render, filter_matrix, intelligence_sec13_ledger_pg]
 
   - id: join_resolution
     label: "Semantic join resolver (multi-hop, cardinality, role-play, chasm)"
@@ -492,21 +510,96 @@ features:
     invariants: [agent_flow_container_topology, agent_flow_answer_parity]
     required_tests: [agent_flow_contract, agent_flow_replay, agent_flow_container,
                      agent_flow_surface, agent_flow_evidence, tier1_oracles_execute,
-                     agent_flow_credentials]
+                     agent_flow_credentials, intelligence_security_ledger,
+                     intelligence_studio_test_scope_pg]
 
+  # ADDED 2026-10-20 (AppBI Intelligence Phase 0, declared infra change). These
+  # files decide what the model is told is TRUE - KPI definitions, institutional
+  # memory, rules/Q&A/instructions - and matched no feature: the guardrail
+  # keyword-matched a frontend feature instead and the coverage read as UNKNOWN.
+  - id: ai_knowledge_authority
+    label: "AI knowledge authority (knowledge context, institutional memory, quarantine)"
+    files:
+      - backend/app/services/dashboard_ai_bot/knowledge.py
+      - backend/app/services/dashboard_ai_bot/knowledge_context.py
+      - backend/app/services/governance_ai_service.py
+      # 0G: the evidence a model is shown and whether it may answer from it. These
+      # read as UNKNOWN before (Agent Flow deliberately does not own govern_doc_*).
+      - backend/app/services/dashboard_ai_bot/knowledge_hit.py
+      - backend/app/services/dashboard_ai_bot/govern_doc_answerability.py
+      - backend/app/services/dashboard_ai_bot/govern_doc_conflict.py
+      - backend/app/services/dashboard_ai_bot/doc_rerank.py
+    keywords: [knowledge, memory, "verified qa", playbook, instruction, quarantine,
+               "draft kpi", authority, "learned fact", answerability, "knowledge hit",
+               "evidence shape"]
+    invariants: []
+    required_tests: [intelligence_security_ledger, intelligence_knowledge_quarantine,
+                     intelligence_knowledge_quarantine_pg, ai_knowledge_contract,
+                     ai_evidence_contract]
+
+  # ADDED 2026-10-20: the schema browser reads source metadata AND rows on the
+  # source's stored credential (SEC-02); it matched no feature.
+  - id: datasource_table_preview
+    label: "Data source schema browser + table preview (metadata vs rows)"
+    files: [backend/app/api/datasources.py]
+    keywords: ["schema browser", "table detail", preview, "preview_rows", use_secret]
+    invariants: []
+    required_tests: [intelligence_security_ledger, intelligence_table_preview_pg, source_contracts]
+
+  # ADDED 2026-10-20 (Phase 1): the Governed Query Service - the one execution
+  # boundary for new analytical reads (ADR-001). Every change to it re-runs its
+  # contract suites.
+  - id: governed_query
+    label: "Governed Query Service (principal, policy, bounds, audit, refusals)"
+    files: [backend/app/services/governed_query/**]
+    keywords: [governed query, gqs, "effective principal", "authorization context",
+               "surface ceiling", refusal]
+    invariants: []
+    required_tests: [intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_cancel_pg,
+                     intelligence_gqs_ledger_schema_pg, intelligence_gqs_ledger_pg, intelligence_gqs_mysql, intelligence_gqs_mysql_fullpath, intelligence_gqs_bigquery, intelligence_security_ledger]
+
+  # THE ONE AI CHAT (docs/features/unified-ai-chat/contract.md, 2026-10-27). One
+  # conversation surface, one data authority (the Data Core through GQS under the
+  # asker's identity), one turn lifecycle, one envelope; an Agent Flow is an optional
+  # extension that returns validated evidence. test_unified_chat_architecture fails on
+  # a second answering route, a Flow required to ask, a Flow data read, a second
+  # conversation store or a user-facing Analyst toggle.
+  - id: ai_chat
+    label: "AI Chat: one chat, the governed Data Core (built as the Analyst), optional Agent Flow extension"
+    files:
+      - backend/app/services/data_core/**
+      - backend/app/services/chat/**
+      - backend/app/api/chat.py
+      - backend/app/models/chat_conversation.py
+      - backend/alembic/versions/20261027_0001_unified_chat.py
+      # PO 2026-10-28: the public Dashboard AI Bot is the Answer Core's second
+      # consumer, and every paid model call passes the Model Gateway.
+      - backend/app/services/answer_core/**
+      - backend/app/services/ai_runtime/**
+      - backend/app/models/ai_runtime.py
+      - backend/alembic/versions/20261028_0001_ai_runtime.py
+      - backend/app/services/dashboard_ai_bot/budget.py
+      - frontend/src/components/dashboards/DashboardAiBot.tsx
+      - frontend/src/components/common/PublicLinkAiBotEditor.tsx
+      - frontend/src/components/chat/**
+      - frontend/src/lib/api/chat.ts
+      - frontend/src/app/(main)/chat/**
+      - frontend/src/app/(main)/analyst/**
+    keywords: ["ai chat", analyst, "ai analyst", "data core", discovery, planner, "chart draft", conversation,
+               conversations, "chat extension", "extension flow", "unified chat"]
+    invariants: []
+    required_tests: [unified_chat_architecture, analyst_http_pg, analyst_sessions_http_pg, chat_extension,
+                     chat_extension_http_pg, chat_legacy_import_pg, direct_chat_contract, analyst_narrative,
+                     analyst_planner, intelligence_gqs, intelligence_gqs_pg, intelligence_gqs_ledger_pg,
+                     public_answer_core, ai_runtime_gateway, answer_core_published_scope]
+
+  # Since the unified AI Chat this is only the door: which flows can run with no
+  # report (and so may be an AI Chat extension). The chat itself is `ai_chat`.
   - id: direct_chat
-    label: "Direct Chat (reader surface of Agent Flow)"
+    label: "Agent Flow without a report: the AI Chat extension door"
     files:
       - backend/app/services/agent_flows/direct_chat.py
-      - backend/app/modules/agent_flows/chat_api.py
-      - frontend/src/lib/directChat.ts
-      - frontend/src/components/chat/**
-      # Chat renders its answers through the shared component too — see the note
-      # on the same path under `agent_flows`.
-      - frontend/src/components/dashboards/AnswerBlocks.tsx
-    keywords: ["direct chat", "ai chat", "chat thread", "chat threads", assistant,
-               assistants, conversation, conversations, "thread access",
-               "thread sharing", "chat surface", "chat brain", "chat brains"]
+    keywords: ["direct chat", "chat brain", "chat brains", "chat surface", "chat eligibility"]
     invariants: [agent_flow_answer_parity]
     required_tests: [direct_chat_contract, direct_chat_module_floor]
 
@@ -515,6 +608,133 @@ features:
 #    command; `locks` is what a green run guarantees.
 # ─────────────────────────────────────────────────────────────────────────────
 tests:
+  # ── AppBI Intelligence foundation (registered 2026-10-20, declared) ─────────
+  # Every entry below is run by .github/workflows/backend-contract-tests.yml:
+  # the unit ones in the "Phase 0 security reproduction ledger" step, the _pg ones
+  # in the authz-pg step (AUTHZ_PG_REQUIRED=1 there, so a skip is a failure).
+  intelligence_security_ledger:
+    run: "pytest backend/tests/test_intelligence_phase0_security_repro.py backend/tests/test_intelligence_eval_harness.py"
+    locks: "every Phase 0 security finding as an executable SAFE-behaviour statement (no xfail left once the stack lands), and the sealed eval's independence: oracle == hand-computed, runtime cannot import it, leaks excluded, isolation enforced"
+  intelligence_calc_field_policy:
+    run: "pytest backend/tests/test_intelligence_calc_field_policy.py"
+    locks: "a calculated field reads nothing beyond the query's own ${view.field} refs on default/postgres/bigquery/mysql: no subquery, table, EXISTS, bare/qualified column, unknown function, window, catalog cast, or lexer hazard (the comment-nesting bypass a review found)"
+  intelligence_knowledge_quarantine:
+    run: "pytest backend/tests/test_intelligence_knowledge_quarantine.py"
+    locks: "orphaned Approved rules/playbooks/Q&A/instructions never reach the prompt or refs while quarantined, nothing is deleted, caveats still inject, and GovernAIScope (a security policy) is still enforced"
+  intelligence_knowledge_quarantine_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_knowledge_quarantine_http_pg.py"
+    locks: "the quarantine inventory is Govern-admin only over HTTP, carries no bodies, and the removed rules/qa/playbooks/instructions routes stay 404 even for an admin"
+  intelligence_table_preview_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_table_preview_http_pg.py"
+    locks: "over HTTP on a real Postgres source: a data_sources viewer gets table structure and ZERO rows (rows need use_secret), an editor gets the preview, and even an editor is capped"
+  intelligence_studio_test_scope_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_studio_test_scope_http_pg.py"
+    locks: "Studio Test as chat runs with the TESTER's rights over HTTP: a shared editor reaches only their own datasets, the owner keeps everything attached, a flow viewer cannot press Test"
+  ai_knowledge_contract:
+    run: "pytest backend/tests/test_public_rating_trust_boundary.py backend/tests/test_govern_doc_citation.py backend/tests/test_what_the_ai_sees.py"
+    locks: "a public rating never mutates knowledge, document citations stay grounded, and what the AI is shown is what the governance layer allows"
+  intelligence_sec13_ledger_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_sec13_grain_injection_http_pg.py"
+    locks: "SEC-13 known-defect ledger: a chart time grain reaching DATE_TRUNC unvalidated is reproduced over HTTP as xfail(strict); the fix must turn it XPASS and remove the marker in the same change"
+  ai_evidence_contract:
+    run: "pytest backend/tests/test_knowledge_hit_contract.py backend/tests/test_govern_doc_answerability.py backend/tests/test_semantic_level0.py"
+    locks: "one evidence shape for every consumer (no draft served as evidence), the answer/abstain/conflict verdict over document evidence, and a measure reaching the model with its recorded formula and unit even without a description"
+  intelligence_gqs:
+    run: "pytest backend/tests/test_intelligence_effective_principal.py backend/tests/test_intelligence_gqs_core.py"
+    locks: "one intersection-only scope formula on the real authz core: querying needs explore (view is not enough), the surface ceiling only narrows, an Agent Flow delegation never widens a governed decision, PAT is a subset of the person, a system principal cannot answer for a person, a failed AI-scope lookup refuses; bounds are min(policy, requested); the AI BigQuery bytes limit is its own and only a BigQuery job carries it; GQS is imported by nothing outside its package (not live)"
+  intelligence_gqs_mysql:
+    requires: mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_runtime.py"
+    locks: "on a real MySQL: the executor's server-side row cap holds, the READ ONLY transaction refuses a write, KILL QUERY from a second connection stops a running statement early, and a different MySQL user cannot kill it"
+  intelligence_gqs_bigquery:
+    status: manual
+    requires: bigquery-qa
+    run: "GQS_BQ_DATASOURCE_ID=<qa datasource> pytest backend/tests/test_intelligence_gqs_bigquery_runtime.py"
+    locks: "on REAL BigQuery, only the approved QA project/tables (refuses otherwise): dry-run estimates before running, a scan over maximum_bytes_billed is refused by BigQuery, the row cap holds and every job carries attribution labels, a BigQueryCanceller cancel stops a running job AT THE WAREHOUSE (job ends DONE/stopped, no rows returned), and a cancel for a nonexistent job is harmless. Manual: CI has no warehouse credential; run with the QA datasource and report it NOT VERIFIED when not run"
+  intelligence_gqs_ledger_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_ledger_pg.py"
+    locks: "the PR-1E ledger SERVICE writing as the least-privilege app role: a governed read leaves a committed running->ok row with fingerprints and no SQL text; an unreachable ledger refuses audit_unavailable before the warehouse; a second begin is a conflict; the first terminal status wins (idempotent repeat, no flip); N concurrent begins on separate connections against a budget admit exactly the budget (advisory-locked reservation, mutation-tested); per-datasource concurrency frees on finish; BigQuery bytes reserved per user/day; an over-budget GQS request refuses budget_exceeded and is recorded refused; cross-worker cancel from another worker identity AND from a separate OS process is performed by the owning worker, refuses cancelled, records cancelled and clears pg_stat_activity; only the owner may request a cancel; a stale lease is recovered to abandoned and cannot be finalized"
+  analyst_narrative:
+    run: "pytest backend/tests/test_analyst_narrative.py"
+    locks: "the Analyst's words never claim more than the governed rows support: a complete result reports the trend computed from the rows; a TRUNCATED result (row bound hit) draws no trend, ranking, total or facts and says it is incomplete (found by the real-model browser run: a mid-period cut read as -98.9%)"
+  analyst_planner:
+    run: "pytest backend/tests/test_analyst_planner.py"
+    locks: "the server validates the model's plan against the person's catalog: a wrongly view-qualified field is resolved only when its name is unique in the explore, an ambiguous or unknown field is refused, a grain on a string-typed field is refused naming the field, and an empty result under a filter is reported as no match (naming field and values), never as an answer (all from the real-model BigQuery evaluation)"
+  analyst_grounding:
+    run: "pytest backend/tests/test_analyst_grounding.py"
+    locks: "a validated plan must answer the QUESTION: a metric the data lacks is refused, never substituted (profit, conversion rate, forecast); a filter the plan dropped is refused naming the words; an unasked breakdown (month, a numeric column) is removed; a label-as-value filter is removed; the model's phrase map bridges languages only for phrases really in the question and never against a Vietnamese label it shares nothing with; a follow-up keeps what it refines; a filter value is matched to exactly one real value (case/tone folded) or offered as a choice"
+  gqs_date_range_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_date_range_pg.py"
+    locks: "GQS date_range: {from, to} ISO dates, from INCLUDED, to EXCLUDED, only on a certified date field (declared date AND physically DATE); month, quarter, year, single day, year boundary and an empty year give the hand-computed totals; malformed, reversed, open, timed, non-ISO, impossible, over-span and between-shaped values are invalid_filter; an unknown, timestamp, datetime or text-backed field is time_range_unsupported; no access is not_authorized; between stays refused"
+  analyst_intent_obligations:
+    run: "pytest backend/tests/test_analyst_intent_obligations.py"
+    locks: "meaning-changing words oblige the plan: a negation (không/chưa/ngoại trừ/khác) needs ne/not_in or a negated value, a comparison with a number needs gt/gte/lt/lte, a time boundary with a number needs date_range, \"chỉ\" needs a filter; an invented exclusion is refused; yes/no \"không\", \"chi phí\", \"chỉ số\", \"tôi\" and rankings are not obligations; the opposite plan is refused end to end"
+  analyst_intent:
+    run: "pytest backend/tests/test_analyst_intent.py"
+    locks: "question constructions are recognised whole, not word by word: request framing (anh chị cho em hỏi ... ạ) is removed and nothing else; a ranking (top N, N ... cao/thấp nhất, xếp hạng, từ cao xuống thấp, nhiều nhất) becomes an obligation with direction and count; a quantity question asks for a measure; a comparison (ít nhất 5), an evaluative tốt nhất and a year are not rankings"
+  llm_test_budget:
+    run: "pytest backend/tests/test_llm_test_budget.py"
+    locks: "test-only AI spending cap: worst-case reservation before every paid call, atomic across processes (lock directory beside the ONE shared ledger), fsync'd and kept through crashes; a call without usage evidence is UNKNOWN at worst case until reconciled with evidence; no call without a verified price, over the cap, or in production; no provider fallback; every unmetered request to a paid AI host is refused while a budget is active; planner replay answers from recorded outputs without a model"
+  analyst_catalog_reach:
+    run: "pytest backend/tests/test_analyst_catalog_reach.py"
+    locks: "the Analyst catalog offers every view the base can reach through the model relationships (multi-hop, the engine's own resolver), inside the explore's Dataset lineage only"
+  public_answer_core:
+    run: "pytest backend/tests/test_public_answer_core.py"
+    locks: "PO 2026-10-28, one Answer Core: the public Dashboard AI Bot route is served by the Core turn over the published scope; no public route answers through an Agent Flow (run_for_link) or reads X-User-Ai-Key; the published scope reads only through the governed public chart path (_fetch_chart_data); a link's USD ceiling is the link's whatever a viewer sends, never unlimited, and an unreadable usage store refuses the paid turn"
+  ai_runtime_gateway:
+    run: "pytest backend/tests/test_ai_runtime_gateway.py"
+    locks: "THE Model Gateway: a paid call reserves its worst case before the request (no prompt, no key in the ledger), settles with the reported usage, output tokens are clamped, a link/user/turn over its ceiling or an oversized context is refused before anything is sent, an unreadable ledger refuses (fail closed), an error after sending keeps the worst case, a request that never left is released, inside a turn a policy refusal is raised and never routed around, and a pinned link credential is the only key used"
+  answer_core_published_scope:
+    run: "pytest backend/tests/test_answer_core_published_scope.py"
+    locks: "the public bot's published-report scope: the chart's own grouping as shown; an additive measure is regrouped and a filter on a shown dimension stays local; an average/distinct is never regrouped into a wrong number; a filter on another field goes to the governed engine (date_range as gte/lt); a field or chart outside the published report is refused; the evidence names the chart and only disclosed filters; an anonymous viewer can save nothing"
+  unified_chat_architecture:
+    run: "pytest backend/tests/test_unified_chat_architecture.py"
+    locks: "the unified AI Chat contract, executable: no /analyst or /agent-flows/chat route even with every flag on; the one turn route needs no Flow; no analyst module, no ANALYST_ENABLED/allowlist setting or build flag; no Flow runner owns a signed-in turn; the chat Core imports no ChartService/Flow tool/dashboard bot; an extension context cannot reach ChartService; only services/chat writes turns; no runtime use of the retired stores; one chat in the sidebar, no retired module imported, sending never requires a Flow"
+  chat_extension:
+    run: "pytest backend/tests/test_chat_extension.py"
+    locks: "ext.v1 as pure functions: a flow is invoked only for an explicit request, a document question or a non-data question - never a plain data question, a clarification, a failure or a cancel; only document citations inside the ceiling survive; flow metric/table/chart blocks are dropped; a finding needs a document; figures the core did not verify are listed, the text kept verbatim; injected document text changes nothing; the five terminal states; documents never override a data refusal; the stored copy carries no capability"
+  chat_extension_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chat_extension_http_pg.py"
+    locks: "Agent Flow as an optional AI Chat extension over HTTP on real Postgres: no flow needed; a data question never runs the bound flow; an explicit request returns the oracle-equal data AND cited documents side by side; a document question is answered from documents only; the ceiling is the asker's own documents and no data (a delegation does not widen it); unshared/exception/invalid/timeout leave the core answer whole with a notice; cancel during the flow ends the turn once; a cited document is redacted for a reader who cannot open it, shown when they can, hidden again when revoked; only a flow shared with the owner can be bound"
+  chat_legacy_import_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chat_legacy_import_pg.py"
+    locks: "alembic 20261027_0001 on real Postgres: every legacy conversation, turn, share and rating imported once (idempotent, reconciled), authors/timestamps/turn ids kept, statuses mapped, a pruned flow run kept and marked, shares at the same level, an orphan share counted; imported answers never more visible than before; module access carried, never widened; old links resolve only for readers"
+  analyst_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_analyst_http_pg.py"
+    locks: "the Data Core through the one AI Chat turn route (built as the Analyst) on real Postgres, model replaced by a fixed planner only: an explore-grant answer equals an independent SQL oracle with evidence, a ledger row (surface chat, run = turn) and a chart draft; view-only sees no source and gets no rows; no chat module -> 403; chat alone answers from the person's EXPLORE grant; the emergency switch stops new turns (503) and never reroutes; a revoked grant is honoured on the next turn; a plan naming a foreign measure/unknown dimension/foreign explore/bad grain/bad operator is unsupported and nothing reaches the ledger; no SQL text in the response; another person cannot cancel my turn, my cancel stops it and it is recorded cancelled; a consent token is bound to its caller"
+  analyst_sessions_http_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_analyst_sessions_http_pg.py"
+    locks: "AI Chat conversations on real Postgres: a conversation keeps its oracle-equal answer across a reload; sharing via /shares needs chat>=edit; a recipient (user, team, or chat:full oversight) without EXPLORE on the Dataset sees the question and redacted, never rows/evidence/numbers; a revoked Dataset grant redacts the owner's own stored answer; a view recipient cannot ask, an edit recipient asks as themselves; share revoke and team removal apply next request; no access is 404 for foreign and unknown ids alike; rename/delete are the owner's; the follow-up plan comes from the conversation, never the request; a retried submit (same idempotency key) is one turn, one ledger read, one model call, and nobody else can reuse its key"
+  intelligence_gqs_mysql_fullpath:
+    requires: postgres+mysql
+    run: "pytest backend/tests/test_intelligence_gqs_mysql_fullpath_pg.py"
+    locks: "GQS end to end on a REAL MySQL source (semantic explore -> GQS -> durable ledger -> MySQL), with the source config stored plain AND encrypted at rest: the answer equals an independent oracle, the ledger row is ok with the mysql dialect, the row bound is enforced and reported truncated, a cancel through GQS stops the running statement at MySQL (KILL QUERY) and is recorded cancelled, and a person without explore is refused before MySQL is touched"
+  intelligence_gqs_ledger_schema_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_ledger_schema_pg.py"
+    locks: "the governed_query_executions audit ledger exists at head with its status and terminal/finished constraints, query_id is unique, and the least-privilege appbi_app role can SELECT/INSERT/UPDATE but not DELETE or TRUNCATE (append-only for the application)"
+  intelligence_gqs_cancel_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_cancel_pg.py"
+    locks: "cancelling a governed read stops the statement IN POSTGRES (pg_stat_activity is clear), refuses `cancelled` (not timeout), never returns a completed result - including rows that arrived after the cancel - and the ledger records cancelled; cancel is idempotent, an unknown id is harmless, a cancel before execution touches no data source, and an uncancelled query is unaffected with a clean registry"
+  intelligence_gqs_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_intelligence_gqs_execution_pg.py"
+    locks: "a new question compiled by the existing engine returns the hand-computed answer with evidence; view/stranger/missing relation refused alike before any warehouse call; AI scope refuses selecting or filtering an excluded column; operational data and dataset-less explores refused; SQL escape hatches refused by name; a dropped filter refuses unless the user accepted it; no ledger or a failed audit write means nothing executes; a time bound is enforced and audited as timeout; review regressions: a grain is one of five words (never SQL), filters are rebuilt as {operator, value} and an engine-skippable filter is refused, missing/ownerless/operational/forbidden relations look identical, composed parents need explore and carry their AI scope, the AI-scope walk follows expression/formulas/measure filters/bare refs/aliases, unbounded sources are refused"
+  source_contracts:
+    run: "pytest backend/tests/test_source_security.py backend/tests/test_source_invalidation.py"
+    locks: "source outbound policy, stored-secret handling and cache invalidation on credential change"
+
   # ── Agent Flow / Direct Chat ────────────────────────────────────────────────
   # Registered 2026-09-15. Twelve suites in this area were committed with
   # `git add -f` but never allow-listed and never referenced by a workflow, so they
@@ -558,7 +778,7 @@ tests:
     locks: "every container node is walked by all_nodes(); a coordinator's lane is visible to every authoring check"
   direct_chat_contract:
     run: "pytest backend/tests/test_chat_thread_sharing.py backend/tests/test_chat_chart_scope.py backend/tests/test_notice_audience_boundary.py backend/tests/test_reader_capability_boundary.py backend/tests/test_reader_diagnostics_are_product_facing.py"
-    locks: "chat thread access levels, read-only shares, the chat surface's chart scope, and that a reader - including an anonymous one on a public link - is told WHY a step failed without being shown the tool id, chart id or raw column the author's trace keeps"
+    locks: "conversation access levels (a share never lends the flow or the data), read-only shares, the chat surface's chart scope, imported flow history replayed through the reader filter, and that a reader - including an anonymous one on a public link - is told WHY a step failed without being shown the tool id, chart id or raw column the author's trace keeps"
 
   # ── Provider-neutral SDLC protection layer (from demo) ──────────────────────
   agent_sdlc_meta:
@@ -652,6 +872,13 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_semantic_foundation_pg.py backend/tests/test_semantic_cross_view_formula_pg.py"
     locks: "semantic kernel (Pair 1 + 2 + 3 as one contract, docs/features/semantic-foundation-freeze/kernel-contract-v1.md): division in every semantic expression (formula, nested formula, row-level measure, where_sql, dimension, % of total) is true division with a NULL zero denominator, executed on Postgres and DuckDB and through a saved chart (int/int, int/decimal, decimal/int, SUM/COUNT, negative, NULL numerator / denominator, a 1-in-30000 ratio to 1e-9, AVG of 0/1 flags); Kernel v2: a formula over measures of OTHER views is arithmetic over those measures' own answers — equal to the arithmetic over its dependencies asked together (or their refusal, same category), the same from every chart base, never the historical JOIN-before-aggregate number (rev_per_cust 198 / 4, not 198 / 5), each dependency computed once, nested / zero / NULL denominators, conformed / M:1 / snowflake / calendar grouping and every filter kind, never pivoted / windowed / re-aggregated, a column-reading cross-view formula refused (UNSUPPORTED_CONTEXT); the same request through chart saved / preview, /semantic/query, dataset execute and measure preview gives the same rows or the same refusal category (NULL contract, a one-to-one relationship, an invalid relationship INVALID_RELATIONSHIP and a non-unique one side FANOUT_RISK included); a reused and a fresh engine compile the same meaning; a declared soft drop is reported by every entry point (dropped_filters); one live statement never reads another connection's table through its own (refused on every executor), a second connection onto the same database / schema is one connection, BigQuery physical tables (absolute names) may cross connections but custom-SQL tables of another project may not, the connection check runs before any key probe on every entry point (the live filter adapter included); a dataset-scope measure never joins a 1:N child (FANOUT_RISK) and a cross-table measure answers or refuses like the plain measure of its fact; a formula is never re-aggregated by an explicit agg or a pivot; a text operator on a date column is refused; dataset execute AND-s every predicate of a field; a cache hit keeps the engine's own dropped filters and a fanned Date filter never shares a cache slot with look-alike role filters; an isolated measure records the filter its fact cannot reach; the division rewrite never appends to a `--` / `#` comment and lexes strings per dialect"
+  semantic_sync_authored_dims:
+    run: "pytest backend/tests/test_semantic_sync_preserves_dimensions.py"
+    locks: "model sync (Generate model, structure sync, drift self-heal) keeps a dimension the owner edited (label, description, declared type, parent) instead of regenerating it; an unedited dimension still follows the source type (issue #11); column visibility follows the dataset table; a dimension whose column is gone is dropped, edited or not; drift converges with an authored type; user_edited is stamped by the server on the PUT routes, never taken from the client, and a schema round-trip is not an edit"
+  semantic_sync_authored_dims_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_semantic_sync_authored_dims_pg.py"
+    locks: "on real Postgres through the real routes: dimensions edited via PUT /datasets/{id}/model/views/{view} survive POST /generate-model?force=true as read by the Dataset model, a saved chart (/charts/{id}/data) and a public dashboard tile, with the hand-computed monthly revenue unchanged"
   pair4_surfaces:
     requires: postgres
     run: "pytest backend/tests/test_pair4_surfaces_pg.py"
@@ -745,6 +972,20 @@ tests:
   dialect_structural:
     run: "pytest backend/tests/test_dialect_structural.py"
     locks: "BigQuery-vs-Postgres SQL SHAPE without a warehouse: SAFE_CAST/FLOAT64 vs REGEXP guard, numeric literal never quoted, dialects provably diverge, symmetric-aggregate dialect allow-list, superseded engine flags stay OFF"
+  time_grain_whitelist:
+    run: "pytest backend/tests/test_time_grain_whitelist.py"
+    locks: "a time grain reaching SQL generation is one of day/week/month/quarter/year on every dialect (SEC-13): an unknown grain is refused at the render boundary, never interpolated into DATE_TRUNC and never silently defaulted to another grain"
+  time_grain_whitelist_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_time_grain_whitelist_http_pg.py"
+    locks: "SEC-13 runtime over HTTP on real Postgres: a valid grain previews the hand-computed numbers; an invalid grain is refused before any SQL runs (preview and a stored chart's render), not as a database error; no out-of-scope data is returned; the public link renders a valid chart and refuses a stored invalid-grain chart"
+  chart_config_write_validation:
+    run: "pytest backend/tests/test_chart_config_write_validation.py"
+    locks: "every path that stores or previews a chart config (preview-data, HTML import build+batch, snapshot import+duplicate, in-place fork) applies the ChartCreate role-config contract via one guard, so an out-of-contract config (e.g. an invalid time grain) cannot be stored; the engine stays the last line of defence (SEC-13 defense in depth)"
+  chart_config_write_validation_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_chart_config_write_validation_http_pg.py"
+    locks: "per-path over HTTP on real Postgres: preview-data, HTML import build, build-batch, snapshot import, duplicate and fork refuse an invalid time grain with a 4xx and store nothing (no half-built dashboard); a batch whose later document is invalid builds no page at all; a valid config is created, reopened and renders the hand-computed numbers; custom-SQL authority is still enforced"
   relationship_metadata:
     run: "pytest backend/tests/test_phase1_relationship_metadata.py"
     locks: "cardinality normalize, bidirectional edges, BFS path, ambiguity"
@@ -755,6 +996,13 @@ tests:
     requires: postgres-fixture
     run: "python backend/scripts/test_explore_dashboard_parity.py"
     locks: "preview SQL/data == dashboard tile"
+  mcp_integration_offline:
+    run: "python integrations/appbi-mcp/scripts/run_offline_tests.py"
+    locks: "MCP OAuth (discovery, PKCE, txn binding, refresh rotation/reuse, code replay), allowlist ⊆ real backend routes, forbidden live-write routes unreachable, body guards, approvals (GET never approves, CSRF, cross-user), exactly-once operations"
+  mcp_integration_live:
+    requires: appbi-mcp-rig
+    run: "python integrations/appbi-mcp/scripts/run_offline_tests.py -m live tests/live"
+    locks: "real MCP client + real browser against a running AppBI rig: connect, Dataset/Dashboard journeys with SQL-checked values, co-author safety, security negatives, isolation"
   tsc:
     run: "cd frontend && npx tsc --noEmit"
     locks: "frontend type-safety (schema/prop changes)"
@@ -795,8 +1043,11 @@ invariants:
 
   - id: agent_flow_answer_parity
     label: "The answer envelope has one renderer; no surface flattens blocks privately"
+    # Unified AI Chat (2026-10-27): the Flow-first ConversationView.tsx was retired;
+    # the one chat renders its turns - the add-on's supporting evidence included -
+    # in ChatTurnView.tsx, so the guard follows the renderer, not the old file name.
     scope: ["frontend/src/components/agent-flows/TestChat.tsx",
-            "frontend/src/components/chat/ConversationView.tsx",
+            "frontend/src/components/chat/ChatTurnView.tsx",
             "frontend/src/components/dashboards/AnswerBlocks.tsx"]
     # SINGLE LINE, because a diff only carries the lines that CHANGED. The first
     # attempt keyed on the full idiom `=> b.markdown).filter`, which spans two
@@ -810,7 +1061,7 @@ invariants:
     added_patterns: ['\.map\(\s*\(?\s*\w+\s*\)?\s*=>\s*\w+\.markdown\s*\)']
     severity: high
     message: >
-      Studio, Direct Chat and the dashboard bot read the same blocks. A surface that
+      Studio, AI Chat and the dashboard bot read the same blocks. A surface that
       flattens them to `.markdown` shows its author a degraded copy of what the reader
       gets — measured: a valid `metric` answer rendered as an em-dash while the run
       reported `ok` and raised no notice.

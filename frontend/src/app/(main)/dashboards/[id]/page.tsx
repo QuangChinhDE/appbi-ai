@@ -1,5 +1,6 @@
 'use client';
 
+import { useMinWidth } from '@/hooks/use-media-query';
 import { sectionTitlesOf } from '@/lib/report-meta';
 import { clearReportAnchor, reportAnchor, stampReportAnchor } from '@/lib/report-anchor';
 import React, { useState, useCallback, useEffect } from 'react';
@@ -20,7 +21,7 @@ import {
   usePublishDashboard,
   useDiscardDashboardDraft,
 } from '@/hooks/use-dashboards';
-import { dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
+import { adoptSharedDraft, adoptedSharedDraftRev, dashboardApi, SHARED_DRAFT_CONFLICT_EVENT } from '@/lib/api/dashboards';
 import { DashboardGrid } from '@/components/dashboards/DashboardGrid';
 import { DashboardThemeProvider, getDashboardGridMargin } from '@/components/dashboards/DashboardThemeProvider';
 import { AiDesignPanel } from '@/components/dashboards/ai-design/AiDesignPanel';
@@ -31,7 +32,7 @@ import { buildPresentationSnapshot, tilesOnPage } from '@/lib/dashboard-presenta
 import { buildPresentationMutation, tilesWithLocalEdits, toLocalLayoutOverrides } from '@/lib/dashboard-presentation/executor';
 import { useAiDesign } from '@/components/dashboards/ai-design/useAiDesign';
 import { DashboardThemeModal } from '@/components/dashboards/DashboardThemeModal';
-import { Palette, Undo2, Redo2, ArrowUpToLine, Eye } from 'lucide-react';
+import { Palette, Undo2, Redo2, ArrowUpToLine, Eye, Save, Send, Monitor, Tablet as TabletIcon, Smartphone } from 'lucide-react';
 import { ChartTile } from '@/components/dashboards/ChartTile';
 import { WidgetEditModal } from '@/components/dashboards/WidgetEditModal';
 import { ParameterBindModal } from '@/components/dashboards/ParameterBindModal';
@@ -351,7 +352,26 @@ function DashboardDetailPageInner() {
   const [isThemeOpen, setIsThemeOpen] = useState(false);
   const [isWidgetMenuOpen, setIsWidgetMenuOpen] = useState(false);
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
+  // The Preview menu: full-report preview and the device layouts (Tablet/Phone)
+  // — opened on demand, never a permanent bar on the canvas.
+  const [isDeviceMenuOpen, setIsDeviceMenuOpen] = useState(false);
   const [isPagesMenuOpen, setIsPagesMenuOpen] = useState(false);
+  const moreTriggerRef = React.useRef<HTMLButtonElement>(null);
+  const pagesTriggerRef = React.useRef<HTMLButtonElement>(null);
+  // Header menus close on Escape and hand focus back to their trigger (the
+  // click-away backdrop alone left keyboard users with no way out).
+  useEffect(() => {
+    if (!isMoreMenuOpen && !isPagesMenuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const trigger = isMoreMenuOpen ? moreTriggerRef.current : pagesTriggerRef.current;
+      setIsMoreMenuOpen(false);
+      setIsPagesMenuOpen(false);
+      trigger?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [isMoreMenuOpen, isPagesMenuOpen]);
   // Drag-to-reorder page tabs in the Pages dropdown.
   const [draggingPageId, setDraggingPageId] = useState<string | null>(null);
   const [dragOverPageId, setDragOverPageId] = useState<string | null>(null);
@@ -1748,6 +1768,45 @@ function DashboardDetailPageInner() {
      draftSlicerClusterLayout, appliedSlicerClusterLayout],
   );
 
+  // The report-wide filter / slicer lists follow the SHARED draft. They are seeded
+  // once above; when the server's revision moves on under this editor - a Discard,
+  // a Publish, another author's write - and nothing is pending here, they are seeded
+  // again from the server (customer demo 2026-10-28: a stale list, sent after a
+  // refetch or a Discard, removed the period slicer). With edits pending, they are
+  // kept: the next write is refused as stale and the editor is asked to reload.
+  // This editor's own write moved the revision itself: nothing to re-seed.
+  const seededSharedRevRef = React.useRef<string | null>(null);
+  const reseedSharedRef = React.useRef(false);
+  React.useEffect(() => {
+    const server = serverDashboard as any;
+    const rev = server?.shared_draft?.rev;
+    if (!server || typeof rev !== 'string' || !slicersSeededRef.current) return;
+    if (seededSharedRevRef.current === null) {
+      seededSharedRevRef.current = rev;
+      adoptSharedDraft(server);
+      return;
+    }
+    if (rev === seededSharedRevRef.current || hasPendingFilterChanges) return;
+    const ownWrite = adoptedSharedDraftRev(dashboardId) === rev && !reseedSharedRef.current;
+    seededSharedRevRef.current = rev;
+    reseedSharedRef.current = false;
+    adoptSharedDraft(server);
+    if (ownWrite) return;
+    const filters: TypedFilter[] = (Array.isArray(server.filters_config) ? server.filters_config as BaseFilter[] : [])
+      .map((b) => fromBaseFilter(b))
+      .filter((f): f is TypedFilter => f !== null);
+    filtersSnapshotRef.current = JSON.stringify(filters);
+    setDraftGlobalFilters(filters);
+    setAppliedGlobalFilters(filters);
+    const slicers = Array.isArray(server.slicers_config) ? (server.slicers_config as any[]) : [];
+    setDraftGlobalSlicers(slicers);
+    setAppliedGlobalSlicers(slicers);
+    const cluster = server.slicer_cluster_layout || null;
+    setDraftSlicerClusterLayout(cluster);
+    setAppliedSlicerClusterLayout(cluster);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverDashboard, hasPendingFilterChanges, dashboardId]);
+
   // EVERY Builder-local edit that is not yet persisted and would vanish on leave:
   // unsaved layout/theme, un-applied filter/slicer edits (Apply persists them to
   // the draft), the Inspector's report name/description (behind "Save report"),
@@ -2249,6 +2308,26 @@ function DashboardDetailPageInner() {
     return out;
   };
 
+  /** Publish; when it would remove a report-wide filter that has a default value
+   *  (409 `slicer_removal_unconfirmed`), ask - naming each filter and its value - and
+   *  publish again only on an explicit yes. Then the lists are re-seeded from the server. */
+  const publishWithSlicerConfirm = async (arg: {
+    dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean;
+    sharedAckRev?: string; keepShared?: boolean;
+  }) => {
+    try {
+      await publishDashboardMutation.mutateAsync(arg);
+    } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+      if (err?.response?.status !== 409 || detail?.code !== 'slicer_removal_unconfirmed') throw err;
+      const removed: { id: string; label: string; value: unknown }[] = detail.removed ?? [];
+      const list = removed.map((s) => `• ${s.label}${s.value != null ? ` = ${Array.isArray(s.value) ? s.value.join(', ') : String(s.value)}` : ''}`).join('\n');
+      if (!window.confirm(t('dashboards.detail.slicerRemoval.confirm', { list }))) throw err;
+      await publishDashboardMutation.mutateAsync({ ...arg, confirmRemovedSlicers: removed.map((s) => s.id) });
+    }
+    reseedSharedRef.current = true;
+  };
+
   const handlePublish = async () => {
     if (committingPresentationRef.current) return;
     // The last content edit is in the draft before the snapshot is published.
@@ -2265,11 +2344,13 @@ function DashboardDetailPageInner() {
     }
     resetUndo();
     try {
-      await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV });
+      await publishWithSlicerConfirm({ dashboardId, tileBaseV });
       toast.success(t('dashboards.detail.publishedNewVersion'));
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
-      if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
+      if (err?.response?.status === 409 && detail?.code === 'slicer_removal_unconfirmed') {
+        toast.info(t('dashboards.detail.slicerRemoval.kept'));
+      } else if (err?.response?.status === 409 && detail?.code === 'shared_draft_other_authors') {
         setSharedChoice({ action: 'publish', authors: detail.authors ?? [], rev: detail.rev, tileBaseV });
       } else if (err?.response?.status === 409 && detail?.code === 'responsive_conflict') {
         setPublishConflict({ editor: null, tiles: deviceConflictLabels(detail.responsive) });
@@ -2296,10 +2377,11 @@ function DashboardDetailPageInner() {
     if (!(await settleContentEdits('flush'))) return;
     setPublishConflict(null);
     try {
-      await publishDashboardMutation.mutateAsync({ dashboardId, force: true });
+      await publishWithSlicerConfirm({ dashboardId, force: true });
       toast.success(t('dashboards.detail.publishedOverwrote'));
-    } catch {
-      toast.error(t('dashboards.detail.publishFailed'));
+    } catch (err: any) {
+      toast.error(t(err?.response?.data?.detail?.code === 'slicer_removal_unconfirmed'
+        ? 'dashboards.detail.slicerRemoval.kept' : 'dashboards.detail.publishFailed'));
     }
   };
 
@@ -2317,6 +2399,7 @@ function DashboardDetailPageInner() {
     if (serverDashboard?.has_draft) {
       try {
         await discardDraftMutation.mutateAsync(dashboardId);
+        reseedSharedRef.current = true;
         toast.success(t('dashboards.detail.revertedToPublished'));
       } catch (err: any) {
         const detail = err?.response?.data?.detail;
@@ -2338,14 +2421,17 @@ function DashboardDetailPageInner() {
     const shared = include ? { sharedAckRev: choice.rev } : { keepShared: true };
     try {
       if (choice.action === 'publish') {
-        await publishDashboardMutation.mutateAsync({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
+        await publishWithSlicerConfirm({ dashboardId, tileBaseV: choice.tileBaseV, ...shared });
         toast.success(t(include ? 'dashboards.detail.publishedNewVersion' : 'dashboards.detail.sharedChoice.publishedMine'));
       } else {
         await discardDraftMutation.mutateAsync({ dashboardId, ...shared });
+        reseedSharedRef.current = true;
         toast.success(t(include ? 'dashboards.detail.revertedToPublished' : 'dashboards.detail.sharedChoice.discardedMine'));
       }
     } catch (err: any) {
-      if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'responsive_conflict') {
+      if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'slicer_removal_unconfirmed') {
+        toast.info(t('dashboards.detail.slicerRemoval.kept'));
+      } else if (err?.response?.status === 409 && err?.response?.data?.detail?.code === 'responsive_conflict') {
         setPublishConflict({ editor: null, tiles: deviceConflictLabels(err.response.data.detail.responsive) });
       } else if (err?.response?.status === 409) {
         setPublishConflict({ editor: err?.response?.data?.detail?.last_editor ?? null, tiles: err?.response?.data?.detail?.tiles ?? [] });
@@ -2613,8 +2699,37 @@ function DashboardDetailPageInner() {
   // filter + layout to the public link together (no longer writes
   // straight to live `filters_config` / `pages_config`).
   const handleApplyFilters = async (scope: 'page' | 'all') => {
+    // In-session apply — identical for editors and viewers. This is what the
+    // canvas reads (applied slicers, cluster layout, the active page's
+    // filters/slicers via localPagesConfig) and what the staged-change count
+    // compares the drafts against, so it must run for viewers too.
+    let nextPages: any[] | null = null;
     if (scope === 'all') {
       setAppliedGlobalFilters(draftGlobalFilters);
+      setAppliedGlobalSlicers(draftGlobalSlicers);
+      if (draftSlicerClusterLayout) setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
+    }
+    if (activePageId) {
+      // Stage the new pages_config (full page array, with current
+      // page's filters set to the draft set). For scope='all' this
+      // still ships since the DA may have touched both scopes in
+      // the same session.
+      nextPages = dashboardPages.map((p) => {
+        if (p.id !== activePageId) return p;
+        const next: any = { ...p };
+        // Per-page filters
+        if (draftPageFilters.length > 0) next.filters = draftPageFilters;
+        else delete next.filters;
+        // Per-page slicers (scope='page'). Strip images defensively — they
+        // belong to the global cluster (slicers_config), never per page.
+        const pageSlicers = draftPageSlicers.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
+        if (pageSlicers.length > 0) next.slicers = pageSlicers;
+        else delete next.slicers;
+        return next;
+      });
+      // Mirror locally so the in-session state is applied (and, for an
+      // editor, stays consistent until refetch lands).
+      setLocalPagesConfig(nextPages as DashboardPageConfig[]);
     }
     if (!canEditResource) {
       // Viewers still get the in-session apply but no DB write.
@@ -2641,37 +2756,10 @@ function DashboardDetailPageInner() {
           .map((f) => toBaseFilter(f, { allowInactive: true }))
           .filter((b): b is BaseFilter => b !== null);
         body.slicers_config = draftGlobalSlicers;
-        setAppliedGlobalSlicers(draftGlobalSlicers);
         // Phase-G — ship cluster layout in the same Apply round-trip.
-        if (draftSlicerClusterLayout) {
-          body.slicer_cluster_layout = draftSlicerClusterLayout;
-          setAppliedSlicerClusterLayout(draftSlicerClusterLayout);
-        }
+        if (draftSlicerClusterLayout) body.slicer_cluster_layout = draftSlicerClusterLayout;
       }
-
-      if (activePageId) {
-        // Stage the new pages_config (full page array, with current
-        // page's filters set to the draft set). For scope='all' this
-        // still ships since the DA may have touched both scopes in
-        // the same session.
-        const nextPages = dashboardPages.map((p) => {
-          if (p.id !== activePageId) return p;
-          const next: any = { ...p };
-          // Per-page filters
-          if (draftPageFilters.length > 0) next.filters = draftPageFilters;
-          else delete next.filters;
-          // Per-page slicers (scope='page'). Strip images defensively — they
-          // belong to the global cluster (slicers_config), never per page.
-          const pageSlicers = draftPageSlicers.filter((s) => !(s && typeof s === 'object' && (s as any).type === 'image'));
-          if (pageSlicers.length > 0) next.slicers = pageSlicers;
-          else delete next.slicers;
-          return next;
-        });
-        body.pages_config = nextPages;
-        // Mirror locally so the editor state stays consistent until
-        // refetch lands.
-        setLocalPagesConfig(nextPages);
-      }
+      if (nextPages) body.pages_config = nextPages;
 
       await dashboardApi.updateDraftFilters(dashboardId, body);
       // Refresh dashboard so draft overlay surfaces from server.
@@ -4324,6 +4412,16 @@ function DashboardDetailPageInner() {
     }
   }, [dashboard, dashboardPages, activePageId, summarizeAppliedFilters, t]);
 
+  // Header priority: what sits inline at which width. Below these widths the
+  // control moves into the More menu — exactly one copy is mounted, so a
+  // data-testid stays unique. Save draft / Save & Publish / Filters / More /
+  // Add never collapse.
+  const headerSm = useMinWidth('sm');
+  const headerMd = useMinWidth('md');
+  const headerLg = useMinWidth('lg');
+  const headerXl = useMinWidth('xl');
+  const header2xl = useMinWidth('2xl');
+
   if (isLoadingDashboard) {
     return (
       <div className="min-h-full bg-surface-2">
@@ -4385,30 +4483,68 @@ function DashboardDetailPageInner() {
     : [];
   const lockedTileCount = visibleDashboardCharts.filter((dc) => (dc.layout as any)?.locked === true).length;
 
+  // While a draft is pending the row also carries Save draft / Save & Publish /
+  // Discard, so every secondary moves inline one breakpoint later.
+  const pendingRow = canEditResource && hasAnyPendingChanges;
+  const inline = {
+    rename: pendingRow ? headerLg : headerMd,
+    undo: pendingRow ? headerXl : headerLg,
+    discard: headerXl,
+    design: pendingRow ? headerXl : headerLg,
+    inspector: pendingRow ? headerXl : headerLg,
+    slicer: false,
+    asOf: pendingRow ? header2xl : headerXl,
+    saveDraft: headerSm,
+    add: headerSm,
+  };
+  // Leaving AI mode drops a preview rather than keeping it invisibly pending —
+  // an unapplied design that survives a mode switch is a change nobody can see.
+  const toggleAiDesign = () => {
+    if (designMode === 'ai') {
+      if (aiDesign.pending) aiDesign.discard();
+      setDesignMode('manual');
+    } else {
+      setDesignMode('ai');
+    }
+  };
+  const anyCollapsed =
+    (canEditResource && !inline.rename)
+    || (canEditResource && (canUndo || canRedo) && !inline.undo)
+    || (pendingRow && (!inline.discard || !inline.saveDraft))
+    || (canEditThisPage && (!inline.design || !inline.slicer || (designMode === 'manual' && !inline.inspector)))
+    || (Boolean(snapshotAsOf) && !inline.asOf)
+    || !headerSm;
+
   return (
     <DashboardThemeProvider theme={previewTheme} className="min-h-full bg-surface-2">
-      {/* ── Sticky compact header (single row) ── */}
+      {/* ── Sticky compact header (single row) ──
+          z-50 only while one of its own menus is open: below lg the Inspector is
+          a fixed z-40 dock, and a z-20 header kept its More menu UNDER it. */}
       {!studioPreview && (
-      <div ref={builderHeaderRef} className="sticky top-0 z-20 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8">
-        <div className="rounded-xl border border-[rgba(255,255,255,0.08)] bg-surface-1 shadow-linear-sm overflow-visible">
+      <div
+        ref={builderHeaderRef}
+        className={`app-chrome sticky top-0 bg-surface-2 px-4 pt-3 pb-2 sm:px-6 lg:px-8 ${isMoreMenuOpen || isPagesMenuOpen || isAddElementOpen || isDeviceMenuOpen ? 'z-50' : 'z-20'}`}
+      >
+        <div className="rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm overflow-visible">
 
-          {/* One row when it fits; when the draft actions and the tools do not
-              fit beside the name, the tools wrap to a second row instead of
-              drawing over each other. */}
-          <div className="flex min-h-11 flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-1.5">
+          {/* One row at every width. It used to wrap to 2-3 rows (74px at
+              768-1024, 108px at 390 with six tools off-screen); now the tools
+              that do not fit move into More instead. */}
+          <div data-testid="dashboard-header-row" className="flex h-12 flex-nowrap items-center gap-x-1.5 px-3 sm:gap-x-2">
             {/* Back */}
             <Link
               href="/dashboards"
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-secondary"
               title={t('dashboards.detail.backToDashboards')}
+              aria-label={t('dashboards.detail.backToDashboards')}
             >
               <ArrowLeft className="h-4 w-4" />
             </Link>
 
-            <div className="h-4 w-px bg-[rgba(255,255,255,0.08)]" />
+            <div className="hidden h-4 w-px bg-surface-3 sm:block" />
 
             {/* Title (inline edit) */}
-            <div className="flex min-w-fit flex-1 items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {isEditingName ? (
                 <div className="flex min-w-0 flex-1 items-center gap-1">
                   <input
@@ -4419,7 +4555,7 @@ function DashboardDetailPageInner() {
                       if (e.key === 'Enter') handleSaveName();
                       if (e.key === 'Escape') handleCancelEditName();
                     }}
-                    className="min-w-0 flex-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 py-1 text-[14px] font-[590] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                    className="min-w-0 flex-1 rounded-md border border-stroke-strong bg-surface-1 px-2 py-1 text-[14px] font-[590] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                     autoFocus
                   />
                   <button
@@ -4432,7 +4568,7 @@ function DashboardDetailPageInner() {
                   </button>
                   <button
                     onClick={handleCancelEditName}
-                    className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
+                    className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
                     title={t('common.cancel')}
                   >
                     <X className="h-3.5 w-3.5" />
@@ -4442,16 +4578,19 @@ function DashboardDetailPageInner() {
                 <>
                   {/* The report's name keeps its room: the toolbar's status and
                       actions used to squeeze it to "I…" while a draft was open. */}
-                  <h1 className="min-w-[5rem] max-w-[18rem] shrink-0 truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
+                  <h1 className="min-w-[4rem] max-w-[18rem] shrink truncate text-[14px] font-[590] tracking-[-0.182px] text-text-primary" title={dashboard.name}>
                     {dashboard.name}
                   </h1>
-                  {canEditResource && (
+                  {canEditResource && inline.rename && (
                     <button
+                      type="button"
+                      data-testid="dashboard-rename"
                       onClick={handleStartEditName}
-                      className="rounded-md p-1 text-text-quaternary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-secondary"
+                      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
                       title={t('dashboards.detail.renameDashboard')}
+                      aria-label={t('dashboards.detail.renameDashboard')}
                     >
-                      <Edit2 className="h-3 w-3" />
+                      <Edit2 className="h-3.5 w-3.5" />
                     </button>
                   )}
 
@@ -4466,7 +4605,7 @@ function DashboardDetailPageInner() {
                           if (e.key === 'Enter') handleSavePageName();
                           if (e.key === 'Escape') handleCancelRenamePage();
                         }}
-                        className="min-w-[140px] rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 py-0.5 text-[12px] font-[510] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
+                        className="min-w-[140px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-0.5 text-[12px] font-[510] text-text-primary focus:outline-none focus:ring-1 focus:ring-brand"
                         autoFocus
                       />
                       <button
@@ -4480,7 +4619,7 @@ function DashboardDetailPageInner() {
                       <button
                         type="button"
                         onClick={handleCancelRenamePage}
-                        className="rounded-md p-1 text-text-tertiary hover:bg-[rgba(255,255,255,0.04)]"
+                        className="rounded-md p-1 text-text-tertiary hover:bg-surface-2"
                         title={t('common.cancel')}
                       >
                         <X className="h-3 w-3" />
@@ -4493,19 +4632,23 @@ function DashboardDetailPageInner() {
                     <div className="relative shrink-0">
                       <button
                         type="button"
+                        ref={pagesTriggerRef}
                         data-testid="builder-pages-menu"
+                        aria-haspopup="menu"
+                        aria-expanded={isPagesMenuOpen}
+                        aria-label={`${t('dashboards.detail.switchPage')}: ${currentPage?.name ?? t('dashboards.detail.pageFallback')}`}
                         onClick={() => { setIsPagesMenuOpen((v) => !v); setIsMoreMenuOpen(false); }}
-                        className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                        className="relative z-50 inline-flex h-7 items-center gap-1 rounded-md border border-stroke-strong bg-surface-1 px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                         title={t('dashboards.detail.switchPage')}
                       >
-                        <span className="max-w-[10rem] truncate">{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
-                        <span className="text-text-quaternary">· {dashboardPages.length}</span>
+                        <span className={`hidden max-w-[10rem] truncate ${pendingRow ? 'lg:inline' : 'sm:inline'}`}>{currentPage?.name ?? t('dashboards.detail.pageFallback')}</span>
+                        <span className="text-text-quaternary"><span className="hidden sm:inline">· </span>{dashboardPages.length}</span>
                         <ChevronDown className="h-3 w-3" />
                       </button>
                       {isPagesMenuOpen && (
                         <>
                           <div className="fixed inset-0 z-40" onClick={() => setIsPagesMenuOpen(false)} />
-                          <div className="absolute left-0 z-50 mt-1.5 w-64 overflow-hidden rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                          <div className="absolute left-0 z-50 mt-1.5 w-64 overflow-hidden rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover">
                             <div className="max-h-[60vh] overflow-y-auto">
                               {dashboardPages.map((page) => {
                                 const isActive = page.id === activePageId;
@@ -4538,8 +4681,8 @@ function DashboardDetailPageInner() {
                                     onDragEnd={() => { setDraggingPageId(null); setDragOverPageId(null); }}
                                     className={`group/pagerow flex w-full items-center gap-1.5 border-t-2 px-2 py-2 text-[13px] font-[510] transition-colors ${
                                       isActive
-                                        ? 'bg-[rgba(94,106,210,0.15)] text-brand'
-                                        : 'text-text-secondary hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary'
+                                        ? 'bg-brand-container text-brand-on-container'
+                                        : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
                                     } ${isDragging ? 'opacity-40' : ''} ${isDragOver ? 'border-brand' : 'border-transparent'}`}
                                     title={canEditResource ? t('dashboards.detail.dragToReorderPage') : undefined}
                                   >
@@ -4564,10 +4707,10 @@ function DashboardDetailPageInner() {
                             </div>
                             {canEditResource && (
                               <>
-                                <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                                <div className="mx-3 my-1 border-t border-stroke-line" />
                                 <button
                                   onClick={() => { handleStartRenamePage(); setIsPagesMenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                                 >
                                   <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                   {t('dashboards.detail.renameCurrentPage')}
@@ -4582,7 +4725,7 @@ function DashboardDetailPageInner() {
                                 </button>
                                 <button
                                   onClick={() => { handleAddPage(); setIsPagesMenuOpen(false); }}
-                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                                  className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                                 >
                                   <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                                   {t('dashboards.detail.addPage')}
@@ -4615,7 +4758,7 @@ function DashboardDetailPageInner() {
                   {/* Phase-B17 — compact presence: small avatars of others editing
                       now (name on hover). Replaces the bulky banner. */}
                   {canEditResource && editorChips.length > 0 && (
-                    <div className="ml-2 flex shrink-0 items-center" title={t('dashboards.detail.coEditing')}>
+                    <div className="ml-2 hidden shrink-0 items-center lg:flex" title={t('dashboards.detail.coEditing')}>
                       {editorChips.slice(0, 3).map((c, i) => (
                         <span
                           key={i}
@@ -4634,13 +4777,13 @@ function DashboardDetailPageInner() {
                   {/* Undo / Redo (Ctrl+Z / Ctrl+Shift+Z) — layout + theme only.
                       Shown whenever there's history (a theme change is a live
                       write with no "pending" badge, so gate on the stacks). */}
-                  {canEditResource && (canUndo || canRedo) && (
+                  {canEditResource && (canUndo || canRedo) && inline.undo && (
                     <div className="ml-2 flex shrink-0 items-center gap-1">
                       <button
                         type="button"
                         onClick={doUndo}
                         disabled={!canUndo || isCommittingPresentation}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-40"
                         title={t('dashboards.detail.undo')}
                       >
                         <Undo2 className="h-3.5 w-3.5" />
@@ -4649,7 +4792,7 @@ function DashboardDetailPageInner() {
                         type="button"
                         onClick={doRedo}
                         disabled={!canRedo || isCommittingPresentation}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-40"
+                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-40"
                         title={t('dashboards.detail.redo')}
                       >
                         <Redo2 className="h-3.5 w-3.5" />
@@ -4659,7 +4802,8 @@ function DashboardDetailPageInner() {
                   {canEditResource && hasAnyPendingChanges && (
                     <div className="ml-2 flex shrink-0 items-center gap-1.5">
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide ${
+                        data-testid="dashboard-pending-badge"
+                        className={`hidden items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-[600] uppercase tracking-wide xl:inline-flex ${
                           hasUnsavedPresentation
                             ? 'bg-warning/20 text-warning'
                             : 'bg-warning/10 text-warning'
@@ -4672,6 +4816,7 @@ function DashboardDetailPageInner() {
                       >
                         {hasUnsavedPresentation ? t('dashboards.detail.badgeUnsaved') : t('dashboards.detail.badgeDraft')}
                       </span>
+                      {inline.saveDraft && (
                       <button
                         type="button"
                         onClick={handleSaveDraft}
@@ -4683,13 +4828,15 @@ function DashboardDetailPageInner() {
                           || isCommittingPresentation
                           || updateDraftLayoutMutation.isPending
                         }
-                        className="inline-flex h-7 items-center gap-1 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        className="inline-flex h-7 items-center gap-1 rounded-md border border-stroke-strong bg-surface-1 px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
                         title={t('dashboards.detail.saveDraftTooltip')}
+                        aria-label={t('dashboards.detail.saveDraft')}
                       >
-                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        {t('dashboards.detail.saveDraft')}
-                        <kbd className="ml-1 hidden rounded bg-[rgba(255,255,255,0.08)] px-1 text-[9px] text-text-tertiary sm:inline">⌘S</kbd>
+                        {isStagingDraft || updateDraftLayoutMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3 sm:hidden" />}
+                        <span className="hidden sm:inline">{t('dashboards.detail.saveDraft')}</span>
+                        <kbd className="ml-1 hidden rounded bg-surface-3 px-1 text-[9px] text-text-tertiary xl:inline">⌘S</kbd>
                       </button>
+                      )}
                       <button
                         type="button"
                         onClick={handlePublish}
@@ -4702,20 +4849,23 @@ function DashboardDetailPageInner() {
                         }
                         className="inline-flex h-7 items-center gap-1 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white transition-colors hover:bg-brand-hover disabled:opacity-50"
                         title={t('dashboards.detail.publishTooltip')}
+                        aria-label={t('dashboards.detail.saveAndPublish')}
                       >
-                        {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : null}
-                        {t('dashboards.detail.saveAndPublish')}
+                        {publishDashboardMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Send className="h-3 w-3 sm:hidden" />}
+                        <span className="hidden sm:inline">{t('dashboards.detail.saveAndPublish')}</span>
                       </button>
+                      {inline.discard && (
                       <button
                         type="button"
                         onClick={() => setIsDiscardConfirmOpen(true)}
                         data-testid="dashboard-discard"
                         disabled={discardDraftMutation.isPending}
-                        className="inline-flex h-7 items-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] disabled:opacity-50"
+                        className="inline-flex h-7 items-center rounded-md border border-stroke-strong bg-surface-1 px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 disabled:opacity-50"
                         title={t('dashboards.detail.discardTooltip')}
                       >
                         {t('dashboards.detail.discard')}
                       </button>
+                      )}
                     </div>
                   )}
                 </>
@@ -4730,9 +4880,10 @@ function DashboardDetailPageInner() {
                   per-dashboard "Refresh data" action was removed — a dashboard
                   rebuild never advanced a PUBLISHED dataset's pinned generation
                   anyway (misleading no-op). This just surfaces "data as of". */}
-              {snapshotAsOf && (
+              {snapshotAsOf && inline.asOf && (
                 <span
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2 text-[11px] font-[510] text-text-tertiary"
+                  data-testid="dashboard-data-as-of"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-stroke-strong bg-surface-1 px-2 text-[11px] font-[510] text-text-tertiary"
                   title={t('dashboards.detail.dataAsOfHint')}
                 >
                   <Clock className="h-3 w-3 text-text-quaternary" />
@@ -4756,13 +4907,13 @@ function DashboardDetailPageInner() {
                     isFilterPaneOpen
                       ? 'border-brand/40 bg-brand/15 text-brand'
                       : appliedGlobalFilters.length > 0
-                        ? 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-brand hover:bg-[rgba(255,255,255,0.04)]'
-                        : 'border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary hover:bg-[rgba(255,255,255,0.04)]'
+                        ? 'border-stroke-strong bg-surface-1 text-brand hover:bg-surface-2'
+                        : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2'
                   }`}
                   title={isFilterPaneOpen ? t('dashboards.detail.hideFilterPane') : t('dashboards.detail.showFilterPane')}
                 >
                   <Filter className="h-3 w-3" />
-                  <span>{t('dashboards.detail.filters')}</span>
+                  <span className={`hidden ${pendingRow ? 'lg:inline' : 'md:inline'}`}>{t('dashboards.detail.filters')}</span>
                   {appliedGlobalFilters.length > 0 && (
                     <span className="rounded-full bg-brand/20 px-1.5 text-[10px] font-[600] leading-[1.4] text-brand">
                       {appliedGlobalFilters.length}
@@ -4780,9 +4931,13 @@ function DashboardDetailPageInner() {
               {/* More menu — gathers Export, Share, Public links, Theme, Switch layout, Manage, Import, Widgets */}
               <div className="relative">
                 <button
+                  ref={moreTriggerRef}
                   data-testid="dashboard-more"
+                  aria-haspopup="menu"
+                  aria-expanded={isMoreMenuOpen}
+                  aria-label={t('dashboards.detail.moreOptions')}
                   onClick={() => { setIsMoreMenuOpen((v) => !v); setIsFilterPopoverOpen(false); setIsPagesMenuOpen(false); }}
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)]"
+                  className="relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md border border-stroke-strong bg-surface-1 text-text-secondary transition-colors hover:bg-surface-2"
                   title={t('dashboards.detail.moreOptions')}
                 >
                   <MoreHorizontal className="h-3.5 w-3.5" />
@@ -4791,12 +4946,157 @@ function DashboardDetailPageInner() {
                 {isMoreMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => { setIsMoreMenuOpen(false); }} />
-                    <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-[rgba(255,255,255,0.12)] bg-surface-1 py-1 shadow-[0_4px_24px_rgba(0,0,0,0.5),0_0_0_1px_rgba(255,255,255,0.06)]">
+                    <div className="absolute right-0 z-50 mt-1.5 w-56 overflow-y-auto max-h-[80vh] rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover">
+                      {/* Collapsed header tools (narrow screens): the same actions,
+                          one copy — they are inline from their breakpoint up. */}
+                      {anyCollapsed && (
+                        <>
+                          {!headerSm && (
+                            <>
+                              <button
+                                data-testid="studio-preview-open"
+                                onClick={() => { setIsMoreMenuOpen(false); setStudioOpen(true); }}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                              >
+                                <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.studio.openFull')}
+                              </button>
+                              {(['desktop', 'tablet', 'phone'] as const).map((m) => {
+                                const Icon = m === 'tablet' ? TabletIcon : m === 'phone' ? Smartphone : Monitor;
+                                return (
+                                  <button
+                                    key={m}
+                                    role="menuitemradio"
+                                    aria-checked={deviceMode === m}
+                                    data-testid={`device-menu-${m}`}
+                                    onClick={() => { setIsMoreMenuOpen(false); setDeviceMode(m); }}
+                                    className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                                  >
+                                    <Icon className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                    <span className="flex-1 text-left">{t(`dashboards.device.${m}`)}</span>
+                                    {deviceMode === m && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                                  </button>
+                                );
+                              })}
+                              <div className="mx-3 my-1 border-t border-stroke-line" />
+                            </>
+                          )}
+                          {pendingRow && !inline.saveDraft && (
+                            <button
+                              onClick={() => { setIsMoreMenuOpen(false); void handleSaveDraft(); }}
+                              data-testid="dashboard-save-draft"
+                              data-state={isStagingDraft ? 'saving' : hasUnsavedPresentation ? 'unsaved' : 'saved'}
+                              disabled={
+                                !hasUnsavedPresentation
+                                || isStagingDraft
+                                || isCommittingPresentation
+                                || updateDraftLayoutMutation.isPending
+                              }
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-50"
+                              title={t('dashboards.detail.saveDraftTooltip')}
+                            >
+                              <Save className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.saveDraft')}
+                            </button>
+                          )}
+                          {canEditResource && !inline.rename && (
+                            <button
+                              onClick={() => { setIsMoreMenuOpen(false); handleStartEditName(); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                            >
+                              <Edit2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.renameDashboard')}
+                            </button>
+                          )}
+                          {snapshotAsOf && !inline.asOf && (
+                            <div className="flex items-center gap-2.5 px-3 py-2 text-[12px] text-text-tertiary" title={t('dashboards.detail.dataAsOfHint')}>
+                              <Clock className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.snapshotAsOf', {
+                                time: new Date(snapshotAsOf).toLocaleString([], { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+                              })}
+                            </div>
+                          )}
+                          {pendingRow && !inline.discard && (
+                            <button
+                              data-testid="dashboard-discard"
+                              onClick={() => { setIsMoreMenuOpen(false); setIsDiscardConfirmOpen(true); }}
+                              disabled={discardDraftMutation.isPending}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+                              title={t('dashboards.detail.discardTooltip')}
+                            >
+                              <X className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.detail.discard')}
+                            </button>
+                          )}
+                          {canEditResource && (canUndo || canRedo) && !inline.undo && (
+                            <>
+                              <button
+                                onClick={() => { setIsMoreMenuOpen(false); doUndo(); }}
+                                disabled={!canUndo || isCommittingPresentation}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
+                              >
+                                <Undo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.detail.undo')}
+                              </button>
+                              <button
+                                onClick={() => { setIsMoreMenuOpen(false); doRedo(); }}
+                                disabled={!canRedo || isCommittingPresentation}
+                                className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-40"
+                              >
+                                <Redo2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                                {t('dashboards.detail.redo')}
+                              </button>
+                            </>
+                          )}
+                          {canEditThisPage && !inline.design && (
+                            <button
+                              role="menuitemcheckbox"
+                              aria-checked={designMode === 'ai'}
+                              data-testid="design-mode-ai"
+                              onClick={() => { setIsMoreMenuOpen(false); toggleAiDesign(); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                            >
+                              <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              <span className="flex-1 text-left">{t('dashboards.aiDesign.modeAi')}</span>
+                              {designMode === 'ai' && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                            </button>
+                          )}
+                          {canEditThisPage && !inline.slicer && (
+                            <button
+                              data-testid="add-slicer-open"
+                              onClick={() => { setIsMoreMenuOpen(false); setIsAddSlicerOpen(true); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                              title={t('dashboards.addSlicer.title')}
+                            >
+                              <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              <span className="flex-1 text-left">{t('dashboards.addSlicer.menu')}</span>
+                              {unplacedControlFilters.length > 0 && (
+                                <span data-testid="add-slicer-unplaced-count" className="rounded-full bg-brand/15 px-1.5 text-[10px] font-semibold text-brand">
+                                  {unplacedControlFilters.length}
+                                </span>
+                              )}
+                            </button>
+                          )}
+                          {canEditThisPage && designMode === 'manual' && !inline.inspector && (
+                            <button
+                              data-testid="inspector-toggle"
+                              aria-pressed={inspectorOpen}
+                              onClick={() => { setIsMoreMenuOpen(false); setInspectorOpen((v) => !v); }}
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
+                              title={t('dashboards.inspector.openHint')}
+                            >
+                              <PanelRight className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                              {t('dashboards.inspector.title')}
+                            </button>
+                          )}
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
+                        </>
+                      )}
                       {/* Export */}
                       <button
                         onClick={() => { setIsExportDialogOpen(true); setIsMoreMenuOpen(false); }}
                         disabled={isExportingPdf || !allChartsReady}
-                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
                         title={!allChartsReady ? t('dashboards.detail.loadingChartData') : t('dashboards.detail.exportAsPdf')}
                       >
                         {isExportingPdf || !allChartsReady ? (
@@ -4811,7 +5111,7 @@ function DashboardDetailPageInner() {
                       {canShare && (
                         <button
                           onClick={() => { setIsShareDialogOpen(true); setIsMoreMenuOpen(false); }}
-                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                          className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                         >
                           <Share2 className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                           {t('dashboards.detail.shareWithTeam')}
@@ -4827,7 +5127,7 @@ function DashboardDetailPageInner() {
                           <button
                             onClick={() => { setIsPublicShareOpen(true); setIsMoreMenuOpen(false); }}
                             data-testid="dashboard-open-public-links"
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Globe className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.publicLinks')}
@@ -4835,19 +5135,19 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsFilterMapOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                             title={t('dashboards.detail.filterMapTooltip')}
                           >
                             <Filter className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.filterMap')}
                           </button>
 
-                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
 
                           {(
                             <button
                               onClick={() => { handleTidyLayout(); setIsMoreMenuOpen(false); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.detail.tidyTooltip')}
                             >
                               <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -4858,7 +5158,7 @@ function DashboardDetailPageInner() {
                           {(
                             <button
                               onClick={() => { handleCompactUp(); setIsMoreMenuOpen(false); }}
-                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                              className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                               title={t('dashboards.detail.compactUpTooltip')}
                             >
                               <ArrowUpToLine className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
@@ -4868,7 +5168,7 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsThemeOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Palette className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.theme')}
@@ -4879,7 +5179,7 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsChartManagerOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <LayoutGrid className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.manageCharts')}
@@ -4887,17 +5187,17 @@ function DashboardDetailPageInner() {
 
                           <button
                             onClick={() => { setIsHtmlImportOpen(true); setIsMoreMenuOpen(false); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Sparkles className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             {t('dashboards.detail.importHtml')}
                           </button>
 
                           {/* Adding content: the same palette as the toolbar's Add. */}
-                          <div className="mx-3 my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                          <div className="mx-3 my-1 border-t border-stroke-line" />
                           <button
                             onClick={() => { setIsMoreMenuOpen(false); setIsAddElementOpen(true); }}
-                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.04)] hover:text-text-primary"
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                           >
                             <Plus className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
                             <span className="flex-1 text-left">{t('dashboards.detail.addWidget')}</span>
@@ -4914,60 +5214,112 @@ function DashboardDetailPageInner() {
                   and a person needs to see which mode they are in without
                   opening anything. Grid only — a canvas dashboard has no grid
                   for a composition to compile onto. */}
-              {(
+              {/* Preview: the full-report preview and the device layouts behind one
+                  trigger. Tablet/Phone are a deliberate step — the canvas is the
+                  Desktop report unless the author asks for another device. The
+                  trigger shows the device being viewed, so the mode is never hidden. */}
+              {headerSm && (
+              <div className="relative">
                 <button
                   type="button"
-                  data-testid="studio-preview-open"
-                  onClick={() => setStudioOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
-                  title={t('dashboards.studio.openFull')}
+                  data-testid="device-menu-open"
+                  data-device={deviceMode}
+                  aria-haspopup="menu"
+                  aria-expanded={isDeviceMenuOpen}
+                  aria-label={deviceMode === 'desktop' ? t('dashboards.studio.open') : `${t('dashboards.studio.open')}: ${t(`dashboards.device.${deviceMode}`)}`}
+                  title={t('dashboards.device.menuHint')}
+                  onClick={() => { setIsDeviceMenuOpen((v) => !v); setIsMoreMenuOpen(false); setIsPagesMenuOpen(false); }}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[12px] font-[510] transition-colors ${
+                    deviceMode !== 'desktop' || isDeviceMenuOpen
+                      ? 'border-brand/40 bg-brand-container text-brand-on-container'
+                      : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                  }`}
                 >
-                  <Eye className="h-3 w-3" />
-                  {t('dashboards.studio.open')}
+                  {deviceMode === 'tablet' ? <TabletIcon className="h-3.5 w-3.5" /> : deviceMode === 'phone' ? <Smartphone className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                  {/* Labelled where the old Preview button was inline; an icon
+                      (named, with a tooltip) where the row is full. */}
+                  <span className={pendingRow ? 'hidden 2xl:inline' : 'hidden xl:inline'}>{deviceMode === 'desktop' ? t('dashboards.studio.open') : t(`dashboards.device.${deviceMode}`)}</span>
+                  <ChevronDown className={`h-3 w-3 opacity-70 ${pendingRow ? 'hidden 2xl:inline' : 'hidden xl:inline'}`} />
+                </button>
+                {isDeviceMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsDeviceMenuOpen(false)} />
+                    <div
+                      role="menu"
+                      aria-label={t('dashboards.studio.open')}
+                      className="absolute right-0 z-50 mt-1.5 w-60 rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') { e.stopPropagation(); setIsDeviceMenuOpen(false); return; }
+                        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+                        e.preventDefault();
+                        const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled)'));
+                        const i = items.indexOf(document.activeElement as HTMLElement);
+                        items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+                      }}
+                    >
+                      <button
+                        type="button"
+                        role="menuitem"
+                        autoFocus
+                        data-testid="studio-preview-open"
+                        onClick={() => { setIsDeviceMenuOpen(false); setStudioOpen(true); }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:bg-surface-2 focus-visible:outline-none"
+                      >
+                        <Eye className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                        {t('dashboards.studio.openFull')}
+                      </button>
+                      <div className="mx-3 my-1 border-t border-stroke-line" />
+                      <div className="px-3 pb-1 pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">{t('dashboards.device.label')}</div>
+                      {(['desktop', 'tablet', 'phone'] as const).map((m) => {
+                        const Icon = m === 'tablet' ? TabletIcon : m === 'phone' ? Smartphone : Monitor;
+                        return (
+                          <button
+                            key={m}
+                            type="button"
+                            role="menuitemradio"
+                            aria-checked={deviceMode === m}
+                            data-testid={`device-menu-${m}`}
+                            onClick={() => { setIsDeviceMenuOpen(false); setDeviceMode(m); }}
+                            className="flex w-full items-center gap-2.5 px-3 py-2 text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:bg-surface-2 focus-visible:outline-none"
+                          >
+                            <Icon className="h-3.5 w-3.5 shrink-0 text-text-quaternary" />
+                            <span className="flex-1 text-left">{t(`dashboards.device.${m}`)}</span>
+                            {deviceMode === m && <Check className="h-3 w-3 shrink-0 text-brand" />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </div>
+              )}
+              {/* AI Design is a mode the author turns on and off: one toggle whose
+                  pressed state says which mode the screen is in (tonal while on;
+                  solid brand stays reserved for the primary action). */}
+              {canEditThisPage && inline.design && (
+                <button
+                  type="button"
+                  data-testid="design-mode-ai"
+                  aria-pressed={designMode === 'ai'}
+                  onClick={toggleAiDesign}
+                  title={t('dashboards.aiDesign.modeLabel')}
+                  className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-[12px] font-[510] transition-colors ${
+                    designMode === 'ai'
+                      ? 'border-brand/40 bg-brand-container text-brand-on-container'
+                      : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+                  }`}
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {t('dashboards.aiDesign.modeAi')}
                 </button>
               )}
-              {canEditThisPage && (
-                <div
-                  className="inline-flex h-7 items-center rounded-md border border-[rgb(var(--border-line))] p-0.5"
-                  role="radiogroup"
-                  aria-label={t('dashboards.aiDesign.modeLabel')}
-                >
-                  {(['manual', 'ai'] as const).map((mode) => {
-                    const active = designMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        data-testid={`design-mode-${mode}`}
-                        onClick={() => {
-                          // Leaving AI mode drops a preview rather than keeping
-                          // it invisibly pending — an unapplied design that
-                          // survives a mode switch is a change nobody can see.
-                          if (mode === 'manual' && aiDesign.pending) aiDesign.discard();
-                          setDesignMode(mode);
-                        }}
-                        className={`inline-flex h-6 items-center gap-1 rounded px-2 text-[12px] font-[510] transition-colors ${
-                          active
-                            ? 'bg-brand text-white'
-                            : 'text-text-secondary hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary'
-                        }`}
-                      >
-                        {mode === 'ai' && <Sparkles className="h-3 w-3" />}
-                        {t(mode === 'manual' ? 'dashboards.aiDesign.modeManual' : 'dashboards.aiDesign.modeAi')}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
 
-              {canEditThisPage && (
+              {canEditThisPage && inline.slicer && (
                 <button
                   type="button"
                   data-testid="add-slicer-open"
                   onClick={() => setIsAddSlicerOpen(true)}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.06)] hover:text-text-primary"
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[rgb(var(--border-line))] px-2.5 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary"
                   title={t('dashboards.addSlicer.title')}
                 >
                   <Filter className="h-3 w-3" />
@@ -4985,17 +5337,25 @@ function DashboardDetailPageInner() {
               )}
               {canEditThisPage && (
                 <div className="relative">
+                  {inline.add && (
                   <button
                     type="button"
                     data-testid="add-element-open"
                     aria-haspopup="dialog"
                     aria-expanded={isAddElementOpen}
                     onClick={() => setIsAddElementOpen((v) => !v)}
-                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-brand px-2.5 text-[12px] font-[510] text-white shadow-sm transition-colors hover:bg-brand-hover"
+                    aria-label={t('dashboards.addElement.open')}
+                    data-emphasis={pendingRow ? 'secondary' : 'primary'}
+                    className={`inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[12px] font-[510] transition-colors ${
+                      pendingRow
+                        ? 'border border-stroke-strong bg-surface-1 text-text-primary hover:border-stroke-control hover:bg-surface-2'
+                        : 'bg-brand text-text-inverse shadow-sm hover:bg-brand-hover active:bg-brand-active'
+                    }`}
                   >
                     <Plus className="h-3 w-3" />
-                    <span>{t('dashboards.addElement.open')}</span>
+                    <span className="hidden sm:inline">{t('dashboards.addElement.open')}</span>
                   </button>
+                  )}
                   <AddElementMenu
                     open={isAddElementOpen}
                     onClose={() => setIsAddElementOpen(false)}
@@ -5010,7 +5370,7 @@ function DashboardDetailPageInner() {
                   />
                 </div>
               )}
-              {canEditThisPage && designMode === 'manual' && (
+              {canEditThisPage && designMode === 'manual' && inline.inspector && (
                 <button
                   type="button"
                   data-testid="inspector-toggle"
@@ -5063,7 +5423,7 @@ function DashboardDetailPageInner() {
             <button
               type="button"
               onClick={() => setCrossFilterState(null)}
-              className="ml-auto inline-flex items-center rounded border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.02)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:text-text-primary"
+              className="ml-auto inline-flex items-center rounded border border-stroke-strong bg-surface-1 px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:text-text-primary"
             >
               {t('dashboards.detail.clear')}
             </button>
@@ -5178,7 +5538,7 @@ function DashboardDetailPageInner() {
                   <button
                     type="button"
                     onClick={() => respondEditRequest(activePageId, r.requester_key, false)}
-                    className="rounded-md bg-[rgba(255,255,255,0.08)] px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-[rgba(255,255,255,0.12)]"
+                    className="rounded-md bg-surface-3 px-2.5 py-1 text-[12px] font-[510] text-text-secondary transition-colors hover:bg-surface-3"
                   >
                     {t('dashboards.detail.deny')}
                   </button>
@@ -5191,8 +5551,9 @@ function DashboardDetailPageInner() {
         {/* Device layouts: Desktop is the authored layout; Tablet and Phone are
             AUTO (derived from desktop) until customised. The canvas renders at
             the device's representative width; the resolver decides the layout. */}
-        {!studioPreview && !isExportingPdf && (
-          <div data-testid="device-bar" className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px]">
+        {!studioPreview && !isExportingPdf && deviceMode !== 'desktop' && (
+          <div data-testid="device-bar" className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-brand/25 bg-brand-container/40 px-2 py-1.5 text-[12.5px]">
+            <span className="px-1 text-[12px] font-medium text-text-secondary">{t('dashboards.device.label')}</span>
             <div className="inline-flex rounded-md border border-[rgb(var(--border-line))] bg-surface-1 p-0.5" role="group" aria-label={t('dashboards.device.label')}>
               {(['desktop', 'tablet', 'phone'] as const).map((m) => (
                 <button

@@ -188,7 +188,10 @@ export const usePublishDashboard = () => {
     // Phase-B17 — accept an optimistic-concurrency guard. Callers pass the
     // dashboard.updated_at they loaded; force=true overwrites after a conflict.
     mutationFn: (
-      arg: number | { dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
+      arg: number | {
+        dashboardId: number; tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string;
+        keepShared?: boolean; confirmRemovedSlicers?: string[];
+      },
     ) => {
       if (typeof arg === 'number') return dashboardApi.publishDraft(arg);
       return dashboardApi.publishDraft(arg.dashboardId, {
@@ -196,6 +199,7 @@ export const usePublishDashboard = () => {
         force: arg.force,
         sharedAckRev: arg.sharedAckRev,
         keepShared: arg.keepShared,
+        confirmRemovedSlicers: arg.confirmRemovedSlicers,
       });
     },
     onSuccess: (_, arg) => {

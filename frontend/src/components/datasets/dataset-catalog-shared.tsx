@@ -668,7 +668,7 @@ export function TableNotesBar({
         )}
         {tableNote.freshness_expectation && (
           <span className="inline-flex items-center gap-1.5 rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs text-sky-700">
-            <span className="font-medium text-sky-400">Freshness</span>
+            <span className="font-semibold text-sky-800">Freshness</span>
             {tableNote.freshness_expectation}
           </span>
         )}

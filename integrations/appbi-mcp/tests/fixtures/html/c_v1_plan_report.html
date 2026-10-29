@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Olist Sales Overview (AppBI import plan)</title>
+<!--
+  Case A fixture: the HTML already declares an appbi-import/v1 plan.
+  The source_key / column names follow the Olist BigQuery tables (dw_buoi_8).
+  Before a real import, replace "source_contract" with the block printed by
+  get_import_skill(<Sales Reporting (Olist) dataset id>) and align source_key
+  and column names with it; a mismatch is refused by AppBI with 409.
+-->
+<script type="application/appbi-dashboard">
+{
+  "version": "appbi-import/v1",
+  "dashboard": {
+    "title": "Olist Sales Overview",
+    "template_family": "console",
+    "colorway": "indigo",
+    "slicers": ["order_status"]
+  },
+  "source_contract": {
+    "dataset_name": "Sales Reporting (Olist)",
+    "schema_fingerprint": "REPLACE_WITH_get_import_skill_FINGERPRINT"
+  },
+  "widgets": [
+    {"block_id": "intro", "widget_type": "section_header",
+     "widget_config": {"title": "Sales overview", "subtitle": "Order items, Olist marketplace"},
+     "layout": {"x": 0, "y": 0, "w": 12, "h": 1}}
+  ],
+  "charts": [
+    {"block_id": "kpi-revenue", "title": "Revenue", "chart_type": "KPI", "source_key": "order_items",
+     "role_config": {"metrics": [{"field": "price", "agg": "sum"}]},
+     "layout": {"x": 0, "y": 1, "w": 4, "h": 2}},
+    {"block_id": "kpi-freight", "title": "Freight", "chart_type": "KPI", "source_key": "order_items",
+     "role_config": {"metrics": [{"field": "freight_value", "agg": "sum"}]},
+     "layout": {"x": 4, "y": 1, "w": 4, "h": 2}},
+    {"block_id": "kpi-items", "title": "Items sold", "chart_type": "KPI", "source_key": "order_items",
+     "role_config": {"metrics": [{"field": "order_item_id", "agg": "count"}]},
+     "layout": {"x": 8, "y": 1, "w": 4, "h": 2}},
+    {"block_id": "orders-by-status", "title": "Orders by status", "chart_type": "BAR", "source_key": "orders",
+     "role_config": {"dimension": "order_status", "metrics": [{"field": "order_id", "agg": "count"}]},
+     "layout": {"x": 0, "y": 3, "w": 6, "h": 4}},
+    {"block_id": "orders-trend", "title": "Orders over time", "chart_type": "TIME_SERIES", "source_key": "orders",
+     "role_config": {"timeField": "order_purchase_timestamp", "metrics": [{"field": "order_id", "agg": "count"}]},
+     "layout": {"x": 6, "y": 3, "w": 6, "h": 4}}
+  ]
+}
+</script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; }
+  .row { display: flex; gap: 12px; } .tile { flex: 1; border: 1px solid #ddd; padding: 12px; border-radius: 8px; }
+</style>
+</head>
+<body>
+  <h1>Olist Sales Overview</h1>
+  <section data-block-id="intro"><h2>Sales overview</h2><p>Order items, Olist marketplace</p></section>
+  <div class="row">
+    <div class="tile" data-block-id="kpi-revenue">Revenue<br><b>R$ 0</b></div>
+    <div class="tile" data-block-id="kpi-freight">Freight<br><b>R$ 0</b></div>
+    <div class="tile" data-block-id="kpi-items">Items sold<br><b>0</b></div>
+  </div>
+  <div class="row">
+    <div class="tile" data-block-id="orders-by-status">[bar: orders by status]</div>
+    <div class="tile" data-block-id="orders-trend">[line: orders over time]</div>
+  </div>
+</body>
+</html>

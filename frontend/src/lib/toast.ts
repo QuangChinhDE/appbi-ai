@@ -17,7 +17,8 @@ export const toast = {
     return sonnerToast.success(title as string, options);
   },
   error(title: unknown, options?: ToastOptions) {
-    return sonnerToast.error(title as string, options);
+    // An error must be readable before it goes: longer than the 4 s default.
+    return sonnerToast.error(title as string, { duration: 8000, ...options });
   },
   info(title: unknown, options?: ToastOptions) {
     return sonnerToast.info(title as string, options);

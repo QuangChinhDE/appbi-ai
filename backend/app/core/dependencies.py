@@ -132,10 +132,6 @@ def _authenticate_personal_access_token(token: str, db: Session) -> User:
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if pat.last_used_at is None or (now - pat.last_used_at).total_seconds() >= 60:
-        pat.last_used_at = now
-        db.commit()
-
     if not pat.scopes:
         # A token with no scope grants nothing; refuse it outright rather than
         # let any code path treat "no caps" as "uncapped".
@@ -151,6 +147,20 @@ def _authenticate_personal_access_token(token: str, db: Session) -> User:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or deactivated",
         )
+
+    if pat.bound_to_session and (pat.bound_security_stamp or "") != (user.security_stamp or ""):
+        # Session-bound token minted before the owner's security stamp rotated
+        # (password change, status change, deactivation): it ends with the session.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Only a token that passed every check is recorded as used.
+    if pat.last_used_at is None or (now - pat.last_used_at).total_seconds() >= 60:
+        pat.last_used_at = now
+        db.commit()
 
     return _stamp_auth_context(
         user,

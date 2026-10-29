@@ -8,6 +8,7 @@ import {
   expectSameNormalized, expectSaneCells, framedAt, guardErrors, iframeHost, in36, openBuilder, order, PHONE, publishUi, readDrawn, resizeTile,
   saveDraft, stableDrawn, switchDevice, TABLET, visitAll, watchNet, type Cell, type Drawn, type Geo,
 } from './_responsive-uiux';
+import { chooseBuilderDevice, openStudioPreview } from './_helpers';
 
 /**
  * Device-specific layouts — UI/UX ACCEPTANCE in a real browser, as an author.
@@ -120,14 +121,20 @@ test.afterAll(async ({ request }) => {
   await deleteTestPats(request);
 });
 
-test('1 · device switcher: visible, stateful, reachable; Desktop editing intact; repeated switching corrupts nothing', async ({ page }) => {
+test('1 · device switcher: on demand, stateful, reachable; Desktop editing intact; repeated switching corrupts nothing', async ({ page }) => {
   const guard = guardErrors(page);
   await openBuilder(page, f!.id);
-  const bar = page.getByTestId('device-bar');
-  await expect(bar).toBeVisible();
-  for (const m of ['desktop', 'tablet', 'phone'] as const) await expect(page.getByTestId(`device-mode-${m}`)).toBeVisible();
-  // Desktop: selected, the authored canvas, desktop-only tools present, no device actions.
-  await expect(page.getByTestId('device-mode-desktop')).toHaveAttribute('aria-pressed', 'true');
+  // Desktop is the canvas; no device bar until the author asks for a device.
+  await expect(page.getByTestId('device-bar')).toHaveCount(0);
+  const trigger = page.getByTestId('device-menu-open');
+  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAttribute('data-device', 'desktop');
+  await trigger.click();
+  for (const m of ['desktop', 'tablet', 'phone'] as const) await expect(page.getByTestId(`device-menu-${m}`)).toBeVisible();
+  await expect(page.getByTestId('device-menu-desktop')).toHaveAttribute('aria-checked', 'true');
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('device-menu-tablet')).toHaveCount(0);
+  // Desktop: the authored canvas, desktop-only tools present, no device actions.
   const desk = await stableDrawn(page, CANVAS);
   expect([desk.breakpoint, desk.source]).toEqual(['lg', 'desktop']);
   await expect(page.getByTestId('device-customize')).toHaveCount(0);
@@ -164,18 +171,27 @@ test('1 · device switcher: visible, stateful, reachable; Desktop editing intact
       seen[m] = key;
     }
   }
-  // Still usable: the canvas scrolls to the last tile, the device bar is reachable.
+  // Still usable: the canvas scrolls to the last tile, the device control is reachable.
   const last = order(desk.layout).at(-1)!;
   await page.locator(`${CANVAS} [data-grid-item-id="${last}"]`).scrollIntoViewIfNeeded();
   await expect(page.locator(`${CANVAS} [data-grid-item-id="${last}"] [data-tile-id], ${CANVAS} [data-grid-item-id="${last}"]`).first()).toBeVisible();
-  await page.getByTestId('device-mode-tablet').scrollIntoViewIfNeeded();
-  await expect(page.getByTestId('device-mode-tablet')).toBeInViewport();
+  await expect(page.getByTestId('device-menu-open')).toBeInViewport();
   expectSameBoxes(await domGeometry(page, CANVAS), desktopGeo!, 'desktop after switching');
   guard.check();
 });
 
 test('2 · accessibility smoke: names, selected state, keyboard reach and activation, real disabled state', async ({ page }) => {
   await openBuilder(page, f!.id);
+  // Keyboard: the Preview menu opens with Enter, arrows move, Enter picks Tablet.
+  const trigger = page.getByTestId('device-menu-open');
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByTestId('studio-preview-open')).toBeFocused();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  await expect(page.getByTestId('device-menu-tablet')).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(trigger).toHaveAttribute('data-device', 'tablet');
   const group = page.getByRole('group', { name: /device|thiết bị/i });
   await expect(group).toBeVisible();
   for (const name of [/^desktop$|^máy tính$/i, /^tablet$|^máy tính bảng$/i, /^phone$|^điện thoại$/i]) {
@@ -200,14 +216,14 @@ test('2 · accessibility smoke: names, selected state, keyboard reach and activa
   await page.keyboard.press('Tab');
   await expect(customize).not.toBeFocused();
   // Studio views that need a pending change are really disabled, not just dimmed.
-  await page.getByTestId('device-mode-desktop').click();
-  await page.getByTestId('studio-preview-open').click();
+  await chooseBuilderDevice(page, 'desktop');
+  await openStudioPreview(page);
   await expect(page.getByTestId('studio-view-compare')).toBeDisabled();
   await expect(page.getByTestId('studio-view-before')).toBeDisabled();
   await page.getByTestId('studio-close').click();
   await expect(page.getByTestId('studio-preview')).toHaveCount(0);
   // Nothing was customised by looking.
-  await page.getByTestId('device-mode-phone').click();
+  await chooseBuilderDevice(page, 'phone');
   await expect(page.getByTestId('device-status-auto')).toBeVisible();
 });
 
@@ -351,7 +367,9 @@ test('6+7 · Save draft → full reload restores the tablet; desktop and phone u
 
   await page.reload();
   await page.waitForSelector(`${CANVAS} [data-tile-id]`);
-  await expect(page.getByTestId('device-mode-desktop')).toHaveAttribute('aria-pressed', 'true');
+  // A reload opens on Desktop, with no device bar.
+  await expect(page.getByTestId('device-menu-open')).toHaveAttribute('data-device', 'desktop');
+  await expect(page.getByTestId('device-bar')).toHaveCount(0);
   const desk = await stableDrawn(page, CANVAS);
   expect(byId(desk.layout), 'a tablet draft changed desktop').toEqual(byId(desktopCells));
   const t = await switchDevice(page, 'tablet');
@@ -386,7 +404,7 @@ test('8 · Publish in the Builder → fresh viewers on /d, /embed and emb_ draw 
   expect(byId(b.layout)).toEqual(byId(tabletCustom!.layout));
   const builderGeo = await domGeometry(page, CANVAS);
   // Studio, tablet.
-  await page.getByTestId('studio-preview-open').click();
+  await openStudioPreview(page);
   await page.getByTestId('studio-device-tablet').click();
   const studioFrame = page.frameLocator('[data-testid="studio-preview"] iframe').first();
   await studioFrame.locator('[data-report-layout] [data-tile-id]').first().waitFor({ timeout: 60_000 });
@@ -726,17 +744,19 @@ test('33 · a panel or overlay that hides or narrows the canvas, with device swi
   await page.getByTestId('inspector-toggle').click();
   await intact('after the Inspector', PHONE);
   // The Studio covers the Builder; switch the Studio's device, close it.
-  await page.getByTestId('studio-preview-open').click();
+  await openStudioPreview(page);
   await expect(page.getByTestId('studio-preview')).toBeVisible();
   await page.getByTestId('studio-device-desktop').click();
   await page.getByTestId('studio-device-phone').click();
   await page.getByTestId('studio-close').click();
   await intact('after the Studio overlay', PHONE);
   // The AI design panel takes the side of the screen; switch device under it.
-  await page.getByTestId('device-mode-desktop').click();
+  await chooseBuilderDevice(page, 'desktop');
   await page.getByTestId('design-mode-ai').click();
+  await expect(page.getByTestId('design-mode-ai')).toHaveAttribute('aria-pressed', 'true');
   await switchDevice(page, 'tablet');
-  await page.getByTestId('design-mode-manual').click();
+  await page.getByTestId('design-mode-ai').click();
+  await expect(page.getByTestId('design-mode-ai')).toHaveAttribute('aria-pressed', 'false');
   await intact('after the AI panel', TABLET);
   guard.check();
 });
@@ -869,9 +889,16 @@ test('16 · deleting a tile in the Builder: gone from every surface, no ghost, n
   await openBuilder(page, f!.id);
   const gone = String(f!.charts.filter((c) => c.type === 'KPI')[1].tile);
   const tile = page.locator(`${CANVAS} .react-grid-layout > [data-grid-item-id="${gone}"]`);
-  await tile.scrollIntoViewIfNeeded();
+  // Centre it: at the top edge the sticky Builder header covers the tile's menu button.
+  await tile.evaluate((el) => el.scrollIntoView({ block: 'center' }));
   await tile.hover();
-  await tile.getByTitle(/remove chart|gỡ biểu đồ|xóa biểu đồ/i).click();
+  // Remove lives in the tile's menu (the hover X was retired with the Builder UX simplification).
+  // Keyboard, not a pointer click: when the canvas is scrolled the sticky Builder header
+  // sits over the top row, and a KPI's tools show only while hovered or focused.
+  await tile.getByTestId('tile-menu-open').focus();
+  await page.keyboard.press('Enter');
+  await tile.getByTestId('tile-remove').focus();
+  await page.keyboard.press('Enter');
   await page.getByRole('button', { name: /^remove$/i }).click();
   await expect(page.locator(`${CANVAS} [data-grid-item-id="${gone}"]`)).toHaveCount(0);
   await saveDraft(page);
@@ -916,7 +943,7 @@ test('19+20+34+35 · Studio: read-only in every device, same cells as the Builde
   const pie = f!.tile('PIE');
   const plan = { layer: 'structure', direction: {}, structure: { operations: [{ op: 'move_to_top', visuals: [pie] }] } };
   await page.route('**/presentation-plan', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ plan }) }));
-  await page.getByTestId('device-mode-desktop').click();
+  await chooseBuilderDevice(page, 'desktop');
   await page.getByTestId('design-mode-ai').click();
   await page.getByTestId('ai-design-input').fill('move the channel chart to the top');
   await page.getByTestId('ai-design-send').click();
@@ -929,7 +956,7 @@ test('19+20+34+35 · Studio: read-only in every device, same cells as the Builde
   await expect(page.getByTestId('device-status-stale')).toBeVisible();
 
   const net = watchNet(page);
-  await page.getByTestId('studio-preview-open').click();
+  await openStudioPreview(page);
   for (const v of ['before', 'after', 'compare'] as const) await expect(page.getByTestId(`studio-view-${v}`)).toBeEnabled();
   for (const [device, width] of [['tablet', TABLET], ['phone', PHONE]] as const) {
     await page.getByTestId(`studio-device-${device}`).click();

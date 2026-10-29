@@ -1,0 +1,110 @@
+# AppBI Analyst - ENGINEERING DOGFOOD stack (NOT CERTIFIED). Standalone on purpose:
+# it does not extend docker-compose.yml, whose fixed network name would join the
+# main stack. Its own project, network, volumes and databases; localhost ports only.
+#
+#   docker compose -p appbi-dogfood -f docker-compose.dogfood.yml --env-file <secrets.env> up -d --build
+#   emergency OFF: set AI_CHAT_ENABLED=false (or stop the stack) - no data is shared
+#
+# <secrets.env> must define SECRET_KEY, DATASOURCE_ENCRYPTION_KEY, DB_PASSWORD,
+# MYSQL_ROOT_PASSWORD, ADMIN_EMAIL, ADMIN_PASSWORD and,
+# for real-model runs only, OPENAI_API_KEY + LLM_TEST_* (docs/features/analyst-mvp/dogfood-runbook.md).
+name: appbi-dogfood
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: appbi
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD}
+      POSTGRES_DB: appbi
+    volumes:
+      - dogfood_pg:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DOGFOOD_PG_PORT:-55491}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U appbi"]
+      interval: 5s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: dogfood_src
+    volumes:
+      - dogfood_mysql:/var/lib/mysql
+    ports:
+      - "127.0.0.1:${DOGFOOD_MYSQL_PORT:-33071}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      retries: 40
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        APPBI_BUILD_SHA: ${GIT_SHA:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: appbi
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: appbi
+      DATABASE_URL: postgresql://appbi:${DB_PASSWORD}@db:5432/appbi
+      ENVIRONMENT: staging
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY}
+      DATASOURCE_ENCRYPTION_KEY: ${DATASOURCE_ENCRYPTION_KEY:?set DATASOURCE_ENCRYPTION_KEY}
+      COOKIE_SECURE: "false"
+      CORS_ORIGINS: http://localhost:${DOGFOOD_FE_PORT:-3341}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      ALLOWED_PRIVATE_SOURCE_CIDRS: "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16"
+      # Govern (glossary, metrics) - the governed business vocabulary the Analyst reads
+      METADATA_CATALOG_ENABLED: "true"
+      # AI Chat (its Data Core tunables keep the historical ANALYST_ prefix); who may
+      # use it is the `chat` module permission, per account
+      AI_CHAT_ENABLED: ${AI_CHAT_ENABLED:-true}
+      ANALYST_DROP_CONSENT_ENABLED: "false"
+      ANALYST_MAX_QUERIES_PER_USER_DAY: ${ANALYST_MAX_QUERIES_PER_USER_DAY:-200}
+      ANALYST_MAX_ROWS: "500"
+      ANALYST_PLANNER_MODEL: default
+      ANALYST_PLANNER_REPLAY_PATH: ${ANALYST_PLANNER_REPLAY_PATH:-}
+      # Real model only when a key AND a test budget are given (services/llm_test_budget.py)
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      LLM_TEST_BUDGET_USD: ${LLM_TEST_BUDGET_USD:-}
+      # ONE ledger for every test runner (bind mount of the shared budget directory)
+      LLM_TEST_LEDGER_PATH: /ledger/ledger.jsonl
+      LLM_TEST_PRICES_JSON: ${LLM_TEST_PRICES_JSON:-}
+    volumes:
+      - dogfood_testdata:/var/appbi-test
+      - ${LLM_TEST_LEDGER_DIR:-./.dogfood-ledger}:/ledger
+    ports:
+      - "127.0.0.1:${DOGFOOD_BE_PORT:-8341}:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        NEXT_PUBLIC_AUTH_PASSWORD_LOGIN_ENABLED: "true"
+        APPBI_BUILD_SHA: ${GIT_SHA:-}
+    depends_on:
+      - backend
+    environment:
+      BACKEND_URL: http://backend:8000/api/v1
+      SECRET_KEY: ${SECRET_KEY}
+      COOKIE_SECURE: "false"
+    ports:
+      - "127.0.0.1:${DOGFOOD_FE_PORT:-3341}:3000"
+
+volumes:
+  dogfood_pg:
+  dogfood_mysql:
+  dogfood_testdata:

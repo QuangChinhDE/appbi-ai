@@ -38,18 +38,8 @@ def _pg_config():
 
 @pytest.fixture(scope="module")
 def pg():
-    engine = sa.create_engine(_url())
-    with engine.begin() as c:
-        c.execute(sa.text(f"DROP SCHEMA IF EXISTS {T.S} CASCADE"))
-        c.execute(sa.text(f"CREATE SCHEMA {T.S}"))
-        for stmt in T.physical_sql("postgresql"):
-            c.execute(sa.text(stmt))
-    try:
+    with T.owned_pg_schema(sa.create_engine(_url())) as engine:
         yield engine
-    finally:
-        with engine.begin() as c:
-            c.execute(sa.text(f"DROP SCHEMA IF EXISTS {T.S} CASCADE"))
-        engine.dispose()
 
 
 @pytest.fixture()

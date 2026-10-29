@@ -487,8 +487,9 @@ export function DashboardThemeModal({ initial, onClose, onSave, onApplyLayout }:
       skin,
       // Modern needs a soft, rounded card to read as Modern at all; a sharp
       // 0-radius card with an accent stripe just looks broken. Nudge the card
-      // when it is still at the classic default, never overwrite a real choice.
-      ...(skin === 'modern' && (!t.cardRadius || pxNum(t.cardRadius, 8) < 10)
+      // when it has none, never overwrite a real choice (customer feedback 2026-10-28: a
+      // radius the author set - 0 included - was overwritten to 16 on every skin change).
+      ...(skin === 'modern' && (t.cardRadius == null || t.cardRadius === '')
         ? { cardStyle: t.cardStyle === 'sharp' ? 'soft' : t.cardStyle, cardRadius: 16 }
         : {}),
     }));

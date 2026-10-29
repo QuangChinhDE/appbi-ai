@@ -56,6 +56,15 @@ Hiding a nav item is not access control — the backend is the boundary. A front
 never add one as the enforcement. Conversely, do not tighten a frontend guard so far that
 it hides a backend capability the user legitimately has.
 
+## AI Chat is one screen
+
+`/chat` (`components/chat/ChatWorkspace.tsx`, `lib/api/chat.ts`) is the only place a
+signed-in person asks a question. No second chat surface, no Analyst entry or flag, and
+sending never requires picking an assistant (an Agent Flow is an optional add-on in the
+same screen). Render what the envelope says: `data` (verified numbers), `supporting`
+(documents, shown apart, unverified figures labelled), `legacy`. Never compute or merge
+numbers on the page. The backend architecture test checks these files.
+
 ## Discipline
 
 - Loading / error / empty states: match the surrounding page's existing pattern — this

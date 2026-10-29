@@ -14,6 +14,11 @@ name: E2E (Playwright, full stack)
 
 on:
   push:
+    # Only the integration branches. A feature branch's push used to run the
+    # whole suite AND its PR ran it again through product-gate - two ~60 min
+    # runs per commit competing for runners. The PR run is the gate; the push
+    # run stays where nothing else checks (after a merge into demo/master).
+    branches: [demo, master]
     paths:
       - "backend/**"
       - "frontend/**"
@@ -39,6 +44,15 @@ jobs:
     # ~39 min with them; the UI/UX acceptance suite (dashboard-responsive-uiux*,
     # ~20 min of serial real-browser journeys) brings it to ~60.
     timeout-minutes: 80
+    # FOUR SHARDS, each its own full stack (Postgres, backend, Next build): the
+    # suite was ~60 min of one serial browser. Playwright splits by FILE, so a
+    # serial spec stays whole in one shard. fail-fast off: one red shard must
+    # not cancel the others' evidence. product-gate reads the job's combined
+    # result, which is failure if any shard fails.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
 
     services:
       postgres:
@@ -129,6 +143,13 @@ jobs:
       # workspace routes, which are only mounted with Workboards on; without it
       # every workspace assertion is a 404 before any auth check runs.
       WORKBOARDS_ENABLED: "true"
+      # NO WALL-CLOCK SCAN MID-SUITE. The backend schedules the anomaly +
+      # observability scan at 02:00 UTC; a run spanning that minute re-evaluated
+      # every seeded metric and rewrote the states the Observability specs assert
+      # (O08b failed on demo be16db20 and PR #18 dfd58335, both runs crossing
+      # 02:00; every run outside that window passed). Scans in this suite are
+      # the explicit ones the specs trigger.
+      APPBI_DAILY_SCAN: "off"
       PYTHONPATH: ${{ github.workspace }}/backend
       E2E_BASE_URL: http://localhost:3000
       E2E_API_URL: http://localhost:8000
@@ -342,7 +363,7 @@ jobs:
 
       - name: Run the suite
         working-directory: e2e
-        run: npx playwright test
+        run: npx playwright test --shard=${{ matrix.shard }}/4
 
       # A reviewer must be able to see what broke without reproducing it locally.
       # One screenshot per chart type (+ BAR_LINE branches, tiles, transitions):
@@ -351,7 +372,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: chart-visual-evidence
+          name: chart-visual-evidence-${{ matrix.shard }}
           path: .artifacts/chart-visual/
           if-no-files-found: warn
           retention-days: 14
@@ -360,7 +381,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-artifacts
+          name: playwright-artifacts-${{ matrix.shard }}
           path: |
             e2e/test-results/
             e2e/playwright-report/

@@ -28,7 +28,7 @@ import { ModuleOverview } from '@/components/common/ModuleOverview';
 import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
-import { ConfirmDialog } from '@/components/common/ConfirmDialog';
+import { ConfirmDialog, ConfirmTargets } from '@/components/common/ConfirmDialog';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { toast } from '@/lib/toast';
@@ -171,7 +171,6 @@ export default function DatasetsPage() {
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    setShowBulkConfirm(false);
     setIsBulkDeleting(true);
     let successCount = 0;
     let failCount = 0;
@@ -183,8 +182,10 @@ export default function DatasetsPage() {
         failCount++;
       }
     }
-    setSelectedIds(new Set());
     setIsBulkDeleting(false);
+    // Nothing deleted: an error the confirm dialog shows (it stays open), not a toast after it closed.
+    if (successCount === 0 && failCount > 0) throw new Error(`Failed to delete ${failCount} dataset(s)`);
+    setSelectedIds(new Set());
     if (successCount > 0) toast.success(`Deleted ${successCount} dataset(s)`);
     if (failCount > 0) toast.error(`Failed to delete ${failCount} dataset(s)`);
   };
@@ -650,9 +651,10 @@ export default function DatasetsPage() {
         isOpen={showBulkConfirm}
         onClose={() => setShowBulkConfirm(false)}
         onConfirm={handleBulkDelete}
-        title={`Delete ${selectedIds.size} dataset${selectedIds.size === 1 ? '' : 's'}?`}
-        description="This action cannot be undone."
-        confirmLabel="Delete"
+        title={t('common.bulkDelete.datasets', { count: selectedIds.size })}
+        description={t('common.cannotUndo')}
+        details={<ConfirmTargets names={(datasets ?? []).filter((d) => selectedIds.has(d.id)).map((d) => d.name)} />}
+        confirmLabel={t('common.delete')}
         variant="danger"
       />
     </>

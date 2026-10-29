@@ -1,0 +1,31 @@
+[project]
+name = "appbi-mcp"
+version = "0.1.0"
+description = "AppBI Remote MCP integration layer (independent service; talks to AppBI only over HTTP)"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # The official MCP SDK. 2.x speaks the 2026-07-28 protocol and negotiates the
+    # initialize-era revisions Claude clients still use. Pinned exactly: the
+    # transport and auth handlers are part of this service's security surface.
+    "mcp==2.2.0",
+    "uvicorn==0.54.0",
+    "starlette==1.7.0",
+    "pydantic==2.14.1",
+    "httpx2==2.13.1",
+    "cryptography==50.0.2",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest==8.4.2",
+    "pytest-asyncio==1.2.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+testpaths = ["tests"]
+# Live-runtime tests need a running AppBI rig; they are opt-in (see tests/integration).
+addopts = "-m 'not live'"
+markers = ["live: needs a running AppBI backend + MCP rig (APPBI_RIG_* env)"]

@@ -149,9 +149,9 @@ test.describe('published bot surface @critical', () => {
 });
 
 test.describe('chat surface @critical', () => {
-  test('chat threads are reachable and scoped to the caller', async ({ request }) => {
-    const res = await request.get(`${API}/api/v1/agent-flows/chat/threads`);
-    test.skip(res.status() === 404, 'chat threads endpoint not on this build');
+  test('chat conversations are reachable and scoped to the caller', async ({ request }) => {
+    // The one AI Chat (docs/features/unified-ai-chat/contract.md) is always mounted.
+    const res = await request.get(`${API}/api/v1/chat/conversations`);
 
     expect([200, 403]).toContain(res.status());
     if (res.status() === 200) {
@@ -184,13 +184,16 @@ test.describe('chat surface @critical', () => {
       }
     });
 
-  test('an unauthenticated caller cannot open a chat thread', async ({ playwright }) => {
+  test('an unauthenticated caller cannot open a chat conversation', async ({ playwright }) => {
     const anon = await playwright.request.newContext({
       storageState: { cookies: [], origins: [] },
     });
-    const res = await anon.get(`${API}/api/v1/agent-flows/chat/threads`);
+    const res = await anon.get(`${API}/api/v1/chat/conversations`);
 
-    expect([401, 403, 404]).toContain(res.status());
+    expect([401, 403]).toContain(res.status());
+    // and the retired Flow-chat route answers nothing at all
+    const old = await anon.get(`${API}/api/v1/agent-flows/chat/threads`);
+    expect([401, 403, 404]).toContain(old.status());
     await anon.dispose();
   });
 });

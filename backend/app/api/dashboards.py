@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile, status
 from app.models.audit_log import AuditAction
 from app.services.audit_service import audit
 from app.services.report_pptx_service import ReportPptxRequest
@@ -34,6 +34,7 @@ from app.core.dependencies import (
     batch_effective_permissions,
 )
 from app.core.authz import decision as _authz
+from app.core.authz.registry import LEVEL_ORDER as _AUTHZ_LEVEL_ORDER
 from app.core.permissions import _owned_or_shared, stamp_owner_emails
 from app.models.models import Chart, DashboardChart, Dashboard, DashboardPublicLink, DataSource, DataSourceType
 from app.models.dataset import Dataset, DatasetTable
@@ -91,6 +92,7 @@ from app.services.dashboard_html_import_service import (
     _load_uploaded_single_file_multi_sheet_profiles,
     ai_fix_chart_plan,
     SourceContractMismatch,
+    UnresolvedImportFields,
     analyze_dashboard_html_import,
     analyze_dashboard_html_import_batch,
     build_dashboard_from_import as build_dashboard_from_html_import_service,
@@ -141,6 +143,21 @@ def _normalize_import_source_mode(raw_value: str) -> str:
     if normalized not in {"existing_dataset", "upload_excel"}:
         raise HTTPException(status_code=400, detail="source_mode must be existing_dataset or upload_excel.")
     return normalized
+
+
+_IMPORT_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+
+def _normalize_import_idempotency_key(raw_value: Optional[str]) -> Optional[str]:
+    if raw_value is None or not str(raw_value).strip():
+        return None
+    value = str(raw_value).strip()
+    if not _IMPORT_IDEMPOTENCY_KEY_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail="idempotency_key must be 1-128 characters of letters, digits, '.', '_', ':' or '-'.",
+        )
+    return value
 
 
 def _normalize_import_target_mode(raw_value: str) -> str:
@@ -238,6 +255,15 @@ def list_dashboards(
     _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
     return items
+
+
+@router.get("/public-links/ai-models")
+def public_link_ai_models(current_user: User = Depends(get_current_user)) -> dict:
+    """The providers and models a publisher may choose for a public link's assistant
+    (with the API key they paste). There is no server default to fall back to."""
+    from app.services.ai_runtime import gateway
+
+    return {"providers": gateway.answer_models()}
 
 
 @router.get("/accessible-summary")
@@ -723,10 +749,24 @@ async def build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    draft_only: bool = Form(False),
+    strict_fields: bool = Form(False),
+    idempotency_key: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
-    """Materialize analyzed chart plans into a native dashboard."""
+    """Materialize analyzed chart plans into a native dashboard.
+
+    Optional, default off (absent = the wizard's behaviour, unchanged):
+      * ``draft_only`` — everything created is the caller's draft until they
+        publish (``target_mode=new_dashboard`` only, else 400);
+      * ``strict_fields`` — unresolved chart fields are a 422
+        ``{"reason": "unresolved_fields", "unresolved": [...]}``, not a warning;
+      * ``idempotency_key`` — 1..128 chars of ``[A-Za-z0-9._:-]``
+        (``new_dashboard`` only): a repeat by the same user returns the first
+        build's dashboard (``idempotent_replay: true``) and creates nothing.
+    """
+    normalized_idempotency_key = _normalize_import_idempotency_key(idempotency_key)
     analysis = _parse_optional_json_form_field(analysis_json, "analysis_json")
     if not isinstance(analysis, dict):
         raise HTTPException(status_code=400, detail="analysis_json must decode to an object.")
@@ -793,6 +833,9 @@ async def build_html_dashboard_import(
             target_mode=normalized_target_mode,
             target_dashboard_id=target_dashboard_id,
             included_block_ids=included_block_ids,
+            draft_only=bool(draft_only),
+            strict_fields=bool(strict_fields),
+            idempotency_key=normalized_idempotency_key,
         )
         if prepared_dataset_id is not None:
             # Promote the draft dataset into a regular dataset once charts
@@ -811,6 +854,11 @@ async def build_html_dashboard_import(
         raise HTTPException(status_code=409, detail={
             "reason": "source_contract_mismatch",
             "findings": exc.findings,
+        }) from exc
+    except UnresolvedImportFields as exc:
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
         }) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -833,6 +881,7 @@ async def dry_run_build_html_dashboard_import(
     included_block_ids_json: Optional[str] = Form(None),
     excel_file: Optional[UploadFile] = File(None),
     excel_files: List[UploadFile] = File(default=[]),
+    strict_fields: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_permission("dashboards", "edit")),
 ):
@@ -909,6 +958,7 @@ async def dry_run_build_html_dashboard_import(
                 target_mode=normalized_target_mode,
                 target_dashboard_id=target_dashboard_id,
                 included_block_ids=included_block_ids,
+                strict_fields=bool(strict_fields),
             )
             # Hydrate response payload BEFORE rollback so the client can see
             # exactly what would have been created (ids will be invalid after
@@ -948,6 +998,15 @@ async def dry_run_build_html_dashboard_import(
         return payload
     except HTTPException:
         raise
+    except UnresolvedImportFields as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        raise HTTPException(status_code=422, detail={
+            "reason": "unresolved_fields",
+            "unresolved": exc.unresolved,
+        }) from exc
     except ValueError as exc:
         try:
             db.rollback()
@@ -1664,6 +1723,38 @@ def _shared_meta(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return meta
 
 
+def _slicer_has_default(s: Dict[str, Any]) -> bool:
+    """A slicer that filters the report before anyone touches it: a non-empty saved
+    value, or a date preset other than "all"/"custom"."""
+    value = s.get("value")
+    if isinstance(value, dict):
+        has_value = any(v not in (None, "", []) for v in value.values())
+    else:
+        has_value = value not in (None, "", [])
+    return has_value or str(s.get("datePreset") or "") not in ("", "custom", "all", "none")
+
+
+def _removed_default_slicers(live: Any, draft: Any) -> list[Dict[str, Any]]:
+    """The report-wide slicers WITH a default value the live report has and the draft
+    no longer has as report-wide (deleted, or narrowed to some pages). Customer demo
+    2026-10-28: the period slicer (T08) vanished from slicers_config and the report
+    silently showed every period summed. Nothing to say when the draft does not
+    touch slicers (`draft` not a list)."""
+    if not isinstance(draft, list) or not isinstance(live, list):
+        return []
+
+    def report_wide(s: Any) -> bool:
+        return isinstance(s, dict) and str(s.get("scope") or "all") == "all"
+
+    kept = {str(s.get("id")) for s in draft if report_wide(s) and s.get("id") is not None}
+    out = []
+    for s in live:
+        if report_wide(s) and s.get("id") is not None and str(s["id"]) not in kept and _slicer_has_default(s):
+            out.append({"id": str(s["id"]), "label": str(s.get("label") or s.get("field") or s["id"]),
+                        "value": s.get("value") if s.get("value") not in (None, "", []) else s.get("datePreset")})
+    return out
+
+
 def _has_shared_draft(snapshot: Optional[Dict[str, Any]]) -> bool:
     return isinstance(snapshot, dict) and any(k in snapshot for k in _SHARED_DRAFT_KEYS)
 
@@ -1676,7 +1767,18 @@ def _shared_rev_token(dash, snapshot: Optional[Dict[str, Any]]) -> str:
     stored while nothing is pending: a copy loaded then equals the live report,
     so it is current."""
     published = dash.last_published_at.isoformat() if getattr(dash, "last_published_at", None) else "never"
-    return f"{published}#{_shared_meta(snapshot)['rev'] if _has_shared_draft(snapshot) else 0}"
+    if not _has_shared_draft(snapshot):
+        return f"{published}#0"
+    # The counter restarts after a Discard, so a copy loaded before it carried a token
+    # equal to the next edit's and its stale slicer list passed the check (customer demo
+    # 2026-10-28: a period slicer lost). The token also names WHAT the draft holds: two
+    # drafts share a token only if they hold the same filters, pages and theme.
+    import hashlib
+    import json as _json
+
+    shared = {k: snapshot[k] for k in _SHARED_DRAFT_KEYS if k in snapshot}
+    digest = hashlib.sha1(_json.dumps(shared, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:10]
+    return f"{published}#{_shared_meta(snapshot)['rev']}.{digest}"
 
 
 def _shared_draft_state(dash, snapshot: Optional[Dict[str, Any]], user_key: str) -> Dict[str, Any]:
@@ -1719,7 +1821,7 @@ def _after_author_leaves(snapshot: Optional[Dict[str, Any]], user_key: str, keep
             if key in snapshot:
                 out[key] = snapshot[key]
     # Otherwise the shared draft is gone; its revision token moves on by itself
-    # (a Publish changes last_published_at).
+    # (a Publish changes last_published_at; the token names the draft's content).
     return out or None
 
 
@@ -1734,6 +1836,24 @@ def _other_authors_drafts(snapshot: Optional[Dict[str, Any]], user_key: str) -> 
         if others:
             out[key] = others
     return out or None
+
+
+def _serialize_live_for_viewer(dash: Dashboard) -> DashboardResponse:
+    """The published report only: live fields, no draft overlay or metadata,
+    and no tile that exists only in someone's unpublished draft."""
+    base = DashboardResponse.model_validate(dash, from_attributes=True)
+    live_ids = {r.id for r in (dash.dashboard_charts or []) if not is_draft_only_item(r)}
+    charts = [dc.model_copy(update={"layout": strip_draft_row_keys(dc.layout)}) if isinstance(dc.layout, dict) else dc
+              for dc in base.dashboard_charts if dc.id in live_ids]
+    from app.services.dashboard_parameters import resolve_switcher_fields
+    return base.model_copy(update={
+        "dashboard_charts": charts,
+        "draft_layouts": None,
+        "draft_responsive_layouts": None,
+        "has_draft": False,
+        "shared_draft": None,
+        "parameter_fields": resolve_switcher_fields(charts, include_drafts=False),
+    })
 
 
 def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: User) -> DashboardResponse:
@@ -1753,6 +1873,12 @@ def _serialize_dashboard_with_draft(db: Session, dash: Dashboard, current_user: 
     """
     dash.user_permission = require_view_access(db, current_user, dash, "dashboards")
     _authz.attach_capabilities(db, current_user, [dash])
+    if _AUTHZ_LEVEL_ORDER.get(dash.user_permission, 0) < _AUTHZ_LEVEL_ORDER["edit"]:
+        # A viewer cannot write a draft, so they never read one: the shared
+        # draft (filters, slicers, pages, theme), its metadata and every
+        # author's unpublished tiles stay with the editors until Publish —
+        # the viewer reads the live report, as the public link does.
+        return _serialize_live_for_viewer(dash)
     snapshot = dash.draft_snapshot or {}
     # Phase-B17 — overlay only THIS user's pending layout draft (per-user).
     layouts_map = _draft_user_layouts(snapshot, str(current_user.id))
@@ -2978,6 +3104,9 @@ class PublishRequest(BaseModel):
     # publish only the caller's own work and leave the shared draft pending.
     shared_ack_rev: Optional[str] = None
     keep_shared: bool = False
+    # Report-wide slicers with a default value the caller agreed to remove (the 409
+    # `slicer_removal_unconfirmed` lists them): the report then shows every value.
+    confirm_removed_slicers: Optional[list[str]] = None
 
 
 class DiscardRequest(BaseModel):
@@ -3078,6 +3207,19 @@ def publish_dashboard_draft(
     keep_shared = bool(payload and payload.keep_shared)
     if not keep_shared:
         _refuse_others_shared_draft(dash, snapshot, user_key, payload.shared_ack_rev if payload else None, "publish")
+        removed = _removed_default_slicers(dash.slicers_config, snapshot.get("slicers_config"))
+        confirmed = {str(i) for i in (payload.confirm_removed_slicers if payload else None) or []}
+        unconfirmed = [s for s in removed if s["id"] not in confirmed]
+        if unconfirmed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "slicer_removal_unconfirmed",
+                    "removed": unconfirmed,
+                    "message": "Publishing removes a report-wide filter that has a default value; "
+                               "the report would show every value of that field.",
+                },
+            )
 
     # ── Elements this user removed in the draft leave the live report now, in
     #    the same commit as everything else they publish. ──
@@ -3363,17 +3505,110 @@ def _aware(value):
 
 
 def _sanitize_link_for_admin(link: DashboardPublicLink) -> DashboardPublicLink:
-    """Strip ai_bot_key from a public link before returning to admin clients.
+    """A public link as an admin client receives it: never a secret.
 
-    The actual key stays in the DB; the response gets ai_bot_key_configured=True/False
-    instead. This prevents the key from appearing in browser Network/Console logs.
+    A link's own provider key lives in the encrypted credential store
+    (`ai_provider_credentials`); the link holds only `ai_bot_credential_id`.
+    `ai_bot_key_configured` says whether the link has its own key. Shaped on the
+    served copy only (set_committed_value): never a change the session could flush.
     """
     if link.appearance_config:
+        from sqlalchemy.orm.attributes import set_committed_value
+
         raw = dict(link.appearance_config)
-        key_present = bool(raw.pop("ai_bot_key", None))
-        raw["ai_bot_key_configured"] = key_present
-        link.appearance_config = raw
+        raw.pop("ai_bot_key", None)
+        raw["ai_bot_key_configured"] = bool(raw.get("ai_bot_credential_id"))
+        if raw.get("ai_bot_credential_id"):
+            # the last characters only, so the publisher recognises which key it is
+            from sqlalchemy.orm import object_session
+
+            from app.models.ai_provider_credential import AiProviderCredential
+
+            s = object_session(link)
+            cred = s.get(AiProviderCredential, int(raw["ai_bot_credential_id"])) if s is not None else None
+            raw["ai_bot_key_hint"] = str(getattr(cred, "key_hint", "") or "")[-4:] if cred is not None else ""
+        set_committed_value(link, "appearance_config", raw)
     return link
+
+
+def _apply_ai_credential(db: Session, user: User, incoming: dict, existing: dict | None,
+                         link_id: int | None) -> dict:
+    """The appearance config to STORE: no plaintext key, ever.
+
+    * `ai_bot_key` (an older client typing a key) is moved into the encrypted
+      credential store, owned by the person saving, and the link references it;
+      without encryption configured the save is refused rather than stored plain.
+    * `ai_bot_credential_id` may only name a live credential the saver owns.
+    * absent -> the link keeps the credential it had; null -> it has none, and the
+      bot is not ready (there is no server key to fall back to).
+    * `ai_bot_model` must be a model the Answer Core can call with that key.
+    """
+    from app.core.crypto import encrypt_value
+    from app.models.ai_provider_credential import AiProviderCredential
+    from app.services.dashboard_ai_bot.public_link_config import _infer_provider_from_key
+
+    out = dict(incoming or {})
+    out.pop("ai_bot_key_configured", None)
+    out.pop("ai_bot_key_hint", None)
+    previous = dict(existing or {})
+    typed = str(out.pop("ai_bot_key", None) or "").strip()
+    if typed:
+        try:
+            secret_enc = encrypt_value(typed)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Máy chủ chưa cấu hình mã hoá nên không lưu được API key.")
+        if not str(secret_enc).startswith("_enc:"):
+            raise HTTPException(status_code=422, detail="Máy chủ chưa cấu hình mã hoá nên không lưu được API key.")
+        provider = (str(out.get("ai_bot_provider") or "").strip().lower()
+                    or _infer_provider_from_key(typed) or "openai")
+        if provider not in ("openai", "anthropic", "gemini"):
+            raise HTTPException(status_code=422, detail="Nhà cung cấp không hợp lệ.")
+        cred = AiProviderCredential(name=f"Public link {link_id or 'new'} AI bot key "
+                                         f"({datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')})",
+                                    provider=provider, secret_enc=secret_enc, key_hint=typed[-4:],
+                                    owner_id=user.id)
+        db.add(cred)
+        db.flush()
+        out["ai_bot_credential_id"] = int(cred.id)
+        out["ai_bot_provider"] = provider
+    elif "ai_bot_credential_id" not in out:
+        if previous.get("ai_bot_credential_id"):
+            out["ai_bot_credential_id"] = previous["ai_bot_credential_id"]
+    elif out.get("ai_bot_credential_id") in (None, "", 0):
+        out.pop("ai_bot_credential_id", None)
+    else:
+        try:
+            cred_id = int(out["ai_bot_credential_id"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="ai_bot_credential_id không hợp lệ.")
+        cred = db.get(AiProviderCredential, cred_id)
+        if cred_id != previous.get("ai_bot_credential_id") and (
+                cred is None or cred.deleted_at is not None or str(cred.owner_id) != str(user.id)):
+            raise HTTPException(status_code=422, detail="Chỉ dùng được API key do chính bạn lưu.")
+        out["ai_bot_credential_id"] = cred_id
+    if previous.get("ai_bot_credential_migrated") and out.get("ai_bot_credential_id") == \
+            previous.get("ai_bot_credential_id"):
+        out["ai_bot_credential_migrated"] = True
+    else:
+        out.pop("ai_bot_credential_migrated", None)
+    # The MODEL the publisher chose for that key (PO 2026-10-28: the key and the model
+    # are the publisher's; there is no server default). Absent keeps the previous one.
+    if "ai_bot_model" not in out and previous.get("ai_bot_model"):
+        out["ai_bot_model"] = previous["ai_bot_model"]
+    model = str(out.get("ai_bot_model") or "").strip()
+    if model and out.get("ai_bot_credential_id"):
+        from app.services.ai_runtime import gateway
+
+        cred = db.get(AiProviderCredential, int(out["ai_bot_credential_id"]))
+        provider = str(getattr(cred, "provider", "") or "")
+        if not gateway.answer_model_ok(provider, model):
+            raise HTTPException(status_code=422, detail=f"Model “{model[:60]}” không dùng được với API key {provider}.")
+        out["ai_bot_provider"] = provider
+    if model:
+        out["ai_bot_model"] = model
+    else:
+        out.pop("ai_bot_model", None)
+    return out
 
 
 # ============ Multi Public Links ============
@@ -3447,7 +3682,8 @@ def create_public_link(
         name=request.name,
         token=secrets.token_urlsafe(32),
         filters_config=request.filters_config or [],
-        appearance_config=request.appearance_config or {},
+        appearance_config=_apply_ai_credential(db, current_user, _with_checked_guide(request.appearance_config),
+                                               None, None),
         created_by=current_user.id,
         password_hash=_pwd_context.hash(request.password) if request.password else None,
         expires_at=_aware(request.expires_at),
@@ -3523,8 +3759,8 @@ def create_public_link_preview(
             .delete(synchronize_session=False)
         )
     appearance = dict(request.appearance_config or {})
-    appearance.pop("ai_bot_key", None)
-    appearance.pop("ai_bot_key_configured", None)
+    for _k in ("ai_bot_key", "ai_bot_key_configured", "ai_bot_credential_id", "ai_bot_credential_migrated"):
+        appearance.pop(_k, None)
     # A preview shows the report; it must not open (or spend) the AI bot.
     appearance["ai_bot_enabled"] = False
     link = DashboardPublicLink(
@@ -3540,6 +3776,106 @@ def create_public_link_preview(
     db.add(link)
     db.commit()
     return {"token": link.token, "expires_at": link.expires_at}
+
+
+@router.get("/{dashboard_id}/public-links/{link_id}/ai-status")
+def get_public_link_ai_status(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Is the AI model ready for this link's assistant, and whose key pays (the
+    server's or the link's own)? Never a key, never a credential secret."""
+    from app.services.ai_runtime import gateway
+
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_publish_access(db, current_user, dash, "dashboards")
+    link = (
+        db.query(DashboardPublicLink)
+        .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id)
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    # with the models a publisher may choose for their key (no server default)
+    return {**gateway.readiness(db, dict(link.appearance_config or {})), "models": gateway.answer_models()}
+
+
+def _link_guide_catalog(db: Session, dash_id: int, link: DashboardPublicLink, user: User) -> dict:
+    """The charts and fields the link's AI Bot reads - built exactly as a turn builds
+    them (published tiles only, the link's own filters, locks and exposed fields), for
+    the publisher guide's pickers and its save-time check."""
+    from app.api.public import _serve_published_only
+    from app.services.answer_core.published_report import PublishedReportScope
+    from app.services.answer_core.publisher_guide import catalog_payload
+    from app.services.public_link_scope import LinkScopeUnavailable, link_tool_context
+
+    dash = (db.query(Dashboard)
+            .options(joinedload(Dashboard.dashboard_charts).joinedload(DashboardChart.chart))
+            .filter(Dashboard.id == dash_id).first())
+    if dash is None:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    _serve_published_only(dash)
+    try:
+        ctx = link_tool_context(db, dashboard=dash, filters_config=getattr(link, "filters_config", None),
+                                appearance_config=getattr(link, "appearance_config", None),
+                                context_for_log=f"guide_catalog:{link.id}", actor_type="user",
+                                actor_ref=getattr(user, "email", None) or str(user.id))
+    except LinkScopeUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Không dựng được phạm vi dữ liệu của link") from exc
+    return catalog_payload(PublishedReportScope(db, ctx=ctx, link_id=link.id, turn_id=f"guide-{link.id}"))
+
+
+@router.get("/{dashboard_id}/public-links/{link_id}/ai/catalog")
+def get_public_link_ai_catalog(
+    dashboard_id: int,
+    link_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """What the link's AI Bot can read, for the publisher guide's pickers."""
+    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
+    if not dash:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    require_publish_access(db, current_user, dash, "dashboards")
+    link = (db.query(DashboardPublicLink)
+            .filter(DashboardPublicLink.id == link_id, DashboardPublicLink.dashboard_id == dashboard_id).first())
+    if not link:
+        raise HTTPException(status_code=404, detail="Public link not found")
+    return _link_guide_catalog(db, dashboard_id, link, current_user)
+
+
+def _checked_guide(raw: Any, catalog_of: Optional[Any] = None) -> Optional[dict]:
+    """The publisher guide as stored: well-formed (422 otherwise) and - when the link
+    exists - naming only fields and charts the link's bot reads (422 listing them)."""
+    from pydantic import ValidationError
+
+    from app.services.answer_core.publisher_guide import invalid_entries, parse
+
+    if not raw:
+        return None
+    try:
+        guide = parse(raw)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail={"code": "ai_bot_guide_invalid",
+                                                     "errors": exc.errors(include_url=False)[:20]}) from exc
+    if catalog_of is not None:
+        bad = invalid_entries(guide, catalog_of())
+        if bad:
+            raise HTTPException(status_code=422, detail={
+                "code": "ai_bot_guide_unknown_refs", "invalid": bad,
+                "message": "Hướng dẫn nhắc tới trường hoặc biểu đồ không có trong báo cáo công khai của link này."})
+    return guide.model_dump()
+
+
+def _with_checked_guide(appearance: Optional[dict], catalog_of: Optional[Any] = None) -> dict:
+    out = dict(appearance or {})
+    if out.get("ai_bot_guide"):
+        out["ai_bot_guide"] = _checked_guide(out["ai_bot_guide"], catalog_of)
+    return out
 
 
 @router.patch("/{dashboard_id}/public-links/{link_id}", response_model=PublicLinkResponse)
@@ -3574,22 +3910,10 @@ def update_public_link(
         _refuse_unappliable_link_filters(request.filters_config)
         link.filters_config = request.filters_config
     if request.appearance_config is not None:
-        new_config = dict(request.appearance_config)
-        existing_config = dict(link.appearance_config or {})
-        incoming_key = new_config.get("ai_bot_key")
-        if incoming_key is None or incoming_key == "":
-            # Key absent or empty → keep existing key (empty string = explicit clear)
-            existing_key = existing_config.get("ai_bot_key")
-            if incoming_key is None and existing_key:
-                # No key field sent at all — preserve current key silently
-                new_config["ai_bot_key"] = existing_key
-            else:
-                # Empty string sent explicitly → delete the key
-                new_config.pop("ai_bot_key", None)
-                new_config.pop("ai_bot_key_configured", None)
-        # ai_bot_key_configured is computed server-side; strip any client-sent value
-        new_config.pop("ai_bot_key_configured", None)
-        link.appearance_config = new_config
+        appearance = _with_checked_guide(
+            request.appearance_config, lambda: _link_guide_catalog(db, dashboard_id, link, current_user))
+        link.appearance_config = _apply_ai_credential(db, current_user, appearance,
+                                                      dict(link.appearance_config or {}), link.id)
     # Every security-changing edit moves the link to a new security generation,
     # which invalidates every password session minted before it (see
     # public._create_public_session). That includes re-enabling a disabled link:
@@ -3723,144 +4047,9 @@ class _SuggestSystemPromptBody(BaseModel):
 
 
 @router.post("/{dashboard_id}/ai/suggest-system-prompt")
-async def suggest_ai_system_prompt(
-    dashboard_id: int,
-    body: _SuggestSystemPromptBody,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-    x_user_ai_model: str | None = Header(default=None),
-):
-    """Let the AI read the dashboard and draft a report-flow SYSTEM PROMPT
-    for the DA to review/edit. Reads the chart manifest + a few insight packs
-    (recon) and asks the LLM to write, in Vietnamese, how the AI should read
-    THIS report (domain, reading flow, key metrics, what to prioritise).
-
-    Uses the key the DA is configuring (X-User-Ai-Key) or, if absent, a key
-    already stored on one of this dashboard's public links.
-    """
-    from app.models.models import DashboardPublicLink
-    from app.services.dashboard_ai_bot.public_link_config import _infer_provider_from_key
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
-    from app.services.dashboard_ai_bot.thinking.agent import build_proactive_recon
-    from app.services.dashboard_ai_bot.providers import (
-        stream_anthropic, stream_gemini_singleshot, stream_openai,
-    )
-
-    dash = db.query(Dashboard).filter(Dashboard.id == dashboard_id).first()
-    if not dash:
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    require_view_access(db, current_user, dash, "dashboards")
-
-    # Resolve key: typed key wins; else any stored link key for this dashboard.
-    key = (x_user_ai_key or "").strip()
-    stored_provider = ""
-    if not key:
-        for link in db.query(DashboardPublicLink).filter(
-            DashboardPublicLink.dashboard_id == dashboard_id
-        ).all():
-            ac = link.appearance_config or {}
-            if ac.get("ai_bot_key"):
-                key = str(ac["ai_bot_key"]).strip()
-                stored_provider = str(ac.get("ai_bot_provider") or "").strip().lower()
-                break
-    if not key:
-        raise HTTPException(
-            status_code=400,
-            detail="Cần API key (nhập key vào ô API key trước, hoặc lưu key cho link).",
-        )
-
-    provider = (
-        (body.provider or x_user_ai_provider or "").strip().lower()
-        or stored_provider or _infer_provider_from_key(key) or "openai"
-    )
-    if provider not in ("anthropic", "openai", "gemini"):
-        raise HTTPException(status_code=400, detail="Nhà cung cấp không hợp lệ.")
-    # A concrete model is required (passing None makes some providers 400).
-    _DEFAULT_MODEL = {
-        "anthropic": "claude-haiku-4-5-20251001",
-        "openai": "gpt-4o-mini",
-        "gemini": "gemini-2.0-flash",
-    }
-    model = (body.model or x_user_ai_model or "").strip() or _DEFAULT_MODEL[provider]
-
-    # Build recon (chart manifest + a few insight packs).
-    try:
-        ctx = ToolContext.from_dashboard(db=db, dashboard=dash, public_filters=[])
-        recon = build_proactive_recon(ctx)
-    except Exception:
-        logger.exception("suggest_system_prompt recon failed dashboard=%s", dashboard_id)
-        raise HTTPException(status_code=500, detail="Không đọc được dashboard.")
-
-    manifest = (recon or {}).get("manifest") or {}
-    charts = manifest.get("charts") or []
-    chart_lines = []
-    for c in charts[:40]:
-        flds = c.get("fields") or {}
-        measures = ", ".join(
-            f"{m.get('label')}({m.get('agg')})" for m in (flds.get("measures") or []) if m.get("label")
-        )
-        dims = ", ".join(d for d in (flds.get("dimensions") or []) if d)
-        chart_lines.append(
-            f"- [{c.get('role_hint')}] {c.get('chart_name')} ({c.get('chart_type')})"
-            + (f" | đo: {measures}" if measures else "")
-            + (f" | chiều: {dims}" if dims else "")
-        )
-    manifest_text = "\n".join(chart_lines) or "(không có biểu đồ)"
-
-    # The report's PAGE flow (the DA's intended reading narrative).
-    _name_by_id = {c.get("chart_id"): c.get("chart_name") for c in charts}
-    page_lines = []
-    for i, p in enumerate(getattr(ctx, "pages", None) or [], 1):
-        cnames = ", ".join(str(_name_by_id.get(cid) or cid) for cid in (p.get("chart_ids") or []))
-        page_lines.append(f"  {i}. {p.get('name')}: {cnames or '(trống)'}")
-    pages_text = "\n".join(page_lines) or "(báo cáo 1 trang)"
-
-    system_prompt = (
-        "Bạn là chuyên gia BI giúp một Data Analyst cấu hình trợ lý AI cho MỘT báo cáo. "
-        "Dựa trên danh sách biểu đồ dưới đây, hãy VIẾT một SYSTEM PROMPT (bằng tiếng Việt) "
-        "hướng dẫn AI cách đọc báo cáo này: (1) lĩnh vực/bối cảnh; (2) FLOW đọc tự nhiên — "
-        "đọc chart nào trước, thứ tự kể chuyện; (3) các chỉ số chính & ý nghĩa; (4) cần ưu tiên/cảnh báo điều gì; "
-        "(5) khi nào nên tra cứu thêm trên web để có bối cảnh thị trường. "
-        "Viết ngắn gọn, dạng gạch đầu dòng, dùng đúng thuật ngữ trong báo cáo. "
-        "CHỈ trả về nội dung system prompt, không thêm lời dẫn."
-    )
-    user_prompt = (
-        f"Tên báo cáo: {dash.name or '(chưa đặt tên)'}\n"
-        f"Mô tả: {getattr(dash, 'description', '') or '(không có)'}\n\n"
-        f"CẤU TRÚC TRANG (flow tự nhiên người xem đi qua):\n{pages_text}\n\n"
-        f"Các biểu đồ ({len(charts)} duy nhất):\n{manifest_text}\n\n"
-        "Hãy viết system prompt điều hướng AI đọc báo cáo này, FLOW bám theo "
-        "thứ tự các trang ở trên (mỗi trang là một bước trong câu chuyện)."
-    )
-
-    streamer = (
-        stream_anthropic if provider == "anthropic"
-        else stream_openai if provider == "openai"
-        else stream_gemini_singleshot
-    )
-    parts: list[str] = []
-    try:
-        async for ev in streamer(
-            api_key=key,
-            system_prompt=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}],
-            tools=None,
-            model=model,
-            max_tokens=1200,
-        ):
-            if getattr(ev, "type", None) == "text" and getattr(ev, "text", ""):
-                parts.append(ev.text)
-            elif getattr(ev, "type", None) == "error":
-                raise HTTPException(status_code=502, detail=ev.text or "AI provider error")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("suggest_system_prompt LLM failed dashboard=%s", dashboard_id)
-        raise HTTPException(status_code=502, detail="Gọi AI thất bại.")
-
-    text = "".join(parts).strip()
-    if not text:
-        raise HTTPException(status_code=502, detail="AI không trả về nội dung.")
-    return {"system_prompt": text[:4000]}
+def suggest_ai_system_prompt(dashboard_id: int, current_user: User = Depends(get_current_user)):
+    """RETIRED (2026-10-28). It called a model with a key typed into a header or
+    read from a link's JSON, outside every budget, to draft the Flow-first bot's
+    report note. The public AI Bot answers through the Answer Core, which does not
+    read that note; no paid call bypasses the Model Gateway."""
+    raise HTTPException(status_code=410, detail="Tính năng này đã ngừng; trợ lý AI của báo cáo không cần ghi chú này.")

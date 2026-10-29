@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.gzip import GZipMiddleware
+from app.core.http_compression import StreamSafeGZipMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -33,6 +33,10 @@ async def lifespan(app: FastAPI):
     # ── Startup ──────────────────────────────────────────────────────────────
     import logging
     logging.getLogger(__name__).info("Data directory: %s", settings.data_dir_path)
+
+    # Test-only AI spending cap: refuse unmetered paid AI requests (inert without a budget)
+    from app.services.llm_test_budget import install_guard
+    install_guard()
 
     # Anomaly detection daily scheduler (Phase 4)
     from app.services.anomaly_scheduler import startup as anomaly_scheduler_startup
@@ -158,8 +162,9 @@ app.add_middleware(
 )
 print("DEBUG: CORS middleware added")
 
-# Compress responses > 1 KB — chart data payloads shrink ~10× with gzip.
-app.add_middleware(GZipMiddleware, minimum_size=1000)
+# Compress responses > 1 KB — chart data payloads shrink ~10× with gzip. Event
+# streams are left alone, or every event would arrive only when the stream ends.
+app.add_middleware(StreamSafeGZipMiddleware, minimum_size=1000)
 
 # Client address for every rate limit: forwarded headers are honoured from our
 # own proxies only, counting hops from the right (app/core/trusted_proxy.py).

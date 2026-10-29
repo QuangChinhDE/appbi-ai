@@ -41,13 +41,6 @@ _PUBLIC_MEASURE_TYPES = frozenset({"count", "sum", "avg", "min", "max", "count_d
 from app.schemas.schemas import AiChatSessionSave
 from app.services import ChartService
 from app.services.dataset_model_service import get_dataset_model, get_distinct_field_values, _DISTINCT_FETCH_CEILING
-from app.services.dashboard_ai_bot.public_link_config import (
-    resolve_public_ai_credentials,
-    resolve_public_ai_critique_enabled,
-    resolve_public_ai_mode,
-    sanitize_report_context_note,
-    web_search_enabled,
-)
 import uuid as _uuid
 from typing import Any
 
@@ -56,14 +49,9 @@ from app.services.report_pptx_service import ReportPptxRequest
 
 from app.services import pdf_export_service
 from app.services.embed_link_service import EMBED_GRANT_PREFIX, embed_policy_for_token, resolve_embed_grant
-#: The SSE wire format, shared with the authenticated Direct Chat route. Two
-#: copies of it would agree only until one of them gained an event, and the
-#: browser parser is a single implementation.
-from app.services.agent_flows.wire import event_to_envelope as _event_to_envelope
 from app.services.filter_layered_merge import (
     DISCLOSE_KEY,
     canonical_link_entry,
-    disclosed_applied_filters,
     enforce_author_bounds,
     filter_names_only_exposed_fields,
     hard_bounds_on_field,
@@ -81,6 +69,8 @@ from app.services.filter_layered_merge import (
     link_managed_field_keys,
     make_public_layers,
     merge_layered_filters,
+    slicers_filtering_pages,
+    viewer_picks_filtering_pages,
     split_dashboard_filters_by_public_mode,
     split_link_filters_locked_vs_hidden,
 )
@@ -402,14 +392,26 @@ def _augment_with_slicer_fields(
     }
     models: dict[int, dict] = {}
     augmented = list(base)
+    raw_keys = {str(c.get("key")) for c in base if isinstance(c, dict) and c.get("key")}
     for slc in slicers:
         if not isinstance(slc, dict):
             continue
         dataset_id = slc.get("datasetId")
-        if not isinstance(dataset_id, int):
-            continue
         refs = _public_filter_semantic_refs(slc)
-        if not refs:
+        if not isinstance(dataset_id, int) or not refs:
+            # An imported report's slicer names a raw column ({field: "Kỳ"}, no
+            # dataset, no view.field) - the tiles filter by it per chart base view,
+            # but its dropdown had no values (customer demo 2026-10-28). Resolve it
+            # the way the engine does, over the PUBLISHED charts only; the slicer
+            # config is never rewritten (forcing a semanticField onto a report-wide
+            # slicer would drop it on charts of other views, ADR #79).
+            raw = str(slc.get("field") or "").strip()
+            if not raw or "." in raw or raw in raw_keys:
+                continue
+            column = _resolve_raw_slicer_field(db, dash, raw, models)
+            if column:
+                raw_keys.add(raw)
+                augmented.append(column)
             continue
         semantic_field = refs[0]
         key = (dataset_id, semantic_field)
@@ -427,6 +429,36 @@ def _augment_with_slicer_fields(
         column["sharedAcrossDataset"] = True
         augmented.append(column)
     return augmented
+
+
+def _resolve_raw_slicer_field(db: Session, dash: Dashboard, raw: str, models: dict[int, dict]) -> dict | None:
+    """The filter column of a raw-column slicer: the published charts whose binding
+    takes that plain field (`chart_service._plain_field_is_supported_by_binding`:
+    its `fieldMap` key, or `<baseView>.<field>` among its fields), the semantic ref
+    most of them read it through. Keyed by the RAW field, so the public filter bar
+    matches the slicer (`getFilterKey`) and asks the distinct values of that ref."""
+    coverage: dict[tuple[int, str], set[int]] = {}
+    for dc in dash.dashboard_charts or []:
+        cfg = dc.chart.config if getattr(dc, "chart", None) is not None else None
+        binding = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
+        if not isinstance(binding, dict) or not isinstance(binding.get("datasetId"), int):
+            continue
+        ref = (binding.get("fieldMap") or {}).get(raw)
+        base_view = str(binding.get("baseViewName") or "").strip()
+        known = {str(v) for v in [*(binding.get("dimensionFields") or []), *(binding.get("reachableFields") or [])]}
+        if not ref and base_view and f"{base_view}.{raw}" in known:
+            ref = f"{base_view}.{raw}"
+        if isinstance(ref, str) and "." in ref:
+            coverage.setdefault((binding["datasetId"], ref), set()).add(dc.chart_id)
+    if not coverage:
+        return None
+    (dataset_id, ref), charts = max(coverage.items(), key=lambda kv: (len(kv[1]), kv[0][1]))
+    column = _resolve_semantic_field_metadata(db, dataset_id, ref, dataset_models=models)
+    if not column:
+        return None
+    total = len(dash.dashboard_charts or [])
+    return {**column, "key": raw, "chartCoverage": len(charts), "datasetChartCount": total,
+            "sharedAcrossDataset": len(charts) == total}
 
 
 def _build_public_filter_fields(
@@ -587,6 +619,14 @@ def _sanitize_public_viewer_filters(
     }
     if not allowed_fields:
         return []
+    # a raw-column slicer's pick ({field: "Kỳ"}) cascades through the ref its column
+    # was resolved to (`_resolve_raw_slicer_field`) - only that, only on that dataset
+    raw_to_ref = {
+        str(item.get("key")): str(item.get("semanticField"))
+        for item in public_filter_fields
+        if item.get("datasetId") == dataset_id and item.get("semanticField")
+        and item.get("key") and "." not in str(item.get("key"))
+    }
 
     sanitized: list[dict] = []
     for filter_condition in viewer_filters:
@@ -597,7 +637,7 @@ def _sanitize_public_viewer_filters(
         matched_field = next(
             (ref for ref in _public_filter_semantic_refs(filter_condition) if ref in allowed_fields),
             None,
-        )
+        ) or raw_to_ref.get(str(filter_condition.get("field") or "").strip())
         if not matched_field:
             continue
 
@@ -700,6 +740,7 @@ def _build_public_chart_filters(
     context_for_log: str = "public_chart",
     hard_bounds_out: list[dict] | None = None,
     viewer_allowed: tuple[set[str], set[str]] | None = None,
+    slicer_page_ids: list[str] | None = None,
 ) -> list[dict]:
     """Phase-B (PBI-parity rework) — single layered merge for every
     public endpoint that fetches chart data.
@@ -812,12 +853,21 @@ def _build_public_chart_filters(
         if str(f.get("publicMode") or f.get("public_mode") or "").lower() == "hidden" else f
         for f in authoritative_filters
     ]
+    _slicer_pages = slicer_page_ids if slicer_page_ids is not None else page_ids
+    viewer_filters = viewer_picks_filtering_pages(
+        viewer_filters, list(getattr(dash, "slicers_config", None) or []), _slicer_pages,
+    )
     merge_diagnostics: list[dict] = []
     merged = merge_layered_filters(
         make_public_layers(
             dashboard_filters=visible_filters,
             dashboard_filters_locked=authoritative_filters,
-            dashboard_slicers=list(getattr(dash, "slicers_config", None) or []),
+            # Only the slicers that filter the page(s) this chart is on — a
+            # custom-scope slicer switched off for a page must not reach it.
+            dashboard_slicers=slicers_filtering_pages(
+                list(getattr(dash, "slicers_config", None) or []),
+                _slicer_pages,
+            ),
             viewer_slicers=list(viewer_filters or []),
             viewer_filters=[],  # mini-pane overrides — wired in Phase F
             link_locked=locked_link,
@@ -1924,43 +1974,25 @@ def get_public_dashboard(
     dash.public_link_locked_filters = link_filters_a_viewer_may_see(link_hidden_filters)
     dash.public_link_hidden_filters = []
     dash.public_link_name = link_name
-    # Strip the admin-only ai_bot_key before sending to public viewers.
-    # Replace it with a safe boolean so the AI bot UI can skip key entry.
+    # What a public viewer may know about the AI Bot: whether it is ready. No
+    # credential, no credential id, no budget figure, no author note. A viewer
+    # never brings a key (services/ai_runtime/gateway.py resolves it server-side),
+    # so `ai_bot_key_configured` now simply means "ready", kept for older clients.
     safe_appearance: dict = dict(appearance_config or {})
-    _link_key_present = bool(safe_appearance.pop("ai_bot_key", None))
-    if not _link_key_present:
-        # THE DEPLOYMENT'S OWN KEY COUNTS TOO.
-        #
-        # This flag is what decides whether the viewer is shown "paste your API
-        # key". It knew about two sources and the runtime now honours three, so a
-        # deployment with a key in its environment still stopped every viewer at a
-        # gate the server could have walked straight through.
-        from app.services.dashboard_ai_bot.public_link_config import deployment_key
+    for _k in ("ai_bot_key", "ai_bot_credential_id", "ai_bot_credential_migrated", "ai_bot_provider",
+               "ai_bot_model", "ai_bot_key_hint", "ai_bot_budget_usd_per_day", "ai_bot_turns_per_hour"):
+        safe_appearance.pop(_k, None)
+    from app.services.ai_runtime import gateway as _gateway
 
-        _link_key_present = bool(
-            deployment_key(str((appearance_config or {}).get("ai_bot_provider") or ""))[0]
-        )
-    # A BRAIN CAN SUPPLY THE CREDENTIAL TOO.
-    #
-    # This used to test only the link's own key, so a link whose brain carried a
-    # token on every step still showed the viewer "paste your API key to start" —
-    # the per-step token was authored, encrypted, honoured by the runtime, and
-    # unreachable, because the panel never let the viewer past the gate. The flag
-    # means "the viewer does not need to bring a key", so it has to account for
-    # every place a key can come from.
-    _brain_supplies_key = False
-    if not _link_key_present:
-        # Same helper the chat endpoint uses. Two answers to "does the viewer need a
-        # key" is how a working per-node token ended up behind a gate that never
-        # opened.
-        from app.services.agent_flows.dispatch import flow_supplies_credentials
-
-        _brain_supplies_key = flow_supplies_credentials(db, token=token)
-    if _link_key_present or _brain_supplies_key:
+    _ready = bool(safe_appearance.get("ai_bot_enabled")) and bool(
+        _gateway.readiness(db, appearance_config or {}).get("ready"))
+    safe_appearance["ai_bot_ready"] = _ready
+    if _ready:
         safe_appearance["ai_bot_key_configured"] = True
     else:
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
+    safe_appearance.pop("ai_bot_guide", None)  # the publisher's structured guide: never served
     dash.public_link_appearance = safe_appearance
     # Published device layouts as a viewer gets them: the served pages, published
     # tiles only, no author identity or revision. Shaped on the served copy only
@@ -3625,12 +3657,25 @@ def _public_link_tool_context(
     from app.services.dashboard_ai_bot.tool_context import ToolContext
 
     _refuse_malformed_link(link_filters_config)
+    _viewer = [f for f in (viewer_filters or []) if isinstance(f, dict)]
     combined = _build_public_chart_filters(
-        dash, link_filters_config, [f for f in (viewer_filters or []) if isinstance(f, dict)],
+        dash, link_filters_config, _viewer,
         context_for_log=context_for_log,
     )
+    # A custom-scope slicer filters only the pages it is set to: a chart reads
+    # the slicers of ITS page(s), as its tile does — not every slicer of the
+    # report (which the engine refuses on a chart it cannot join to).
+    public_filters_by_chart: dict[int, list[dict]] = {}
+    if any(isinstance(s, dict) and s.get("scope") == "custom" for s in (getattr(dash, "slicers_config", None) or [])):
+        for _cid in {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id}:
+            public_filters_by_chart[_cid] = _build_public_chart_filters(
+                dash, link_filters_config, _viewer,
+                context_for_log=context_for_log,
+                slicer_page_ids=_public_chart_page_ids(dash, _cid, None),
+            )
     return ToolContext.from_dashboard(
         db=db, dashboard=dash, public_filters=combined,
+        public_filters_by_chart=public_filters_by_chart,
         page_scope_by_chart=_public_page_scope_by_chart(dash, link_filters_config),
         exposed_fields=_viewer_allowed(dash, link_filters_config),
         # the link's data freshness, as its tiles read it (Realtime = live)
@@ -4644,103 +4689,12 @@ def get_dashboard_ai_briefing_guess(
 
 
 @router.post("/dashboards/{token}/ai/briefing/brief")
-@_limiter.limit("10/minute")
-async def post_dashboard_ai_briefing_brief(
-    token: str,
-    body: _AiBriefingBriefBody,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-    x_user_ai_model: str | None = Header(default=None),
-):
-    """Generate an Executive Brief paragraph using the user's confirmed
-    briefing + the dashboard recon. Streams text via SSE.
-    """
-    import json as _json
-    from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.thinking.agent import (
-        build_proactive_recon_cached as build_proactive_recon,  # Phase 16.1 — TTL cache
-    )
-    from app.services.dashboard_ai_bot.thinking.briefing import (
-        Briefing,
-        EXEC_BRIEF_SYSTEM_PROMPT,
-        build_executive_brief_user_prompt,
-    )
-    from app.services.dashboard_ai_bot.providers import (
-        stream_anthropic, stream_gemini_singleshot, stream_openai,
-    )
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-    effective_key, provider, model = resolve_public_ai_credentials(
-        appearance_config,
-        x_user_ai_key=x_user_ai_key,
-        x_user_ai_provider=x_user_ai_provider,
-        x_user_ai_model=x_user_ai_model,
-        missing_key_detail="X-User-Ai-Key header is required.",
-    )
-
-    _guard_viewer_text(token, briefing=body.briefing or {})
-    briefing = Briefing.from_dict(body.briefing or {})
-    briefing.confirmed = True
-
-    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
-                                    [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_briefing:{token_ref(token)}")
-    combined_filters = ctx.public_filters
-    recon = build_proactive_recon(ctx)
-    user_prompt = build_executive_brief_user_prompt(
-        briefing=briefing,
-        recon=recon,
-        report_context_note=sanitize_report_context_note(
-            (appearance_config or {}).get("ai_bot_report_context_note"),
-        ),
-    )
-
-    if provider == "anthropic":
-        streamer = stream_anthropic
-    elif provider == "openai":
-        streamer = stream_openai
-    else:
-        streamer = stream_gemini_singleshot
-
-    captured_key = effective_key
-
-    async def sse_stream():
-        try:
-            async for ev in streamer(
-                api_key=captured_key,
-                system_prompt=EXEC_BRIEF_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_prompt}],
-                tools=None,
-                model=model or None,
-            ):
-                envelope = _event_to_envelope(ev)
-                if envelope is None:
-                    continue
-                yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
-        except Exception as exc:
-            logger.exception("AI briefing brief streaming failed")
-            yield f"data: {_json.dumps({'type':'error','text':f'Brief failed: {type(exc).__name__}'})}\n\n"
-        finally:
-            yield f"data: {_json.dumps({'type':'done'})}\n\n"
-
-    return StreamingResponse(
-        sse_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
-                     "Content-Encoding": "identity"},
-    )
+def post_dashboard_ai_briefing_brief(token: str):
+    """RETIRED (2026-10-28). The executive brief was a second answering engine: a
+    model wrote business figures from the report's recon with no governed read
+    and no verification, on a key a viewer could supply. Every viewer question is
+    answered by the Answer Core at `/dashboards/{token}/ai/answer`."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_RETIRED_AI_ROUTE)
 
 
 # â”€â”€ AI Chat Session persistence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -4937,502 +4891,13 @@ async def clear_ai_chat_session(
 # ── AI bot institutional memory (learned company knowledge) ──────────────────
 
 @router.post("/dashboards/{token}/ai/agent/chat")
-@_limiter.limit("20/minute")
-async def chat_dashboard_ai_agent(
-    token: str,
-    body: _AiAgentChatBody,
-    request: Request,
-    db: Session = Depends(get_db),
-    x_public_session: str | None = Header(default=None),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-    x_user_ai_model: str | None = Header(default=None),
-    x_user_ai_mode: str | None = Header(default=None, alias="X-User-Ai-Mode"),
-    x_user_ai_intent: str | None = Header(default=None, alias="X-User-Ai-Intent"),
-):
-    """Run an agentic chat turn. Streams typed SSE events.
-
-    Honors the dashboard's public filters automatically â€” every tool the
-    agent calls applies the same filters the dashboard is currently showing.
-    """
-    import json as _json
-    from fastapi.responses import StreamingResponse
-    # `run_agent_stream` — the first-generation bot — used to be imported here and
-    # is now dead: this endpoint dispatches only through `agent_flows.dispatch`.
-    # Left in place it read as a live second engine, which is exactly the confusion
-    # to avoid when asking "what actually answers a viewer".
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
-
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
-
-    # NO CREDENTIAL IS RESOLVED HERE, and `X-User-Ai-Key` is not read for chat.
-    #
-    # Every chat turn on this endpoint runs the link's bound Agent Flow, and every
-    # step of that flow runs on its OWN stored key (services/agent_flows/
-    # credentials.py) — not the viewer's pasted key, not the link's `ai_bot_key`,
-    # not the server's environment. A flow without usable keys is refused inside
-    # `run_for_link` with a sentence for the viewer. The telemetry row records no
-    # provider or model: each step chose its own.
-    provider, model = None, None
-
-    web_search_flag = web_search_enabled(appearance_config)
-    # Depth is no longer a link setting. It is a property of the way of thinking
-    # the link chose: a one-step lookup flow and a five-step analysis flow ARE the
-    # two modes, expressed as flows instead of as a dropdown that silently
-    # reconfigured a monolithic bot. Recorded as a constant so trace rows stay
-    # comparable across the change.
-    effective_mode = "thinking"
-
-    # Guide mode ("Hướng dẫn xem báo cáo") — teach a NEW viewer how to READ this
-    # report, step by step, in plain language. This is a per-turn INTENT the chat
-    # UI sends, not link configuration, so it survives the rework; the link's
-    # free-text note does not (a flow's prompts are where that belongs, and
-    # migration 0038 moved every existing note into one).
-    report_note = ""
-    if (x_user_ai_intent or "").strip().lower() == "guide":
-        report_note = (
-            report_note
-            + "\n\n═══ CHẾ ĐỘ HƯỚNG DẪN (dạy người MỚI đọc báo cáo, theo 3 CẤP) ═══\n"
-            + "Bạn là người hướng dẫn kiên nhẫn. Đi theo 3 cấp, MỖI LƯỢT chỉ làm MỘT cấp, "
-            + "giọng đơn giản dễ hiểu. Luôn gọi `list_charts` để lấy đúng tên trang/biểu đồ + "
-            + "trường `pages` (flow) và `related` (biểu đồ dùng chung measure). KHÔNG bịa tên.\n\n"
-            + "• CẤP 1 — BẢN ĐỒ TỔNG QUAN (lượt ĐẦU TIÊN): vẽ bức tranh TOÀN báo cáo — liệt kê "
-            + "TẤT CẢ các trang theo thứ tự, mỗi trang 1-2 câu (trang đó gồm biểu đồ gì, cho biết "
-            + "điều gì). CHƯA đào số liệu. Kết thúc, mời chọn và phát MỖI TRANG một dòng:\n"
-            + "    [FOLLOWUP] Đi sâu trang: <tên trang>\n"
-            + "  (Người xem có thể bấm chip, hoặc tự gõ tên trang/biểu đồ — đều nhận.)\n\n"
-            + "• CẤP 2 — MỘT TRANG: khi người xem chọn/gõ một trang, giới thiệu NGẮN các biểu đồ "
-            + "trên trang đó (mỗi cái cho biết gì, chưa đào số). Kết thúc, phát MỖI BIỂU ĐỒ một dòng:\n"
-            + "    [FOLLOWUP] Giải thích chi tiết: <tên biểu đồ>\n\n"
-            + "• CẤP 3 — MỘT BIỂU ĐỒ (đào sâu): gọi `get_chart_summary` (và `get_chart_glossary` nếu cần) rồi:\n"
-            + "    1) Giải thích CÁCH RA CON SỐ: đo lường nào, phép tính gì (tổng/trung bình/đếm…), "
-            + "gom theo chiều nào, lọc gì — đơn giản, KÈM VÍ DỤ SỐ cụ thể từ chính báo cáo "
-            + "(vd: 'Doanh thu Core = tổng cột amount của các dòng tier=Core = 10,389,059').\n"
-            + "    2) Cuối cùng, phát các BIỂU ĐỒ LIÊN QUAN lấy từ trường `related` trong KẾT QUẢ "
-            + "`get_chart_summary` của biểu đồ đó (dùng chung measure) — nếu danh sách `related` rỗng "
-            + "thì bỏ qua, đừng bịa. Mỗi cái một dòng để người xem xem nhanh, không đứt mạch:\n"
-            + "    [FOLLOWUP] Xem biểu đồ liên quan: <tên biểu đồ>\n\n"
-            + "Mỗi lượt vẫn kết bằng một câu mời tiếp tục thân thiện."
-        ).strip()
-
-    messages = body.messages or []
-    if not messages:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="messages is required.")
-
-    # Sanitize: strip any tool/assistant turns referencing chart_ids outside
-    # this dashboard (defensive â€” clients shouldn't send these but we guard).
-    allowed_chart_ids = {dc.chart_id for dc in (dash.dashboard_charts or []) if dc.chart_id and not is_draft_only_item(dc)}
-    safe_messages: list[dict] = []
-    for msg in messages:
-        if not isinstance(msg, dict):
-            continue
-        role = msg.get("role")
-        if role not in ("user", "assistant", "tool"):
-            continue
-        # For previous tool turns the FE shouldn't be sending raw tool history
-        # back; we accept user/assistant text only from the wire and let the
-        # agent rebuild the tool log fresh each turn.
-        if role == "tool":
-            continue
-        out: dict = {"role": role}
-        content = msg.get("content")
-        if content is not None:
-            out["content"] = str(content)
-        # Drop any tool_calls echoed back â€” agent treats turns as fresh
-        safe_messages.append(out)
-
-    if not safe_messages:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No valid messages.")
-
-    # ── P0-06 Budget ceiling (denial-of-wallet) ─────────────────────────────
-    # Checked BEFORE the guard and before any model call: the point is to stop
-    # spending, so it has to be the cheapest gate that runs first. Only binds on
-    # cost when the ORG's key pays; a viewer on their own key is metered but
-    # never blocked for spend.
-    from app.services.dashboard_ai_bot.budget import check_budget as _check_budget
-    _budget = _check_budget(
-        db,
-        token=token,
-        appearance_config=appearance_config,
-        viewer_supplied_key=bool((x_user_ai_key or "").strip()),
-    )
-    if not _budget.allowed:
-        logger.warning("ai_bot budget block link=%s %s", token_ref(token), _budget.to_log())
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_budget.message,
-        )
-
-    # ── P0-03 Input guardrail ───────────────────────────────────────────────
-    # Deterministic, zero LLM calls. In "log" mode nothing is rejected — the
-    # codes are recorded so the false-positive rate can be measured on real
-    # traffic before the deployment flips to "block".
-    from app.services.dashboard_ai_bot.guard import check_input as _check_input
-    _last_user_msg = ""
-    for _m in reversed(safe_messages):
-        if _m.get("role") == "user":
-            _last_user_msg = str(_m.get("content") or "")
-            break
-    _guard = _check_input(_last_user_msg, mode=settings.INTELLIGENCE_GUARD_MODE)
-    # The BRIEFING is viewer text too, and it was not being checked. Only the
-    # chat box was, so an instruction typed into "custom_note" or "smart_goal"
-    # walked past the guard into the same prompt.
-    #
-    # Checked SEPARATELY, not concatenated onto the question: `_guard`
-    # carries `normalized_question`, and a few lines below that value REPLACES
-    # the user's message. Feeding it the briefing as well would have rewritten
-    # the viewer's question to question-plus-briefing — a guard that corrupts
-    # the thing it protects.
-    _brief_text = "\n".join(
-        str((body.briefing or {}).get(k) or "")
-        for k in ("custom_note", "smart_goal", "domain_label")
-    ).strip() if isinstance(body.briefing, dict) else ""
-    if _brief_text:
-        _bguard = _check_input(_brief_text, mode=settings.INTELLIGENCE_GUARD_MODE)
-        if _bguard.codes:
-            logger.warning("ai_bot guard(briefing) link=%s %s text=%r",
-                           token_ref(token), _bguard.to_log(), _brief_text[:160])
-        if not _bguard.allowed:
-            _guard = _bguard
-    if _guard.codes:
-        logger.warning(
-            "ai_bot guard link=%s %s question=%r",
-            token_ref(token), _guard.to_log(), _last_user_msg[:160],
-        )
-    if not _guard.allowed:
-        async def _blocked_stream():
-            yield "data: " + _json.dumps(
-                {"type": "text", "text": _guard.message}, ensure_ascii=False
-            ) + "\n\n"
-            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
-
-        return StreamingResponse(
-            _blocked_stream(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
-                     "Content-Encoding": "identity"},
-        )
-    # Feed the normalized text (invisibles stripped, length-capped) to the agent.
-    if _guard.normalized_question and _guard.normalized_question != _last_user_msg:
-        for _m in reversed(safe_messages):
-            if _m.get("role") == "user":
-                _m["content"] = _guard.normalized_question
-                break
-
-    # Merge link-level public filters with viewer-applied slicer filters
-    # from the dashboard UI through the shared layered-merge helper.
-    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
-                                    [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_chat_extra:{token_ref(token)}")
-    combined_filters = ctx.public_filters
-
-    # Phase A + B: parse briefing + state, default-construct if missing.
-    from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
-    from app.services.dashboard_ai_bot.thinking.conversation_state import ConversationState as _ConvState
-    briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
-    state_obj = _ConvState.from_dict(body.state or {}) if body.state is not None else _ConvState()
-    # Briefing on the state may be older than what FE sent â€” sync to caller's
-    # current briefing so role/focus changes take effect immediately.
-    if briefing_obj is not None:
-        state_obj.briefing = briefing_obj
-
-    # Phase 15.77 — Normal/Thinking dispatch. The chat UI's toggle
-    # comes through as X-User-Ai-Mode header; the dispatcher routes
-    # to dashboard_ai_bot/normal or dashboard_ai_bot/thinking and
-    # silently strips kwargs the normal variant doesn't accept
-    # (briefing, state).
-    async def sse_stream():
-        import asyncio
-        # Watchdog: a turn must never strand the UI on "Thinking…". If no event
-        # arrives for IDLE_TIMEOUT (a tool/LLM/proxy stall) or the whole turn
-        # exceeds HARD_TIMEOUT, emit a terminal error+done so the client can
-        # recover (show Retry) instead of hanging forever.
-        IDLE_TIMEOUT = 60.0
-        HARD_TIMEOUT = 240.0
-        loop = asyncio.get_event_loop()
-        started = loop.time()
-        # Knowledge is NOT assembled here.
-        #
-        # This used to call build_knowledge_context_block with no `sources`
-        # argument — every authored source, on every question — and hand the
-        # result to every step. That made "the brain decides what the bot may
-        # read" untrue in the only direction that matters: the FLOOR was
-        # everything, so an author who deliberately left knowledge off a step
-        # still got the full block. Each step's own attachments own this now
-        # (`run_scope` below), and documents and metric definitions are reached by
-        # tool only when a step is granted them.
-
-        # WHERE A PUBLIC LINK'S CHATBOT GETS ITS FLOW.
-        #
-        # Everything about resolving the flow, checking the link's data contract,
-        # narrowing the tool context to what that contract allows, loading session
-        # memory and recording the run now lives in `agent_flows.dispatch`. Three
-        # callers need that path — this endpoint, the Studio's Test button and
-        # replay — and a path that lives inside an HTTP handler can only have one.
-        #
-        # FAIL CLOSED. No binding, a binding whose dashboard has changed under it, or
-        # nothing published: the viewer is told and no answer is produced. There is
-        # deliberately no "read whatever is on the dashboard" fallback — that
-        # fallback is what "define the data before assigning the flow" removes.
-        from app.services.agent_flows.dispatch import run_for_link
-        from app.services.dashboard_ai_bot.thinking.prompts import (
-            build_agent_system_prompt as _build_base_prompt,
-        )
-
-        _link_row = db.query(DashboardPublicLink).filter(
-            DashboardPublicLink.token == token,
-            DashboardPublicLink.is_active.is_(True),
-        ).first()
-
-        # The SHARED base prompt, not a new one. It carries the citation contract,
-        # the answer-in-the-viewer's-language rule and the report's own identity +
-        # active filters; each node's authored instructions are appended to it
-        # rather than replacing it.
-        _base_prompt = _build_base_prompt(
-            dashboard_name=dash.name or "Dashboard",
-            dashboard_description=getattr(dash, "description", None),
-            chart_count=len(getattr(ctx, "charts", []) or []),
-            # What the model is TOLD: a 🚫 hidden constraint is applied through
-            # ctx.public_filters and never printed into the prompt.
-            filters_applied=disclosed_applied_filters(combined_filters)[0],
-            max_tool_calls=8,
-            report_context_note=report_note,
-            # A FLOW DOES NOT NEED THE TOOL NARRATION.
-            #
-            # Schemas reach the model through the API's `tools` field, and a flow
-            # grants tools per NODE — so the prose list was both a duplicate and
-            # wrong for every node that holds fewer tools than the product has.
-            # Half the base prompt, ~1,160 tokens, on every model call in the run.
-            include_tools=False,
-        )
-
-        if _link_row is None:
-            async def _no_link():
-                from app.services.dashboard_ai_bot.events import AgentEvent
-
-                yield AgentEvent(
-                    type="text",
-                    text="Không xác định được link công khai của báo cáo này.",
-                )
-                yield AgentEvent(type="done")
-
-            agen = _no_link().__aiter__()
-        else:
-            agen = run_for_link(
-                db,
-                link=_link_row,
-                dashboard=dash,
-                ctx=ctx,
-                question=_guard.normalized_question or _last_user_msg,
-                history=safe_messages[:-1] if safe_messages else [],
-                # THE CONVERSATION's key, not the LINK's.
-                #
-                # `X-Public-Session` identifies a public-link access session
-                # (password/expiry). The chat's own identity arrives in the BODY as
-                # `session_key`, and keying memory off the header meant every real
-                # browser turn looked like a brand-new conversation: the report was
-                # re-read every question and `when_stale` never once fired. It
-                # passed in testing only because a script sets the header by hand.
-                session_key=(body.session_key or x_public_session or ""),
-                filters=combined_filters or [],
-                base_system_prompt=_base_prompt,
-            ).__aiter__()
-        timed_out = False
-        # Per-turn telemetry accumulators (written to ai_chat_turn_logs at end).
-        m_tools: list[str] = []
-        m_web = False
-        m_mode = effective_mode
-        m_prompt = m_completion = m_rounds = 0
-        m_usd: float | None = None
-        m_answer = False
-        m_error = False
-        # P0-02 — the ONLY findings we ever learn from: the ones the agent
-        # itself derived from this turn's tool_log, captured off the SSE
-        # `state` event. Never anything a client posted back to us.
-        m_server_state: dict | None = None
-        m_verif_cov: float | None = None
-        m_verif_unmatched: int | None = None
-        # Idle is measured from the LAST REAL EVENT, not from the start of the
-        # turn: a long but healthy run must not be cut off just for being long.
-        _last_event = loop.time()
-        try:
-            _pending: asyncio.Future | None = None
-            while True:
-                # `asyncio.wait_for` CANCELS what it is waiting on when it times
-                # out. Using it for the keepalive tick therefore killed the very
-                # model call the keepalive existed to wait for — the turn died
-                # mid-node and was recorded as abandoned. `asyncio.wait` leaves the
-                # pending task alone, which is the whole point: tick, breathe, keep
-                # waiting on the SAME call.
-                if _pending is None:
-                    _pending = asyncio.ensure_future(agen.__anext__())
-                _finished, _ = await asyncio.wait({_pending}, timeout=8.0)
-                try:
-                    if not _finished:
-                        raise asyncio.TimeoutError
-                    ev = _pending.result()
-                    _pending = None
-                except StopAsyncIteration:
-                    _pending = None
-                    break
-                except asyncio.TimeoutError:
-                    # SSE KEEPALIVE, not a failure.
-                    #
-                    # A flow node can be silent for a long time — one call to a
-                    # reasoning model is tens of seconds with nothing to stream —
-                    # and every layer between here and the browser (Next's rewrite
-                    # proxy, nginx, the client's own watchdog) reads silence as a
-                    # dead connection. A real turn on gpt-5 took 91s and the chat
-                    # gave up at 29s having received a perfectly healthy stream.
-                    # So the stream breathes: a comment frame, which SSE ignores
-                    # and every proxy counts as traffic.
-                    if loop.time() - _last_event > IDLE_TIMEOUT:
-                        timed_out = True
-                        break
-                    yield ": keepalive\n\n"
-                    continue
-                _last_event = loop.time()
-                # Tally telemetry from the raw event.
-                _et = getattr(ev, "type", None)
-                if _et == "route":
-                    m_mode = ((ev.extra or {}).get("route") or {}).get("mode") or m_mode
-                elif _et == "tool_result":
-                    tn = getattr(ev, "tool_name", None)
-                    if tn:
-                        m_tools.append(tn)
-                        if tn == "web_search":
-                            m_web = True
-                elif _et == "cost":
-                    c = (ev.extra or {}).get("cost") or {}
-                    m_prompt = int(c.get("prompt_tokens") or m_prompt)
-                    m_completion = int(c.get("completion_tokens") or m_completion)
-                    m_rounds = int(c.get("rounds") or m_rounds)
-                    m_usd = c.get("usd", m_usd)
-                elif _et == "text" and getattr(ev, "text", ""):
-                    m_answer = True
-                elif _et == "error":
-                    m_error = True
-                elif _et == "state":
-                    _st = (ev.extra or {}).get("state")
-                    if isinstance(_st, dict):
-                        m_server_state = _st
-                elif _et == "verification":
-                    _v = (ev.extra or {}).get("verification") or {}
-                    m_verif_cov = _v.get("coverage")
-                    m_verif_unmatched = len(_v.get("unmatched") or [])
-                envelope = _event_to_envelope(ev)
-                if envelope is not None:
-                    yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
-                if envelope is not None and envelope.get("type") == "done":
-                    return
-                if loop.time() - started > HARD_TIMEOUT:
-                    timed_out = True
-                    break
-        finally:
-            try:
-                await agen.aclose()
-            except Exception:
-                pass
-            # P0-02 — learn from SERVER-computed findings for this turn only.
-            # `m_server_state` comes from the agent's own `_evolve_state`, which
-            # derives findings from the executed tool_log; a client cannot
-            # influence it. Filtering on turn_index keeps cumulative state from
-            # re-inflating support_count on every turn.
-            try:
-                if isinstance(m_server_state, dict):
-                    from app.core.database import SessionLocal as _SL2
-                    from app.services.dashboard_ai_bot import knowledge as _kb2
-                    _all = m_server_state.get("findings")
-                    _cur = m_server_state.get("turn_index")
-                    _this_turn = [
-                        f for f in (_all if isinstance(_all, list) else [])
-                        if isinstance(f, dict)
-                        and (not isinstance(_cur, int) or f.get("turn_index") == _cur)
-                    ]
-                    if _this_turn:
-                        _kb_db = _SL2()
-                        try:
-                            _kb2.capture_findings(
-                                _kb_db, dashboard_id=dash.id, findings=_this_turn,
-                                rated_down=False,
-                            )
-                            _kb_db.commit()
-                        finally:
-                            _kb_db.close()
-            except Exception:
-                logger.warning("ai server-side finding capture failed", exc_info=True)
-            # Write per-turn telemetry (best-effort, never breaks the stream).
-            try:
-                from app.core.database import SessionLocal as _SL
-                from app.models.ai_chat_turn_log import AiChatTurnLog
-                _q = ""
-                for _m in reversed(safe_messages):
-                    if _m.get("role") == "user":
-                        _q = str(_m.get("content") or "")[:1000]
-                        break
-                _log_db = _SL()
-                try:
-                    _log_db.add(AiChatTurnLog(
-                        token=token,
-                        session_key=(body.session_key or None),
-                        mode=m_mode,
-                        routed=("auto" if (x_user_ai_mode or "").strip().lower() in ("", "auto") else "manual"),
-                        provider=provider,
-                        model=model,
-                        question=_q,
-                        prompt_tokens=m_prompt,
-                        completion_tokens=m_completion,
-                        rounds=m_rounds,
-                        usd=(round(float(m_usd), 6) if m_usd is not None else None),
-                        tools_used=m_tools or None,
-                        web_searched=m_web,
-                        had_answer=m_answer,
-                        errored=(m_error or timed_out),
-                        latency_ms=int((loop.time() - started) * 1000),
-                        verification_coverage=m_verif_cov,
-                        verification_unmatched=m_verif_unmatched,
-                    ))
-                    _log_db.commit()
-                finally:
-                    _log_db.close()
-            except Exception:
-                logger.debug("ai_bot turn-log write failed", exc_info=True)
-        if timed_out:
-            logger.warning("ai_bot turn watchdog fired link=%s mode=%s", token_ref(token), effective_mode)
-            yield (
-                "data: "
-                + _json.dumps({
-                    "type": "error",
-                    "text": "Truy vấn mất quá nhiều thời gian và đã bị dừng. Bạn thử hỏi lại hoặc thu hẹp câu hỏi nhé.",
-                }, ensure_ascii=False)
-                + "\n\n"
-            )
-            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
-
-    return StreamingResponse(
-        sse_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-            # SSE MUST NOT BE COMPRESSED OR TRANSFORMED.
-            #
-            # A browser negotiates gzip; a compressor holds small frames back until
-            # it has enough bytes to be worth emitting, so the keepalive comments
-            # that keep this stream alive never reached the client and its watchdog
-            # fired at exactly its idle limit — while `curl`, which asked for no
-            # compression, saw every frame. `identity` + `no-transform` is the pair
-            # that tells the app server AND any proxy in between to leave it alone.
-            "Content-Encoding": "identity",
-        },
-    )
+def chat_dashboard_ai_agent(token: str):
+    """RETIRED (2026-10-28). This answered a viewer ONLY through the link's Agent
+    Flow, which wrote the final answer. The public Dashboard AI Bot is a consumer of
+    the Answer Core now (`/dashboards/{token}/ai/answer`); a bound flow is an
+    optional add-on the Core calls for documents. The author's Studio preview keeps
+    running flows for diagnosis (agent_flows.api)."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_RETIRED_AI_ROUTE)
 
 
 class _AiAgentExploreBody(BaseModel):
@@ -5447,167 +4912,223 @@ class _AiAgentExploreBody(BaseModel):
 
 
 @router.post("/dashboards/{token}/ai/agent/explore")
-@_limiter.limit("6/minute")
-async def explore_dashboard_ai_agent(
+def explore_dashboard_ai_agent(token: str):
+    """RETIRED (2026-10-28). Autonomous exploration was a second AI analyst on the
+    public link (its own loop, its own figures, a key a viewer could supply). Ask
+    the Answer Core at `/dashboards/{token}/ai/answer`."""
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_RETIRED_AI_ROUTE)
+
+# ── THE public Dashboard AI Bot: a consumer of the Answer Core ────────────────
+#
+# PO directive (2026-10-28; contract docs/features/unified-ai-chat/contract.md,
+# ADR-3 revised): ONE Answer Core. The viewer's question is answered by the Core
+# (services/data_core/service.ask) over the link's PUBLISHED report
+# (services/answer_core/published_report.py) - no Agent Flow needed, no viewer
+# key, the link's ceilings and the Model Gateway's policy. A bound flow is an
+# optional documents-only add-on the Core may call; it never writes the answer.
+
+_RETIRED_AI_ROUTE = ("Trợ lý AI của báo cáo trả lời qua lõi trả lời thống nhất tại /ai/answer; "
+                     "đường cũ này đã ngừng hoạt động.")
+
+
+class _PublicAnswerBody(BaseModel):
+    question: str
+    conversation_key: str
+    idempotency_key: str
+    page_id: str | None = None
+    viewer_filters: list[dict] | None = None
+    follow_up: bool = True
+    choice_token: str | None = None
+    #: auto | never - whether the link's bound flow may be used as an add-on
+    extension: str = "auto"
+
+
+def _public_link_row(db: Session, token: str) -> DashboardPublicLink | None:
+    """The link a public token (or a managed `emb_` grant) resolves to - AFTER
+    `_get_dashboard_by_token` authenticated it (password, expiry, revocation)."""
+    grant = resolve_embed_grant(token, db)
+    if grant is not None:
+        return grant[0]
+    return db.query(DashboardPublicLink).filter(
+        DashboardPublicLink.token == token, DashboardPublicLink.is_active.is_(True)).first()
+
+
+def _answer_resolver(token: str, session_token: str | None, viewer_filters: list[dict]):
+    """(db) -> LinkTurnContext, re-authenticated on the session it is given."""
+    from app.services.answer_core.link_extension import bound_flow_key
+    from app.services.answer_core.public_turn import LinkTurnContext
+
+    def resolve(db: Session):
+        dash, filters_config, _, appearance = _get_dashboard_by_token(
+            token, db, session_token=session_token, track_access=False)
+        if not (appearance or {}).get("ai_bot_enabled"):
+            raise PermissionError("ai bot disabled")
+        link = _public_link_row(db, token)
+        ctx = _public_link_tool_context(db, dash, filters_config, appearance, viewer_filters,
+                                        context_for_log=f"ai_answer:{token_ref(token)}")
+        return LinkTurnContext(ctx=ctx, appearance=dict(appearance or {}),
+                               flow_key=bound_flow_key(db, link.id) if link is not None else None)
+
+    return resolve
+
+
+@router.post("/dashboards/{token}/ai/answer")
+@_limiter.limit("20/minute")
+async def answer_public_question(
     token: str,
-    body: _AiAgentExploreBody,
+    body: _PublicAnswerBody,
     request: Request,
     db: Session = Depends(get_db),
     x_public_session: str | None = Header(default=None),
-    x_user_ai_key: str | None = Header(default=None),
-    x_user_ai_provider: str | None = Header(default=None),
-    x_user_ai_model: str | None = Header(default=None),
 ):
-    """Phase 16 — goal-driven exploration (InsightBench/AgentPoirot loop).
-
-    One SSE run: generate root questions from the SMART goal + chart
-    schema, answer each with the chart tools, extract typed insights,
-    follow up on the most promising thread, then stream a ranked summary
-    with action items. Same filter contract as chat: every tool call sees
-    exactly what the dashboard renders.
-    """
+    """Ask the report's AI Bot. Streams `chat.v1` events: accepted, status,
+    extension, final (the one envelope), done. No provider key is read from the
+    request; the link's budget and the Model Gateway decide what may be spent."""
     import json as _json
+
     from fastapi.responses import StreamingResponse
-    from app.services.dashboard_ai_bot.thinking.briefing import Briefing as _Briefing
-    from app.services.dashboard_ai_bot.thinking.explorer import run_exploration_stream
-    from app.services.dashboard_ai_bot.tool_context import ToolContext
 
-    dash, public_filters, _, appearance_config = _get_dashboard_by_token(
-        token, db, session_token=x_public_session, track_access=False,
-    )
-    if not (appearance_config or {}).get("ai_bot_enabled"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="AI bot is not enabled for this shared link.",
-        )
+    from app.services.answer_core import public_turn
 
-    effective_key, provider, model = resolve_public_ai_credentials(
-        appearance_config,
-        x_user_ai_key=x_user_ai_key,
-        x_user_ai_provider=x_user_ai_provider,
-        x_user_ai_model=x_user_ai_model,
-        missing_key_detail="X-User-Ai-Key header is required for AI explore.",
-    )
-    report_note = sanitize_report_context_note(
-        (appearance_config or {}).get("ai_bot_report_context_note"),
-    )
+    _, _, _, appearance = _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    if not (appearance or {}).get("ai_bot_enabled"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="AI bot is not enabled for this shared link.")
+    link = _public_link_row(db, token)
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found.")
+    viewer_filters = [f for f in (body.viewer_filters or []) if isinstance(f, dict)]
+    req = public_turn.PublicTurnRequest(
+        question=body.question, conversation_key=body.conversation_key, idempotency_key=body.idempotency_key,
+        page_id=(body.page_id or None), viewer_filters=viewer_filters, follow_up=bool(body.follow_up),
+        choice_token=body.choice_token, extension="never" if body.extension == "never" else "auto")
+    try:
+        turn, replayed = public_turn.begin(db, link_id=link.id, token=token, appearance=appearance or {}, req=req)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+    turn_id, link_id = turn.turn_id, link.id
+    resolve = _answer_resolver(token, x_public_session, viewer_filters)
 
-    viewer_filters_body = body.viewer_filters if isinstance(body.viewer_filters, list) else []
-    ctx = _public_link_tool_context(db, dash, public_filters, appearance_config,
-                                    [item for item in viewer_filters_body if isinstance(item, dict)],
-                                    context_for_log=f"ai_bot_explore:{token_ref(token)}")
-    combined_filters = ctx.public_filters
-    # Guarded BEFORE the run starts. This endpoint fans one briefing out into a
-    # multi-round exploration, so an instruction smuggled into `smart_goal` is
-    # not read once — it is carried into every question the run generates.
-    _guard_viewer_text(token, briefing=body.briefing or {})
-    briefing_obj = _Briefing.from_dict(body.briefing or {}) if body.briefing else None
+    def frame(ev: dict) -> str:
+        return "data: " + _json.dumps(ev, ensure_ascii=False, default=str) + "\n\n"
 
-    captured_key = effective_key
-
-    async def sse_stream():
+    async def stream():
         import asyncio
-        # Exploration is a multi-question run — a longer leash than chat,
-        # but the same never-strand-the-UI watchdog contract.
-        IDLE_TIMEOUT = 90.0
-        HARD_TIMEOUT = 420.0
-        loop = asyncio.get_event_loop()
-        started = loop.time()
-        agen = run_exploration_stream(
-            ctx=ctx,
-            api_key=captured_key,
-            provider=provider,
-            model=model,
-            briefing=briefing_obj,
-            report_context_note=report_note,
-            breadth=body.breadth or 3,
-            depth=body.depth if body.depth is not None else 1,
-        ).__aiter__()
-        timed_out = False
-        m_insights = 0
-        m_prompt = m_completion = m_rounds = 0
-        m_usd = None
-        m_error = False
-        try:
-            while True:
-                try:
-                    ev = await asyncio.wait_for(agen.__anext__(), timeout=IDLE_TIMEOUT)
-                except StopAsyncIteration:
-                    break
-                except asyncio.TimeoutError:
-                    timed_out = True
-                    break
-                _et = getattr(ev, "type", None)
-                if _et == "insight":
-                    m_insights += 1
-                elif _et == "cost":
-                    c = (ev.extra or {}).get("cost") or {}
-                    m_prompt = int(c.get("prompt_tokens") or m_prompt)
-                    m_completion = int(c.get("completion_tokens") or m_completion)
-                    m_rounds = int(c.get("rounds") or m_rounds)
-                    m_usd = c.get("usd", m_usd)
-                elif _et == "error":
-                    m_error = True
-                envelope = _event_to_envelope(ev)
-                if envelope is not None:
-                    yield f"data: {_json.dumps(envelope, ensure_ascii=False, default=str)}\n\n"
-                if envelope is not None and envelope.get("type") == "done":
-                    return
-                if loop.time() - started > HARD_TIMEOUT:
-                    timed_out = True
-                    break
-        finally:
-            try:
-                await agen.aclose()
-            except Exception:
-                pass
-            # Same telemetry table as chat turns; mode="explore" separates
-            # exploration runs in cost/UX analysis.
-            try:
-                from app.core.database import SessionLocal as _SL
-                from app.models.ai_chat_turn_log import AiChatTurnLog
-                _log_db = _SL()
-                try:
-                    _log_db.add(AiChatTurnLog(
-                        token=token,
-                        session_key=(body.session_key or None),
-                        mode="explore",
-                        routed="manual",
-                        provider=provider,
-                        model=model,
-                        question=(briefing_obj.smart_goal[:1000] if briefing_obj else ""),
-                        prompt_tokens=m_prompt,
-                        completion_tokens=m_completion,
-                        rounds=m_rounds,
-                        usd=(round(float(m_usd), 6) if m_usd is not None else None),
-                        tools_used=None,
-                        web_searched=False,
-                        had_answer=(m_insights > 0),
-                        errored=(m_error or timed_out),
-                        latency_ms=int((loop.time() - started) * 1000),
-                    ))
-                    _log_db.commit()
-                finally:
-                    _log_db.close()
-            except Exception:
-                logger.debug("ai_bot explore turn-log write failed", exc_info=True)
-        if timed_out:
-            logger.warning("ai_bot explore watchdog fired link=%s", token_ref(token))
-            yield (
-                "data: "
-                + _json.dumps({
-                    "type": "error",
-                    "text": "Phân tích toàn diện mất quá nhiều thời gian và đã dừng. Các insight đã tìm được vẫn hiển thị ở trên.",
-                }, ensure_ascii=False)
-                + "\n\n"
-            )
-            yield "data: " + _json.dumps({"type": "done"}) + "\n\n"
 
-    return StreamingResponse(
-        sse_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-        },
-    )
+        yield frame({"type": "accepted", "turn_id": turn_id, "replayed": replayed})
+        if replayed:
+            # the same turn: wait for its one terminal state, never run it twice
+            from app.core.database import SessionLocal
+
+            for _ in range(240):
+                s = SessionLocal()
+                try:
+                    view = public_turn.view(s, link_id=link_id, turn_id=turn_id,
+                                            conversation_key=req.conversation_key)
+                finally:
+                    s.close()
+                if view["status"] != "running":
+                    yield frame({"type": "final", "turn_id": turn_id, "envelope": view["envelope"]})
+                    break
+                await asyncio.sleep(1.0)
+            yield frame({"type": "done"})
+            return
+        queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.ensure_future(public_turn.run(link_id=link_id, token=token, turn_id=turn_id, req=req,
+                                                     resolve=resolve, emit=queue.put_nowait))
+        while True:
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield frame(getter.result())
+                continue
+            getter.cancel()
+            while not queue.empty():
+                yield frame(queue.get_nowait())
+            break
+        try:
+            envelope = task.result()
+        except Exception:  # noqa: BLE001 - never an answer
+            logger.exception("public answer turn %s failed", turn_id)
+            envelope = {"v": "chat.v1", "status": "failed", "code": "internal_error",
+                        "message": "Có lỗi khi xử lý câu hỏi; hãy thử lại.", "data": None, "supporting": None,
+                        "notices": []}
+        yield frame({"type": "final", "turn_id": turn_id, "envelope": envelope})
+        yield frame({"type": "done"})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+
+class _PublicTurnRef(BaseModel):
+    conversation_key: str
+
+
+@router.post("/dashboards/{token}/ai/answer/{turn_id}/cancel")
+@_limiter.limit("30/minute")
+def cancel_public_question(token: str, turn_id: str, body: _PublicTurnRef, request: Request,
+                           db: Session = Depends(get_db), x_public_session: str | None = Header(default=None)):
+    """Stop a running turn of this viewer's conversation (the one terminal write)."""
+    from app.services.answer_core import public_turn
+
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    link = _public_link_row(db, token)
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found.")
+    try:
+        return public_turn.cancel(db, link_id=link.id, turn_id=turn_id, conversation_key=body.conversation_key)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+
+
+class _PublicRating(BaseModel):
+    conversation_key: str
+    rating: str
+
+
+@router.post("/dashboards/{token}/ai/answer/{turn_id}/rating")
+@_limiter.limit("30/minute")
+def rate_public_answer(token: str, turn_id: str, body: _PublicRating, request: Request,
+                       db: Session = Depends(get_db), x_public_session: str | None = Header(default=None)):
+    """The viewer's thumb on one answer of their conversation (up | down)."""
+    from app.services.answer_core import public_turn
+
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    link = _public_link_row(db, token)
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found.")
+    try:
+        return public_turn.rate(db, link_id=link.id, turn_id=turn_id, conversation_key=body.conversation_key,
+                                rating=body.rating)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+
+
+@router.get("/dashboards/{token}/ai/answer/{turn_id}")
+@_limiter.limit("60/minute")
+def get_public_question(token: str, turn_id: str, conversation_key: str, request: Request,
+                        db: Session = Depends(get_db), x_public_session: str | None = Header(default=None)):
+    """A turn of this viewer's conversation as it stands (a refresh mid-answer)."""
+    from app.services.answer_core import public_turn
+
+    _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    link = _public_link_row(db, token)
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Link not found.")
+    try:
+        return public_turn.view(db, link_id=link.id, turn_id=turn_id, conversation_key=conversation_key)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+
+
+@router.get("/dashboards/{token}/ai/status")
+@_limiter.limit("60/minute")
+def get_public_ai_status(token: str, request: Request, db: Session = Depends(get_db),
+                         x_public_session: str | None = Header(default=None)):
+    """Is the report's AI Bot ready to answer? No key, no credential id, no budget figure."""
+    from app.services.ai_runtime import gateway
+
+    _, _, _, appearance = _get_dashboard_by_token(token, db, session_token=x_public_session, track_access=False)
+    enabled = bool((appearance or {}).get("ai_bot_enabled"))
+    ready = enabled and bool(gateway.readiness(db, appearance).get("ready"))
+    return {"enabled": enabled, "ready": ready}
+

@@ -550,6 +550,11 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
     dashboard = getattr(getattr(ctx, "dashboard", None), "id", None)
     if dashboard is None:
         return None
+    # A context whose AI-scope lookup failed carries an EMPTY exclusion set, which
+    # is the same key as "nothing is excluded" (SEC-05). It is never cached, so no
+    # warm entry can answer it past the `policy_unavailable` refusal.
+    if getattr(ctx, "ai_scope_unavailable", False):
+        return None
     try:
         payload = json.dumps(
             [
@@ -557,6 +562,7 @@ def _cache_key(ctx: Any, name: str, args: dict) -> str | None:
                 getattr(ctx, "public_filters", []),
                 # A result read under one page scope never answers another.
                 sorted((str(k), v) for k, v in (getattr(ctx, "page_scope_by_chart", None) or {}).items()),
+                sorted((str(k), v) for k, v in (getattr(ctx, "public_filters_by_chart", None) or {}).items()),
                 _authorization_identity(ctx),
                 # WHAT THE TURN RESOLVED CHANGES WHAT A BODY RETURNS. With no
                 # `measure` argument, a row tool measures the turn's asked measure,
@@ -982,12 +988,18 @@ def _capability_refusal(ctx: Any, spec: ToolSpec) -> dict | None:
             "liệu khi chưa có bước duyệt",
             code="risk_unknown" if spec.risk == "unknown" else "needs_approval",
         )
-    if spec.reaches_outside and getattr(ctx, "web_search", True) is False:
+    # FAIL CLOSED (SEC-04, PO decision 2026-10-20). These read
+    # `getattr(ctx, cap, True) is False`, so a context that never declared a
+    # capability was GRANTED it — the Studio Test path was one. A capability is now
+    # held only when the context declares it, `True`; every live surface does
+    # (dispatch: link, chat, Studio Test). Only the two EXPOSURE capabilities are
+    # gated here: a computing (`derived`) tool still runs on any context.
+    if spec.reaches_outside and getattr(ctx, "web_search", False) is not True:
         return R.err(
             f"công cụ '{spec.name}' cần quyền tìm kiếm web, link này không bật",
             code="not_granted",
         )
-    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", True) is False:
+    if spec.data_exposure == "raw_rows" and getattr(ctx, "read_rows", False) is not True:
         return R.err(
             f"công cụ '{spec.name}' trả về dữ liệu dòng thô, link này không cho "
             "đưa dòng thô vào ngữ cảnh — dùng công cụ tính sẵn để lấy con số",

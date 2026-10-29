@@ -14,9 +14,10 @@
  * Health is the server's `health` - never derived here from incident counts -
  * and a load that FAILED is shown as an error, never as "nothing wrong".
  */
+import { DetailHeader } from '@/components/common/DetailHeader';
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ShieldCheck, Unlink, AlertTriangle, ChevronRight, ChevronLeft, Search, RefreshCw, Bell, Loader2,
+  ShieldCheck, Unlink, AlertTriangle, ChevronRight, Search, RefreshCw, Bell, Loader2,
   GitBranch, Clock, BarChart3, LayoutDashboard, CheckCircle2, Database, Plus, CircleSlash, HelpCircle, Activity,
 } from 'lucide-react';
 
@@ -459,15 +460,12 @@ function DatasetDetail({ datasetId, onBack, nav }: { datasetId: number; onBack: 
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex min-h-11 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-[rgb(var(--border-line))] bg-surface-1 px-4 py-1.5">
-        <button onClick={onBack} className="flex items-center gap-1 rounded text-sm text-text-tertiary transition-colors hover:text-text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand">
-          <ChevronLeft className="h-4 w-4" aria-hidden />{t('module.observability.title')}
-        </button>
-        <span className="text-text-quaternary" aria-hidden>/</span>
-        <span className="max-w-[220px] truncate text-sm font-medium text-text-primary">{data?.name || t('observability.detail.datasetFallback')}</span>
-        <div className="mx-1 hidden h-5 w-px bg-surface-3 sm:block" />
-        <Tabs<DetailTab> variant="pill" size="sm" value={tab} onChange={setTab} items={DETAIL_TABS.map((item) => ({ key: item.key, label: t(item.labelKey), icon: item.icon }))} />
-      </div>
+      <DetailHeader
+        testId="obs-dataset-header"
+        back={{ label: t('module.observability.title'), onClick: onBack }}
+        title={<span title={data?.name}>{data?.name || t('observability.detail.datasetFallback')}</span>}
+        tabs={<Tabs<DetailTab> variant="pill" size="sm" value={tab} onChange={setTab} items={DETAIL_TABS.map((item) => ({ key: item.key, label: t(item.labelKey), icon: item.icon }))} />}
+      />
 
       <div className="min-h-0 flex-1 overflow-hidden bg-surface-2">
         {loadError ? (

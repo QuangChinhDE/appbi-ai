@@ -923,10 +923,14 @@ export function PublicLinksManager({
       ai_bot_model: link.appearance_config?.ai_bot_model,
       ai_bot_web_search_enabled: link.appearance_config?.ai_bot_web_search_enabled,
       ai_bot_report_context_note: link.appearance_config?.ai_bot_report_context_note,
-      // ai_bot_key is stripped by backend response (security). Use
-      // ai_bot_key_configured to show "key is set" indicator in the editor.
-      ai_bot_key: undefined,
+      ai_bot_guide: link.appearance_config?.ai_bot_guide,
+      // No key ever comes back: the link's own key (if any) is a reference into
+      // the encrypted store; leaving it untouched keeps it on save.
+      ai_bot_credential_id: link.appearance_config?.ai_bot_credential_id,
       ai_bot_key_configured: link.appearance_config?.ai_bot_key_configured,
+      ai_bot_key_hint: link.appearance_config?.ai_bot_key_hint,
+      ai_bot_budget_usd_per_day: link.appearance_config?.ai_bot_budget_usd_per_day,
+      ai_bot_turns_per_hour: link.appearance_config?.ai_bot_turns_per_hour,
     });
     setFormPassword('');
     setFormExpiresAt(link.expires_at ? toLocalInputValue(link.expires_at) : '');
@@ -1100,7 +1104,7 @@ export function PublicLinksManager({
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
                   previewMode === 'public'
-                    ? 'bg-brand text-text-inverse shadow-linear-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary',
                 )}
               >
@@ -1114,7 +1118,7 @@ export function PublicLinksManager({
                 className={cn(
                   'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-tiny font-emphasis transition-colors',
                   previewMode === 'embed'
-                    ? 'bg-brand text-text-inverse shadow-linear-sm'
+                    ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                     : 'text-text-tertiary hover:text-text-secondary',
                 )}
               >
@@ -1601,7 +1605,7 @@ export function PublicLinksManager({
                       className={cn(
                         'flex-1 rounded-md px-3 py-1.5 text-caption font-emphasis transition-colors',
                         formTab === t.id
-                          ? 'bg-brand text-text-inverse shadow-linear-sm'
+                          ? 'bg-brand-container text-brand-on-container shadow-linear-sm'
                           : 'text-text-tertiary hover:text-text-secondary',
                       )}
                     >

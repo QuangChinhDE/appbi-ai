@@ -4,8 +4,15 @@ import type { ModuleCatalog } from '../messages';
 // UI primitives like DateInput / SqlEditor, getting-started guide).
 export const sharedCatalog: ModuleCatalog = {
   en: {
+    'common.detailHeader.moreActions': 'More actions',
+    'common.detailHeader.issuesCount': '{{count}} notices',
     'common.close': 'Close',
     'common.confirm': 'Confirm',
+    'common.confirmFailed': 'That did not go through — please try again.',
+    'common.confirmTargets.more': 'and {{count}} more',
+    'common.cannotUndo': 'This cannot be undone.',
+    'common.bulkDelete.datasets': 'Delete {{count}} dataset(s)?',
+    'common.bulkDelete.dashboards': 'Delete {{count}} dashboard(s)?',
     'common.deleting': 'Deleting...',
     'common.delete': 'Delete',
     'common.clearSelection': 'Clear selection',
@@ -66,8 +73,15 @@ export const sharedCatalog: ModuleCatalog = {
     'sidebar.notifications.unknownTime': 'Unknown time',
   },
   vi: {
+    'common.detailHeader.moreActions': 'Thao tác khác',
+    'common.detailHeader.issuesCount': '{{count}} thông báo',
     'common.close': 'Đóng',
     'common.confirm': 'Xác nhận',
+    'common.confirmFailed': 'Thao tác chưa thực hiện được — vui lòng thử lại.',
+    'common.confirmTargets.more': 'và {{count}} mục khác',
+    'common.cannotUndo': 'Thao tác này không thể hoàn tác.',
+    'common.bulkDelete.datasets': 'Xóa {{count}} dataset?',
+    'common.bulkDelete.dashboards': 'Xóa {{count}} dashboard?',
     'common.deleting': 'Đang xóa...',
     'common.delete': 'Xóa',
     'common.clearSelection': 'Bỏ chọn',

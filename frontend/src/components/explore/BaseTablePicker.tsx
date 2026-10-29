@@ -105,7 +105,7 @@ export function BaseTablePicker({
 ${t('explore.editor.baseChangeTitle')}` : tip}
         data-testid="base-chip-button"
         data-base-table-id={selectedTableId ?? ''}
-        className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${tone} ${canOpen ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}
+        className={`inline-flex min-h-6 shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium ${tone} ${canOpen ? 'cursor-pointer hover:brightness-95' : 'cursor-default'}`}
       >
         <Icon className="h-3 w-3 shrink-0" />
         <span className="max-w-[160px] truncate">{baseLabel}</span>

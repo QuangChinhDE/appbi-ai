@@ -9,6 +9,7 @@ import {
   DashboardChartLayout,
   PublicLinkAppearanceConfig,
 } from '@/types/api';
+import type { AiModelProvider, PublicLinkAiCatalog } from '@/types/api';
 import type {
   DashboardHtmlImportAnalyzeInput,
   DashboardHtmlImportAnalyzeResponse,
@@ -45,11 +46,26 @@ export type DashboardEditLock = {
 // The shared filters/pages/theme draft is edited by every author together; each
 // write names the revision it was made on and the server refuses a stale one
 // (409 `shared_draft_stale`) instead of silently replacing a colleague's edit.
-// The revision is read from every response that carries it.
+//
+// The revision a write names is the one the editor's LISTS were made from: taken
+// when the Builder seeds them (`adoptSharedDraft`) and from this editor's own writes,
+// publish and discard. It used to be refreshed by every GET while the Builder seeded
+// its slicer list once, so after any refetch a stale list went out under a fresh
+// revision and replaced a colleague's slicers (customer demo 2026-10-28).
 const sharedDraftRev = new Map<number, string>();
 function noteSharedDraft<T extends { id?: number; shared_draft?: { rev?: string } | null }>(d: T): T {
   if (d && typeof d.id === 'number' && typeof d.shared_draft?.rev === 'string') sharedDraftRev.set(d.id, d.shared_draft.rev);
   return d;
+}
+
+/** The Builder seeded its filter/slicer lists from this dashboard: its writes name this revision. */
+export function adoptSharedDraft(d: { id?: number; shared_draft?: { rev?: string } | null } | null | undefined): void {
+  if (d) noteSharedDraft(d);
+}
+
+/** The revision this editor's writes currently name (undefined before the Builder seeded). */
+export function adoptedSharedDraftRev(dashboardId: number): string | undefined {
+  return sharedDraftRev.get(dashboardId);
 }
 
 /** Raised when the shared draft moved on since this editor loaded it. */
@@ -62,8 +78,9 @@ export const dashboardApi = {
   },
 
   getById: async (id: number): Promise<Dashboard> => {
+    // a read does not move the revision this editor's writes name (`adoptSharedDraft`)
     const response = await apiClient.get(`/dashboards/${id}`);
-    return noteSharedDraft(response.data);
+    return response.data;
   },
 
   create: async (data: DashboardCreate): Promise<Dashboard> => {
@@ -331,7 +348,11 @@ export const dashboardApi = {
   // published meanwhile (unless force=true).
   publishDraft: async (
     dashboardId: number,
-    opts?: { tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean },
+    opts?: {
+      tileBaseV?: Record<string, number> | null; force?: boolean; sharedAckRev?: string; keepShared?: boolean;
+      /** ids of report-wide slicers with a default the author agreed to remove (409 `slicer_removal_unconfirmed`) */
+      confirmRemovedSlicers?: string[];
+    },
   ): Promise<Dashboard> => {
     // sharedAckRev / keepShared: the answer to 409 `shared_draft_other_authors`
     // — publish other authors' shared edits too (the revision shown), or leave
@@ -342,6 +363,7 @@ export const dashboardApi = {
         force: !!opts.force,
         ...(opts.sharedAckRev !== undefined ? { shared_ack_rev: opts.sharedAckRev } : {}),
         ...(opts.keepShared ? { keep_shared: true } : {}),
+        ...(opts.confirmRemovedSlicers?.length ? { confirm_removed_slicers: opts.confirmRemovedSlicers } : {}),
       }
       : undefined;
     const response = await apiClient.post(`/dashboards/${dashboardId}/publish`, body);
@@ -727,20 +749,26 @@ export const dashboardApi = {
   // Ask the AI to read the dashboard and draft a report-flow system prompt.
   // `apiKey` is the key the DA is configuring (sent in header, not stored by
   // this call); if blank, the server uses a key already stored on a link.
-  suggestAiSystemPrompt: async (
-    dashboardId: number,
-    opts: { provider?: string; model?: string; apiKey?: string },
-  ): Promise<string> => {
-    const headers: Record<string, string> = {};
-    if (opts.apiKey) headers['X-User-Ai-Key'] = opts.apiKey;
-    if (opts.provider) headers['X-User-Ai-Provider'] = opts.provider;
-    if (opts.model) headers['X-User-Ai-Model'] = opts.model;
-    const response = await apiClient.post(
-      `/dashboards/${dashboardId}/ai/suggest-system-prompt`,
-      { provider: opts.provider, model: opts.model },
-      { headers },
-    );
-    return response.data?.system_prompt ?? '';
+  /** Is the AI model ready for a public link's assistant (server or the link's own
+   *  key)? Never a key or a credential secret. */
+  /** What the link's AI Bot reads, for the publisher guide's pickers. */
+  getPublicLinkAiCatalog: async (dashboardId: number, linkId: number): Promise<PublicLinkAiCatalog> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/public-links/${linkId}/ai/catalog`);
+    return response.data;
+  },
+
+  getPublicLinkAiStatus: async (
+    dashboardId: number, linkId: number,
+  ): Promise<{ ready: boolean; provider: string | null; model: string | null;
+               credential: 'link' | null; missing?: 'key' | 'model' }> => {
+    const response = await apiClient.get(`/dashboards/${dashboardId}/public-links/${linkId}/ai-status`);
+    return response.data;
+  },
+
+  /** The providers and models a publisher may choose for a link's assistant. */
+  getPublicLinkAiModels: async (): Promise<{ providers: AiModelProvider[] }> => {
+    const response = await apiClient.get('/dashboards/public-links/ai-models');
+    return response.data;
   },
 
   /** A short-lived link carrying a link configuration that is being edited, so

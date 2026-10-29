@@ -176,6 +176,17 @@ with engine.begin() as conn:
         "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO appbi_app"))
     conn.execute(text(
         "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO appbi_app"))
+    # The governed-query audit ledger is APPEND-ONLY for the application: the
+    # blanket GRANT above would hand DELETE back on every boot, so take it away
+    # again for that one table (migration 20261021_0001 revokes it too).
+    conn.execute(text("""
+        DO $$
+        BEGIN
+            IF to_regclass('public.governed_query_executions') IS NOT NULL THEN
+                REVOKE DELETE, TRUNCATE ON governed_query_executions FROM appbi_app;
+            END IF;
+        END $$;
+    """))
 print("    appbi_app ready (LOGIN, NOSUPERUSER, NOBYPASSRLS)")
 PYROLE
 fi

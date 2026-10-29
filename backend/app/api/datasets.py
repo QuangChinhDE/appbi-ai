@@ -1,5 +1,5 @@
 """API endpoints for Datasets (Table-based Datasets)"""
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from decimal import Decimal
 import json
 import re
@@ -477,6 +477,9 @@ def _validate_field_references(
     table: Optional[DatasetTable],
     dimensions: list[Any],
     measures: list[Any],
+    *,
+    own_view_name: Optional[str] = None,
+    resolve_view_table: Optional[Callable[[str], Optional[DatasetTable]]] = None,
 ) -> None:
     """Reject semantic definitions that reference columns the table doesn't have.
 
@@ -579,6 +582,40 @@ def _validate_field_references(
             if not isinstance(flt, dict):
                 continue
             field = flt.get("field")
+            # A filter qualified with ANOTHER view of the same dataset
+            # ("other_view.col") is legal: the engine applies it through the
+            # relationship as a correlated EXISTS. Check the column on THAT
+            # view's table. Reachability/ambiguity of the route is NOT checked
+            # here -- the engine (UNREACHABLE_VIEW / AMBIGUOUS_ROUTE) and the
+            # measure dry-run own that.
+            field_text = str(field or "").strip()
+            if (
+                resolve_view_table is not None
+                and "." in field_text
+                and not field_text.startswith("${")
+            ):
+                ref_view, ref_col = field_text.split(".", 1)
+                ref_view = ref_view.strip()
+                if ref_view and ref_view != (own_view_name or ""):
+                    other_table = resolve_view_table(ref_view)
+                    if other_table is None:
+                        # Legacy prefix (e.g. a table name) whose column is on
+                        # the own table: keep the old last-segment behaviour.
+                        if _last_segment(ref_col) in columns:
+                            continue
+                        errors.append(
+                            f"Measure \"{m_name}\": filter #{f_index + 1} trỏ vào view "
+                            f"\"{ref_view}\" không tồn tại trong dataset này."
+                        )
+                        continue
+                    other_columns = _columns_for_table(other_table)
+                    ref_target = _last_segment(ref_col)
+                    if other_columns and ref_target and ref_target not in other_columns:
+                        errors.append(
+                            f"Measure \"{m_name}\": filter #{f_index + 1} trỏ vào cột "
+                            f"\"{ref_target}\" không tồn tại trên view \"{ref_view}\"."
+                        )
+                    continue
             target = _last_segment(field)
             if target and target not in columns:
                 errors.append(
@@ -5227,7 +5264,8 @@ def update_dataset_view(
         raise HTTPException(status_code=404, detail="Dataset not found")
     require_edit_access(db, current_user, dataset_obj, "datasets")
 
-    view = db.query(SemanticView).filter(SemanticView.id == view_id).first()
+    # Row lock: the version check below and the write are one atomic step.
+    view = db.query(SemanticView).filter(SemanticView.id == view_id).populate_existing().with_for_update().first()
     if not view:
         raise HTTPException(status_code=404, detail="View not found")
 
@@ -5240,6 +5278,24 @@ def update_dataset_view(
         raise HTTPException(status_code=403, detail="View does not belong to this dataset")
     if view.dataset_table_id is None or (table and is_generated_calendar_table(table)):
         raise HTTPException(status_code=400, detail="System-managed model tables cannot be edited here.")
+
+    # Optimistic concurrency (after the ownership checks, so a foreign view never
+    # answers with its version), the view counterpart of `expected_joins_version`:
+    # a writer that quotes the version it read gets 409 instead of silently
+    # replacing an edit made since. Optional, so existing callers are unchanged.
+    from app.models.semantic import view_version_of
+    expected_view_version = update_data.pop("expected_view_version", None) if isinstance(update_data, dict) else None
+    current_view_version = view_version_of(view.dimensions, view.measures, view.description)
+    if expected_view_version not in (None, "") and str(expected_view_version) != current_view_version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "view_stale",
+                "view_version": current_view_version,
+                "message": "This view was changed since it was read. Reload it and apply the change again.",
+            },
+        )
+
 
     # Phase-6: rename_map is an out-of-band field that the rewrite step
     # consumes — it must not be forwarded to the Pydantic SemanticViewUpdate
@@ -5313,7 +5369,11 @@ def update_dataset_view(
 
     update_payload = validated.model_dump(exclude_unset=True)
     if "dimensions" in update_payload and update_payload["dimensions"] is not None:
-        update_payload["dimensions"] = [dim.model_dump() for dim in validated.dimensions or []]
+        from app.services.dataset_model_service import stamp_authored_dimensions
+
+        update_payload["dimensions"] = stamp_authored_dimensions(
+            [dim.model_dump() for dim in validated.dimensions or []], view.dimensions
+        )
     if "measures" in update_payload and update_payload["measures"] is not None:
         # Phase-15.63 — re-merge the legacy-shape measures we skipped from
         # Pydantic validation. They keep their original (possibly invalid)
@@ -5375,7 +5435,25 @@ def update_dataset_view(
             m for m in final_measures
             if not (isinstance(m, dict) and str(m.get("name") or "").strip() in skipped_names)
         ]
-        _validate_field_references(table, final_dims, validatable_measures)
+        def _resolve_dataset_view_table(view_name: str) -> Optional[DatasetTable]:
+            other = (
+                db.query(DatasetTable)
+                .join(SemanticView, SemanticView.dataset_table_id == DatasetTable.id)
+                .filter(
+                    SemanticView.name == view_name,
+                    DatasetTable.dataset_id == dataset_id,
+                )
+                .first()
+            )
+            return other
+
+        _validate_field_references(
+            table,
+            final_dims,
+            validatable_measures,
+            own_view_name=view.name,
+            resolve_view_table=_resolve_dataset_view_table,
+        )
 
         # ── Gốc-A guard: a MEASURE must not share its name with a VISIBLE
         # dimension in the same view. Such a collision makes the ref
@@ -5503,6 +5581,7 @@ def update_dataset_view(
         "dimensions": view.dimensions or [],
         "measures": view.measures or [],
         "description": view.description,
+        "view_version": view_version_of(view.dimensions, view.measures, view.description),
         "renamed": rewrite_summary,
     }
 
@@ -5592,11 +5671,18 @@ def delete_dataset_view_measure(
     flag_modified(view, "measures")
     db.commit()
     db.refresh(view)
+    from app.models.semantic import view_version_of
     return {
         "id": view.id,
         "name": view.name,
         "deleted_measure": target,
         "measures": view.measures or [],
+        # The editor quotes `view_version` on its next PUT; returning the
+        # post-delete state lets it adopt the new version only when nothing
+        # else changed the view (otherwise its next save is refused as stale).
+        "dimensions": view.dimensions or [],
+        "description": view.description,
+        "view_version": view_version_of(view.dimensions, view.measures, view.description),
     }
 
 

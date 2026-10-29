@@ -184,4 +184,9 @@ python scripts/ci/guardrail_check.py --plan "..." --files ...   # scope before c
 python scripts/ci/guardrail_check.py --diff                     # review your own diff
 python scripts/ci/guardrail_check.py --health                   # gate registry status
 bash   scripts/ci/preflight.sh       # commit-integrity gate (also runs on push)
+python scripts/ci/record_local_verification.py --suite "name=<playwright results.json>" ...
+                                     # the local stack ran THIS commit end to end: commit the
+                                     # evidence alone + label the PR `verified-locally` -> the
+                                     # PR's E2E shards are skipped (backend suites never are;
+                                     # the push to demo still runs the full E2E)
 ```

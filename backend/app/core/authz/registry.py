@@ -48,7 +48,12 @@ MODULES: Tuple[ModuleSpec, ...] = (
     ModuleSpec("datasets", pat_eligible=True),
     ModuleSpec("govern", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
     ModuleSpec("agent_flows", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
-    ModuleSpec("chat", enabled=_flag("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED")),
+    # AI Chat (unified, docs/features/unified-ai-chat/contract.md): ALWAYS offered.
+    # The Data Core needs no optional module; Agent Flow extensions appear only where
+    # Agent Flows is enabled. `view` = ask and keep your conversations, `edit` = also
+    # share them, `full` = oversight. NO level is a data grant: each Dataset's EXPLORE
+    # relation + GovernAIScope decide every read, stored answers included.
+    ModuleSpec("chat"),
     ModuleSpec("observability", enabled=_flag("METADATA_CATALOG_ENABLED", "OBSERVABILITY_ENABLED")),
     ModuleSpec("explore_charts", pat_eligible=True),
     ModuleSpec("dashboards", pat_eligible=True),
@@ -101,10 +106,18 @@ RESOURCES: Tuple[ResourceSpec, ...] = (
     ResourceSpec("agent_brain", "AgentBrainVersion", "agent_flows", share_key="brain_key",
                  owner_attrs=("owner_email",),
                  notes="shares keyed by brain_key: one share covers every version"),
-    # A conversation is owned through `user_id`. The object check used to know
-    # only owner_id/owner_email, so the owner of a thread could not share it.
-    ResourceSpec("chat_thread", "AgentFlowChatThread", "chat", owner_attrs=("user_id",)),
     ResourceSpec("ai_credential", "AiProviderCredential", "agent_flows"),
+    # A conversation is owned through `user_id` (the object check must know it, or
+    # the owner of a conversation could not share it).
+    ResourceSpec("chat_conversation", "ChatConversation", "chat", owner_attrs=("user_id",)),
+    # The two RETIRED conversation stores (unified AI Chat). Kept so their stored
+    # share rows still resolve to an owner column; nothing can be shared as either
+    # any more (share_access has no entry) - their shares were copied to
+    # chat_conversation at the same level by alembic 20261027_0001.
+    ResourceSpec("chat_thread", "AgentFlowChatThread", "chat", owner_attrs=("user_id",), shareable=False,
+                 notes="retired: migrated to chat_conversation"),
+    ResourceSpec("analyst_session", "AnalystSession", "chat", owner_attrs=("user_id",), shareable=False,
+                 notes="retired: migrated to chat_conversation"),
 )
 
 RESOURCE_SPECS: Dict[str, ResourceSpec] = {r.resource_type: r for r in RESOURCES}

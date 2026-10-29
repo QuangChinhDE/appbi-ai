@@ -9,7 +9,6 @@ import {
   Bell,
   LayoutDashboard,
   Search,
-  BarChart3,
   ClipboardList,
   Compass,
   Database,
@@ -93,18 +92,21 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    // Intelligence = the knowledge system feeding AI Insight. Five modules,
-    // one job each; all gated by the existing 'govern' permission key.
+    // AI = ONE chat (docs/features/unified-ai-chat/contract.md). It answers from the
+    // person's own explorable Datasets through governed queries, with no assistant
+    // to pick first; an Agent Flow is an optional add-on inside it, never a second
+    // chat. `chat` is its own key, so asking never needs the flow builder.
+    labelKey: 'sidebar.group.ai',
+    items: [
+      { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'chat' },
+    ],
+  },
+  {
+    // Intelligence = the knowledge system and the flows that feed the AI above.
     labelKey: 'sidebar.group.intelligence',
     items: [
       { labelKey: 'sidebar.nav.knowledgeHub', href: '/govern', icon: <Landmark className="h-4 w-4" />, module: 'govern' },
       { labelKey: 'sidebar.nav.agentFlows', href: '/agent-flows', icon: <Workflow className="h-4 w-4" />, module: 'agent_flows' },
-      // The reading side, and its OWN key. It shared `agent_flows` until this
-      // was the only place in the product where two nav entries pointed at one
-      // module — which meant letting somebody ask an assistant a question also
-      // let them into the flow builder. WHICH assistants appear is still decided
-      // per user by sharing; an empty list explains itself on the page.
-      { labelKey: 'sidebar.nav.aiChat', href: '/chat', icon: <MessagesSquare className="h-4 w-4" />, module: 'chat' },
     ],
   },
   {
@@ -210,19 +212,18 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
             href={DEFAULT_LANDING_PATH}
             className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-surface-2"
           >
-            <div className="flex h-6 w-6 items-center justify-center rounded-md bg-brand text-text-inverse">
-              <BarChart3 className="h-3.5 w-3.5" />
-            </div>
+            <img src="/brand/bexai-icon.png" alt="" className="h-6 w-6 shrink-0 rounded-md" />
             <span className="text-small font-strong tracking-[-0.011em] text-text-primary">
-              AppBI
+              BEXAI
             </span>
           </Link>
         ) : (
           <Link
             href={DEFAULT_LANDING_PATH}
-            className="mx-auto flex h-8 w-8 items-center justify-center rounded-md bg-brand text-text-inverse"
+            className="mx-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-md"
+            aria-label="BEXAI"
           >
-            <BarChart3 className="h-4 w-4" />
+            <img src="/brand/bexai-icon.png" alt="" className="h-8 w-8 shrink-0 rounded-md" />
           </Link>
         )}
       </div>
@@ -248,16 +249,17 @@ export function Sidebar({ isCollapsed, onToggleCollapse }: SidebarProps) {
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      aria-current={active ? 'page' : undefined}
                       className={cn(
                         'group flex items-center rounded-md transition-colors',
                         isCollapsed ? 'h-8 w-8 mx-auto justify-center' : 'h-8 px-2.5 gap-2',
                         active
-                          ? 'bg-surface-2 text-text-primary'
-                          : 'text-text-tertiary hover:bg-surface-2 hover:text-text-primary',
+                          ? 'bg-brand-container text-brand-on-container hover:bg-brand-container-hover'
+                          : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary',
                       )}
                       title={isCollapsed ? label : undefined}
                     >
-                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-secondary')}>
+                      <span className={cn('flex-shrink-0', active ? 'text-brand' : 'text-text-tertiary group-hover:text-text-primary')}>
                         {item.icon}
                       </span>
                       {!isCollapsed && (

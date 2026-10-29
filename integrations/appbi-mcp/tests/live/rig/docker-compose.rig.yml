@@ -1,0 +1,15 @@
+# MCP test rig override (kept outside the repo). Isolates the rig from every other
+# AppBI stack on this machine: own network names + fixed subnet (the base file pins
+# `appbi-net` by name, which would otherwise be SHARED across stacks).
+services:
+  backend:
+    environment:
+      CORS_ORIGINS: http://localhost:18180
+networks:
+  appbi-net:
+    name: appbi-mcprig-net
+    ipam:
+      config:
+        - subnet: 172.31.77.0/24
+  appbi-mcp-link:
+    name: appbi-mcprig-mcp-link

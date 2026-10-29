@@ -13,7 +13,6 @@ import axios from 'axios';
 import { reportAnchor } from '@/lib/report-anchor';
 import type { Dashboard } from '@/types/api';
 import type { BaseFilter } from '@/lib/filters';
-import type { ReaderOutcome } from '../notices';
 
 /** One server-side render job as the polling endpoint returns it. */
 export interface PublicExportJob {
@@ -299,573 +298,194 @@ export function publicSessionRemainingSeconds(linkToken: string): number {
   }
 }
 
-// ── AI Bot types ──────────────────────────────────────────────────────────────
+// ── THE public Dashboard AI Bot: a client of the Answer Core ─────────────────
+//
+// One endpoint answers a viewer: POST /public/dashboards/{token}/ai/answer. The
+// server's Answer Core reads the link's PUBLISHED report and writes the one final
+// answer (`chat.v1`). No provider key, model or mode is ever sent from here: the
+// server resolves the credential and enforces the link's budget.
 
-export type AiProvider = 'anthropic' | 'openai' | 'gemini';
+export type PublicAnswerStatus = 'answered' | 'clarification_required' | 'refused' | 'failed' | 'cancelled';
 
-export interface AiChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
+export interface PublicAnswerColumn {
+  name: string;
+  ref?: string | null;
+  role: string;
+  label?: string;
 }
 
-// ── Agentic AI Bot v2 ──────────────────────────────────────────────────────────
-
-export interface AiReconChartManifest {
-  chart_id: number;
-  chart_name: string;
-  chart_type: string;
-  description: string;
-  columns: string[];
-  total_rows: number;
-  filters_applied: Record<string, unknown>[];
+export interface PublicAnswerEvidence {
+  source?: string;
+  source_type?: string;
+  chart_id?: number;
+  pages?: string[];
+  filters_applied?: string[];
+  filters_withheld?: number;
+  filters_described?: string[];
+  filters_dropped?: string[];
+  rows_returned?: number;
+  freshness?: string;
+  measures?: string[];
+  regrouped?: boolean;
 }
 
-export interface AiReconInsightPack {
-  chart_id: number;
-  chart_name: string;
-  chart_type: string;
-  description: string;
-  total_rows: number;
-  sample_rows: number;
-  truncated: boolean;
-  primary_measure: string | null;
-  primary_dimension: string | null;
-  top_5: Record<string, unknown>[];
-  bottom_5: Record<string, unknown>[];
-  trend: {
-    direction: 'up' | 'down' | 'flat';
-    pct_change: number | null;
-    first: { x: string; y: number };
-    last: { x: string; y: number };
-    points: number;
-  } | null;
-  outliers: { row: Record<string, unknown>; z_score: number }[];
-  filters_applied: Record<string, unknown>[];
+export interface PublicAnswerData {
+  status?: string;
+  message?: string | null;
+  code?: string | null;
+  answer?: { headline?: string; bullets?: string[]; note?: string; incomplete?: boolean } | null;
+  columns?: PublicAnswerColumn[];
+  rows?: Record<string, unknown>[];
+  truncated?: boolean;
+  evidence?: PublicAnswerEvidence | null;
+  /** The guided analysis of the published charts and the publisher's prompt: in place
+   *  of a could-not-plan refusal (code `ai_analysis`), or beside an answer it evaluates.
+   *  Labelled; its unread figures listed; `used_notes` when it used the prompt. */
+  analysis?: { text: string; charts?: string[]; unverified_figures?: string[]; used_notes?: boolean } | null;
+  /** A term the publisher's guide defines, answered verbatim (code `guide_definition`). */
+  definition?: { name: string; aliases?: string[]; formula: string; note?: string } | null;
+  /** The publisher's target beside the system's one total, computed by code. */
+  target?: { measure: string; period?: string | null; target: number; actual: number; gap: number;
+             attainment_pct: number; unit?: string | null } | null;
+  options?: string[];
+  choices?: { label: string; token?: string }[];
 }
 
-export interface AiRecon {
-  manifest: {
-    dashboard_name: string;
-    dashboard_description: string;
-    filters_applied: Record<string, unknown>[];
-    charts: AiReconChartManifest[];
-  };
-  summaries: AiReconInsightPack[];
+export interface PublicAnswerSupporting {
+  status?: string;
+  flow_name?: string;
+  documents?: { doc_id: number; title?: string }[];
+  findings?: { text: string; unverified_figures?: string[] }[];
 }
 
-// Phase-15.71 — reading plan event. The bot emits this BEFORE answering
-// so the FE can render a collapsible "AI đang đọc dashboard" panel that
-// shows the analyst-style flow step-by-step.
-export interface AiReadingPlanItem {
-  step: number;
-  chart_id: number | null;
-  phase: 'triage' | 'health_check' | 'drilldown' | 'compare' | 'synthesize' | string;
-  question: string;
+export interface PublicAnswerEnvelope {
+  v: string;
+  status: PublicAnswerStatus;
+  code?: string | null;
+  message?: string | null;
+  data?: PublicAnswerData | null;
+  supporting?: PublicAnswerSupporting | null;
+  notices?: { code: string; text: string }[];
 }
 
-export type AiPlanStepStatus = 'pending' | 'running' | 'done';
-
-// Phase 16 (InsightBench rework) — one typed insight extracted by the
-// goal-driven exploration engine. `type` is the insight-ladder rung.
-export type AiInsightType = 'desc' | 'diag' | 'pred' | 'presc';
-
-export interface AiExplorationInsight {
-  type: AiInsightType;
-  statement: string;
-  evidence: number[];
-  justification: string;
-  confidence: 'HIGH' | 'MED' | 'LOW' | string;
-  action: string | null;
-}
-
-// Phase 16 — exploration progress tick (stage + question metadata).
-export interface AiExplorationStep {
-  stage: 'questions' | 'answer' | 'summary' | string;
-  status: 'running' | 'done' | string;
-  index?: number;
-  total?: number;
-  question?: string;
-  qtype?: AiInsightType | string;
-  level?: number;
-  failed?: boolean;
-  questions?: { question: string; type: string; charts: number[] }[];
-}
-
-export type AiAgentEvent =
-  | { type: 'text'; text: string }
-  | { type: 'route'; mode: 'normal' | 'thinking'; auto: boolean; reasons: string[] }
-  | { type: 'sources'; sources: { title?: string | null; url?: string | null }[] }
-  | { type: 'status'; text: string; tool: string }
-  // `outcome` classifies the failure the way a READER reads it; `ok` stays
-  // the transport fact it always was. Optional so a frontend deployed ahead
-  // of the backend degrades to the old counting rather than to `undefined`.
-  | { type: 'tool_result'; tool: string; ok: boolean; outcome?: ReaderOutcome;
-      error?: string | null }
-  | { type: 'reading_plan'; items: AiReadingPlanItem[]; overall_goal?: string | null }
-  | { type: 'plan_step'; step_index: number; chart_id: number | null; status: AiPlanStepStatus }
-  | ({ type: 'exploration_step' } & AiExplorationStep)
-  | { type: 'insight'; insight: AiExplorationInsight }
-  | { type: 'state'; state: AiConversationState }
-  | { type: 'cost'; usd: number; cap_usd: number; remaining_usd: number; over_cap: boolean; near_cap?: boolean; rounds?: number; prompt_tokens?: number; completion_tokens?: number }
-  | { type: 'usage'; prompt_tokens: number; completion_tokens: number }
-  | { type: 'error'; text: string }
-  // THE TERMINAL ENVELOPE. The backend has emitted this since typed answers
-  // existed (`wire.event_to_envelope`, branch `result`); the union never listed
-  // it, so every consumer's type said the event could not happen and the handler
-  // that would have used it was unreachable by construction. Typed blocks,
-  // citations and notices were arriving and being discarded.
-  | { type: 'result'; envelope: unknown }
+export type PublicAnswerEvent =
+  | { type: 'accepted'; turn_id: string; replayed?: boolean }
+  | { type: 'status'; step?: string; detail?: string }
+  | { type: 'extension'; state: string }
+  | { type: 'final'; turn_id: string; envelope: PublicAnswerEnvelope | null }
   | { type: 'done' };
 
-// ── Briefing Wizard types ────────────────────────────────────────────────────
-
-export interface AiBriefing {
-  domain: string;
-  domain_label: string;
-  role: 'executive' | 'manager' | 'analyst' | 'staff' | string;
-  focus: 'overview' | 'issues' | 'compare' | 'deepdive' | string;
-  timeframe: string;
-  custom_note: string;
-  /** SMART goal — the session's north star (InsightBench: specific goal
-   *  ≫ generic goal). Auto-drafted server-side, user-editable. */
-  smart_goal?: string;
-  key_chart_ids: number[];
-  confirmed: boolean;
+export interface PublicAnswerRequest {
+  question: string;
+  conversation_key: string;
+  idempotency_key: string;
+  page_id?: string | null;
+  viewer_filters?: unknown[];
+  follow_up?: boolean;
+  choice_token?: string | null;
 }
 
-export interface AiBriefingGuessOption {
-  value: string;
-  label?: string;
-  label_vi?: string;
-  hint_vi?: string;
-}
-
-export interface AiBriefingGuess {
-  domain: string;
-  domain_label: string;
-  confidence: number;
-  alt_domains: { domain: string; label: string; score: number }[];
-  key_chart_ids: number[];
-  headline_facts: { text: string; chart_id: number }[];
-  timeframe_hint: string;
-  /** Heuristic SMART-goal suggestion built from the strongest recon signal. */
-  smart_goal_draft?: string;
-  role_options: AiBriefingGuessOption[];
-  focus_options: AiBriefingGuessOption[];
-  timeframe_options: AiBriefingGuessOption[];
-  domain_catalog: AiBriefingGuessOption[];
-}
-
-export interface AiFinding {
-  claim: string;
-  chart_ids: number[];
-  confidence: 'HIGH' | 'MED' | 'LOW' | string;
-  turn_index: number;
-  metric_value: number | null;
-}
-
-export interface AiHypothesis {
-  text: string;
-  raised_in_turn: number;
-  status: 'open' | 'confirmed' | 'rejected' | string;
-}
-
-export interface AiConversationState {
-  briefing: AiBriefing | null;
-  findings: AiFinding[];
-  hypotheses: AiHypothesis[];
-  turn_index: number;
-  seen_chart_ids: number[];
-}
-
-/**
- * Fetch a proactive recon (manifest + Insight Packs for top charts) so the
- * bot can render a "what's notable" welcome message without an LLM call.
- */
-export async function fetchAiRecon(
-  token: string,
-  sessionToken?: string,
-): Promise<AiRecon> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  const res = await publicClient.get(`/public/dashboards/${token}/ai/recon`, { headers });
-  return res.data as AiRecon;
-}
-
-/**
- * Heuristic guess of dashboard domain / role / key metrics. No LLM call —
- * powers Step 1 of the briefing wizard ("AI đoán trước, user xác nhận").
- */
-export async function fetchAiBriefingGuess(
-  token: string,
-  sessionToken?: string,
-): Promise<AiBriefingGuess> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  const res = await publicClient.get(
-    `/public/dashboards/${token}/ai/briefing/guess`,
-    { headers },
-  );
-  return res.data as AiBriefingGuess;
-}
-
-/**
- * Stream the Executive Brief paragraph after the user has confirmed their
- * briefing. Uses BYOK like the chat endpoint.
- */
-export async function* streamAiBriefingBrief(
-  token: string,
-  briefing: AiBriefing,
-  userAiKey: string,
-  provider: AiProvider,
-  model: string,
-  sessionToken?: string,
-): AsyncGenerator<AiAgentEvent, void, unknown> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-User-Ai-Key': userAiKey,
-    'X-User-Ai-Provider': provider,
-  };
-  const trimmedModel = model.trim();
-  if (trimmedModel) headers['X-User-Ai-Model'] = trimmedModel;
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-
-  const response = await fetch(
-    `${API_BASE}/public/dashboards/${token}/ai/briefing/brief`,
-    {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ briefing }),
-    },
-  );
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const json = await response.json();
-      detail = json?.detail ?? detail;
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() ?? '';
-    for (const evBlock of events) {
-      const dataLine = evBlock.split('\n').find((l) => l.startsWith('data:'));
-      if (!dataLine) continue;
-      const payload = dataLine.slice(5).trim();
-      if (!payload) continue;
-      try {
-        const parsed = JSON.parse(payload) as AiAgentEvent;
-        yield parsed;
-        if (parsed.type === 'done') return;
-      } catch {
-        /* ignore */
-      }
-    }
+/** A refused/failed request before the turn exists (429 budget, 409 running, 410…). */
+export class PublicAnswerRejected extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
   }
 }
 
-// ── AI Chat Session persistence ────────────────────────────────────────────────
-
-export interface AiChatSessionData {
-  session_key: string;
-  provider?: string | null;
-  model?: string | null;
-  messages: AiChatMessage[];
-  briefing?: Record<string, unknown> | null;
-  conv_state?: Record<string, unknown> | null;
-  turn_count: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  created_at?: string | null;
-  updated_at?: string | null;
-}
-
-export interface AiChatSessionSavePayload {
-  session_key: string;
-  provider?: string | null;
-  model?: string | null;
-  messages: AiChatMessage[];
-  briefing?: Record<string, unknown> | null;
-  conv_state?: Record<string, unknown> | null;
-  turn_count: number;
-  prompt_tokens?: number;
-  completion_tokens?: number;
-}
-
-/**
- * Load a persisted chat session.  Returns null when no session exists yet (404).
- */
-export async function loadAiSession(
-  token: string,
-  sessionKey: string,
-  sessionToken?: string,
-): Promise<AiChatSessionData | null> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  try {
-    const res = await publicClient.get(
-      `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}`,
-      { headers },
-    );
-    return res.data as AiChatSessionData;
-  } catch (err: unknown) {
-    // 404 means no saved session — callers treat this as fresh start
-    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
-    throw err;
-  }
-}
-
-/**
- * Upsert (create or update) a chat session.  Called after each completed turn.
- */
-export async function saveAiSession(
-  token: string,
-  sessionKey: string,
-  data: AiChatSessionSavePayload,
-  sessionToken?: string,
-): Promise<void> {
+function publicHeaders(sessionToken?: string | null): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  await publicClient.put(
-    `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}`,
-    { ...data, session_key: sessionKey },
-    { headers },
-  );
+  return headers;
 }
 
-/**
- * Clear a session's messages and state (called on "Xóa lịch sử").
- */
-export async function clearAiSession(
-  token: string,
-  sessionKey: string,
-  sessionToken?: string,
-): Promise<void> {
-  const headers: Record<string, string> = {};
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-  await publicClient.post(
-    `/public/dashboards/${token}/ai/session/${encodeURIComponent(sessionKey)}/clear`,
-    {},
-    { headers },
-  );
-}
-
-// Client-side idle watchdog for the SSE streams. The server has its own
-// 60s idle watchdog, but Next.js's edge-middleware `rewrite` proxy can
-// buffer/withhold SSE frames (incl. the terminal `done`) when a turn has a
-// long silent gap — e.g. a provider rate-limit back-off. Without a client
-// guard the UI hangs on "Thinking…" forever ("chờ hoài chả biết"). Race each
-// read against a timeout so a stalled stream surfaces a clear error instead.
-class AiStreamIdleError extends Error {
-  constructor() {
-    super('AI phản hồi quá chậm hoặc đang quá tải — bạn thử lại sau giây lát nhé.');
-    this.name = 'AiStreamIdleError';
-  }
-}
-
-async function readWithIdle<T>(
-  reader: ReadableStreamDefaultReader<T>,
-  idleMs: number,
-): Promise<ReadableStreamReadResult<T>> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const idle = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new AiStreamIdleError()), idleMs);
-  });
+async function detailOf(response: Response): Promise<string> {
   try {
-    return await Promise.race([reader.read(), idle]);
-  } finally {
-    if (timer) clearTimeout(timer);
+    const json = await response.json();
+    return typeof json?.detail === 'string' ? json.detail : `HTTP ${response.status}`;
+  } catch {
+    return `HTTP ${response.status}`;
   }
 }
 
-// Slightly longer than the server's 60s idle watchdog so the server's own
-// error+done wins in the normal case; this only fires when the proxy ate it.
-const SSE_IDLE_MS = 80_000;
-
-/**
- * Stream typed events from the agentic chat endpoint.
- *
- * The user's API key is sent in `X-User-Ai-Key` and is NEVER stored.
- * The dashboard's public filters are applied automatically server-side —
- * what the dashboard shows is what the agent sees.
- */
-export async function* streamAiAgentChat(
+/** Stream one turn's events. Ends after `done`. */
+export async function* askPublicAnswer(
   token: string,
-  messages: AiChatMessage[],
-  userAiKey: string,
-  provider: AiProvider,
-  model: string,
-  sessionToken?: string,
-  briefing?: AiBriefing | null,
-  state?: AiConversationState | null,
-  mode?: 'auto' | 'normal' | 'thinking',
-  viewerFilters?: unknown[],
+  body: PublicAnswerRequest,
+  sessionToken?: string | null,
   signal?: AbortSignal,
-  sessionKey?: string,
-  intent?: 'guide',
-): AsyncGenerator<AiAgentEvent, void, unknown> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-User-Ai-Key': userAiKey,
-    'X-User-Ai-Provider': provider,
-  };
-  const trimmedModel = model.trim();
-  if (trimmedModel) {
-    headers['X-User-Ai-Model'] = trimmedModel;
-  }
-  if (mode === 'auto' || mode === 'normal' || mode === 'thinking') {
-    headers['X-User-Ai-Mode'] = mode;
-  }
-  if (intent === 'guide') {
-    headers['X-User-Ai-Intent'] = intent;
-  }
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-
-  const body: Record<string, unknown> = { messages };
-  if (briefing) body.briefing = briefing;
-  if (state) body.state = state;
-  if (Array.isArray(viewerFilters) && viewerFilters.length > 0) {
-    body.viewer_filters = viewerFilters;
-  }
-  if (sessionKey) body.session_key = sessionKey;
-
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/chat`, {
+): AsyncGenerator<PublicAnswerEvent, void, unknown> {
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer`, {
     method: 'POST',
-    headers,
+    headers: publicHeaders(sessionToken),
     body: JSON.stringify(body),
     signal,
   });
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const json = await response.json();
-      detail = json?.detail ?? detail;
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-
+  if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
   const reader = response.body?.getReader();
   if (!reader) return;
-
   const decoder = new TextDecoder();
   let buffer = '';
-
-  while (true) {
-    const { done, value } = await readWithIdle(reader, SSE_IDLE_MS);
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    // SSE event boundaries are blank lines (\n\n)
-    const events = buffer.split('\n\n');
-    buffer = events.pop() ?? '';
-
-    for (const evBlock of events) {
-      const dataLine = evBlock
-        .split('\n')
-        .find((l) => l.startsWith('data:'));
-      if (!dataLine) continue;
-      const payload = dataLine.slice(5).trim();
-      if (!payload) continue;
-      try {
-        const parsed = JSON.parse(payload) as AiAgentEvent;
-        yield parsed;
-        if (parsed.type === 'done') return;
-      } catch {
-        // Ignore malformed lines
-      }
-    }
-  }
-}
-
-/**
- * Phase 16 — goal-driven exploration ("Phân tích toàn diện"). One SSE run:
- * the agent decomposes the SMART goal into questions, answers each with the
- * chart tools, emits typed `insight` events as they are extracted, then
- * streams a ranked summary with action items. Same viewer-filter contract
- * as chat.
- */
-export async function* streamAiExplore(
-  token: string,
-  userAiKey: string,
-  provider: AiProvider,
-  model: string,
-  sessionToken?: string,
-  briefing?: AiBriefing | null,
-  viewerFilters?: unknown[],
-  signal?: AbortSignal,
-  sessionKey?: string,
-): AsyncGenerator<AiAgentEvent, void, unknown> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-User-Ai-Key': userAiKey,
-    'X-User-Ai-Provider': provider,
-  };
-  const trimmedModel = model.trim();
-  if (trimmedModel) headers['X-User-Ai-Model'] = trimmedModel;
-  if (sessionToken) headers['X-Public-Session'] = sessionToken;
-
-  const body: Record<string, unknown> = {};
-  if (briefing) body.briefing = briefing;
-  if (Array.isArray(viewerFilters) && viewerFilters.length > 0) {
-    body.viewer_filters = viewerFilters;
-  }
-  if (sessionKey) body.session_key = sessionKey;
-
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/agent/explore`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`;
-    try {
-      const json = await response.json();
-      detail = json?.detail ?? detail;
-    } catch { /* ignore */ }
-    throw new Error(detail);
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) return;
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-
     buffer += decoder.decode(value, { stream: true });
-    const events = buffer.split('\n\n');
-    buffer = events.pop() ?? '';
-
-    for (const evBlock of events) {
-      const dataLine = evBlock.split('\n').find((l) => l.startsWith('data:'));
-      if (!dataLine) continue;
-      const payload = dataLine.slice(5).trim();
-      if (!payload) continue;
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() ?? '';
+    for (const block of blocks) {
+      const line = block.split('\n').find((l) => l.startsWith('data:'));
+      if (!line) continue;
       try {
-        const parsed = JSON.parse(payload) as AiAgentEvent;
-        yield parsed;
-        if (parsed.type === 'done') return;
+        const ev = JSON.parse(line.slice(5).trim()) as PublicAnswerEvent;
+        yield ev;
+        if (ev.type === 'done') return;
       } catch {
-        // Ignore malformed lines
+        /* a malformed frame is skipped */
       }
     }
   }
+}
+
+export async function cancelPublicAnswer(
+  token: string, turnId: string, conversationKey: string, sessionToken?: string | null,
+): Promise<{ cancelled: boolean; status: string }> {
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}/cancel`, {
+    method: 'POST',
+    headers: publicHeaders(sessionToken),
+    body: JSON.stringify({ conversation_key: conversationKey }),
+  });
+  if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
+  return response.json();
+}
+
+export async function getPublicAnswerTurn(
+  token: string, turnId: string, conversationKey: string, sessionToken?: string | null,
+): Promise<{ turn_id: string; status: string; question: string; envelope: PublicAnswerEnvelope | null }> {
+  const url = `${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}`
+    + `?conversation_key=${encodeURIComponent(conversationKey)}`;
+  const response = await fetch(url, { headers: publicHeaders(sessionToken) });
+  if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
+  return response.json();
+}
+
+/** The viewer's thumb on one answer of their conversation (one current verdict). */
+export async function ratePublicAnswer(
+  token: string, turnId: string, conversationKey: string, rating: 'up' | 'down', sessionToken?: string | null,
+): Promise<{ turn_id: string; rating: 'up' | 'down' }> {
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}/rating`, {
+    method: 'POST',
+    headers: publicHeaders(sessionToken),
+    body: JSON.stringify({ conversation_key: conversationKey, rating }),
+  });
+  if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
+  return response.json();
+}
+
+export async function getPublicAiStatus(
+  token: string, sessionToken?: string | null,
+): Promise<{ enabled: boolean; ready: boolean }> {
+  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/status`, {
+    headers: publicHeaders(sessionToken),
+  });
+  if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
+  return response.json();
 }

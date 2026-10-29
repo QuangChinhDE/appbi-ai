@@ -566,3 +566,54 @@ def test_g16_the_physical_live_caller_refuses_a_related_filter_it_cannot_apply()
     assert kept == [] and [d.get("reason") for d in diagnostics] == ["binding_unsupported"]
     with pytest.raises(ValueError, match="orders.status"):
         enforce_no_hard_dropped_filters(diagnostics)
+
+
+# ── A report slicer naming a column the chart's table does not have ──────────
+# Dashboard 91 (14 unrelated flat tables): the "Kỳ"/"Phạm vi" slicers name raw
+# columns only some tables carry. The builder sends such a filter to no chart
+# that cannot resolve it (filters.ts resolveFilterForChartData); the public path
+# sent it to every chart and the engine refused 7 tiles with 400. A convenience
+# filter (default / viewer choice) is IGNORED for the unrelated chart, reported;
+# an author bound or an untagged filter is still refused.
+
+_DV_SO_SANH = {"semanticBinding": {
+    "datasetId": 126, "baseViewName": "dataset_table_908",
+    "fieldMap": {"Kỳ": "dataset_table_908.Kỳ", "Tên đơn vị": "dataset_table_908.Tên đơn vị"},
+}}
+
+
+@pytest.mark.parametrize("layer", ["dashboard_slicer", "viewer_slicer", "dashboard_filter", "viewer_filter"])
+def test_a_convenience_filter_on_a_column_the_chart_lacks_is_ignored_for_that_chart(layer):
+    from app.services.chart_contracts import enforce_no_hard_dropped_filters
+    from app.services.chart_service import _normalize_runtime_filters_for_chart
+
+    diagnostics: list = []
+    kept = _normalize_runtime_filters_for_chart(_DV_SO_SANH, [
+        {"field": "Kỳ", "operator": "eq", "value": "T08/26", "_layer_source": "dashboard_slicer"},
+        {"field": "Phạm vi", "operator": "eq", "value": "Tập đoàn Flamingo", "_layer_source": layer},
+    ], diagnostics=diagnostics)
+    assert [f["field"] for f in kept] == ["Kỳ"], kept       # the column it HAS still filters
+    assert [d.get("reason") for d in diagnostics] == ["unreachable_view"]
+    enforce_no_hard_dropped_filters(diagnostics)              # no 400
+
+
+@pytest.mark.parametrize("filt", [
+    # an author bound: a locked dashboard filter / link lock / page bound
+    {"field": "Phạm vi", "operator": "eq", "value": "X", "_layer_source": "link_locked", "_authoritative": True},
+    {"field": "Phạm vi", "operator": "eq", "value": "X", "_layer_source": "dashboard_slicer", "_authoritative": True},
+    # a caller that does not say where the filter came from (Explore, API)
+    {"field": "Phạm vi", "operator": "eq", "value": "X"},
+])
+def test_an_author_bound_or_untagged_filter_on_a_missing_column_is_still_refused(filt):
+    from app.services.chart_contracts import AUTHORITATIVE_KEY, AuthoritativeFilterNotApplied, enforce_no_hard_dropped_filters
+    from app.services.chart_service import _normalize_runtime_filters_for_chart
+
+    if filt.pop("_authoritative", False):
+        filt[AUTHORITATIVE_KEY] = True
+    diagnostics: list = []
+    try:
+        _normalize_runtime_filters_for_chart(_DV_SO_SANH, [filt], diagnostics=diagnostics)
+    except AuthoritativeFilterNotApplied:
+        return                                                # refused at the drop site
+    with pytest.raises(ValueError, match="Phạm vi"):
+        enforce_no_hard_dropped_filters(diagnostics)

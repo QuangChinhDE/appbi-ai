@@ -236,7 +236,7 @@ export function IncidentsTab({ datasetId, showChannels = true, focusIncidentId, 
       <ConfirmDialog
         isOpen={!!confirmAccept}
         onClose={() => setConfirmAccept(null)}
-        onConfirm={() => { if (confirmAccept) act(confirmAccept, 'accept_baseline'); }}
+        onConfirm={() => (confirmAccept ? act(confirmAccept, 'accept_baseline') : undefined)}
         title={t('observability.incidents.acceptBaseline.title')}
         description={t(confirmAccept?.source === 'volume' ? 'observability.incidents.acceptBaseline.volume' : 'observability.incidents.acceptBaseline.schema')}
         confirmLabel={t('observability.action.acceptBaseline')}

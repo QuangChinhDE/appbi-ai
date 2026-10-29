@@ -248,7 +248,7 @@ export function ExportLayoutModal({
                 type="button"
                 onClick={() => setTidyMode(true)}
                 title={t('dashboards.exportLayout.tidyModeHint')}
-                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${tidyMode ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'}`}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${tidyMode ? 'bg-brand-container text-brand-on-container' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'}`}
               >
                 <Magnet className="h-3.5 w-3.5" />
                 {t('dashboards.exportLayout.tidyMode')}
@@ -257,7 +257,7 @@ export function ExportLayoutModal({
                 type="button"
                 onClick={() => setTidyMode(false)}
                 title={t('dashboards.exportLayout.freeModeHint')}
-                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${!tidyMode ? 'bg-brand text-white' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'}`}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium ${!tidyMode ? 'bg-brand-container text-brand-on-container' : 'bg-surface-2 text-text-secondary hover:bg-surface-3'}`}
               >
                 <Move className="h-3.5 w-3.5" />
                 {t('dashboards.exportLayout.freeMode')}

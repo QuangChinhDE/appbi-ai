@@ -6,7 +6,13 @@ order using its OWN key; on quota/auth/error the next provider is used, so a
 GPT outage/limit automatically rolls over to Gemini, then Claude. Models are
 fixed in code. Returns None only when EVERY configured provider fails.
 
-The report AI Bot is separate (per-link keys) and unaffected by this module.
+Every call is a PAID call and goes through the Model Gateway
+(services/ai_runtime/gateway.py): its worst case is reserved against the global,
+user, link and turn ceilings before the request, the reported usage settles it, and
+`max_tokens` is clamped to the policy cap. The keys are the server's, or the one a
+turn pinned (a public link's own key from the encrypted store) - never a key a
+browser sent. The Answer Core's planner (AI Chat and the public Dashboard AI Bot)
+calls the model through here.
 """
 import json
 import logging
@@ -90,20 +96,97 @@ def _call_openai(
         ]
     else:
         content = prompt
-    resp = httpx.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return _parse_json_object(resp.json()["choices"][0]["message"]["content"])
+    from app.services import llm_test_budget as _budget
+    from app.services.ai_runtime import gateway
+
+    spec = _openai_spec(model)
+    if spec.get("endpoint") == "responses" and not images:
+        return _call_openai_responses(key, system, prompt, max_tokens, model, timeout)
+    reasoning = bool(spec.get("reasoning"))
+    if reasoning:
+        max_tokens = max(int(max_tokens or 0), _REASONING_MIN_TOKENS)  # thinking spends from the same cap
+    res = gateway.authorize("openai", model, system, prompt, max_tokens)
+    max_tokens = res.max_tokens
+    rid = _budget.reserve("openai", model, system, prompt, max_tokens)  # inert unless a test budget is set
+    payload: dict = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
+        "response_format": {"type": "json_object"},
+    }
+    if reasoning:  # reasoning models take max_completion_tokens and no temperature
+        payload["max_completion_tokens"] = max_tokens
+    else:
+        payload["max_tokens"] = max_tokens
+        payload["temperature"] = 0.2
+    try:
+        with _budget.metered(rid):
+            resp = httpx.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=timeout,
+            )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:
+        # An error after sending may still be billed and no usage exists: the
+        # call is recorded UNKNOWN at its worst case, never as free.
+        _budget.settle(rid, "openai", model, {}, error=type(exc).__name__)
+        _settle_failed(res, exc)
+        raise
+    gateway.settle(res, body.get("usage") or {})
+    parsed = _parse_json_object(body["choices"][0]["message"]["content"])
+    _budget.settle(rid, "openai", model, body.get("usage") or {}, raw=parsed, model_returned=str(body.get("model") or ""))
+    return parsed
+
+
+#: a reasoning model spends thinking tokens from the output cap before it writes the JSON
+_REASONING_MIN_TOKENS = 4000
+
+
+def _openai_spec(model: str) -> dict:
+    try:
+        from app.services.agent_flows import models_catalogue as cat
+
+        return cat.spec("openai", model) or {}
+    except Exception:  # noqa: BLE001 - an uncatalogued model is called as a chat model
+        return {}
+
+
+def _call_openai_responses(key: str, system: str, prompt: str, max_tokens: int, model: str,
+                           timeout: float = _TIMEOUT) -> Optional[dict]:
+    """A model OpenAI serves on the Responses API (the GPT-6 family): JSON mode via
+    `text.format`, reasoning kept low, usage settled exactly like a chat call."""
+    from app.services import llm_test_budget as _budget
+    from app.services.ai_runtime import gateway
+
+    spec = _openai_spec(model)
+    if spec.get("reasoning"):
+        max_tokens = max(int(max_tokens or 0), _REASONING_MIN_TOKENS)
+    res = gateway.authorize("openai", model, system, prompt, max_tokens)
+    rid = _budget.reserve("openai", model, system, prompt, res.max_tokens)
+    payload: dict = {"model": model, "instructions": system, "input": prompt, "store": False,
+                     "max_output_tokens": res.max_tokens, "text": {"format": {"type": "json_object"}}}
+    if spec.get("reasoning"):
+        payload["reasoning"] = {"effort": "low"}
+    try:
+        with _budget.metered(rid):
+            resp = httpx.post("https://api.openai.com/v1/responses",
+                              headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                              json=payload, timeout=timeout)
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:
+        _budget.settle(rid, "openai", model, {}, error=type(exc).__name__)
+        _settle_failed(res, exc)
+        raise
+    usage = body.get("usage") or {}
+    gateway.settle(res, usage)
+    text = "".join(c.get("text") or "" for item in body.get("output") or [] if item.get("type") == "message"
+                   for c in item.get("content") or [] if c.get("type") == "output_text")
+    parsed = _parse_json_object(text)
+    _budget.settle(rid, "openai", model, usage, raw=parsed, model_returned=str(body.get("model") or ""))
+    return parsed
 
 
 def _call_gemini(
@@ -115,17 +198,27 @@ def _call_gemini(
         mime, b64 = _split_data_url(url)
         if b64:
             parts.append({"inline_data": {"mime_type": mime, "data": b64}})
-    resp = httpx.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}",
-        headers={"Content-Type": "application/json"},
-        json={
-            "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {"temperature": 0.2, "maxOutputTokens": max_tokens, "responseMimeType": "application/json"},
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    from app.services.ai_runtime import gateway
+
+    res = gateway.authorize("gemini", model, system, prompt, max_tokens)
+    try:
+        # The key goes in a header, not the URL: a URL lands in http client logs.
+        resp = httpx.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key},
+            json={
+                "contents": [{"role": "user", "parts": parts}],
+                "generationConfig": {"temperature": 0.2, "maxOutputTokens": res.max_tokens,
+                                     "responseMimeType": "application/json"},
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        _settle_failed(res, exc)
+        raise
+    gateway.settle(res, data.get("usageMetadata") or {})
     text = "".join(
         p.get("text", "")
         for p in (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
@@ -149,22 +242,41 @@ def _call_anthropic(
         content: object = blocks
     else:
         content = prompt
-    resp = httpx.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
-        json={
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "system": f"{system}\n\nRespond with ONLY a valid JSON object, no prose.",
-            "messages": [{"role": "user", "content": content}],
-        },
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    from app.services.ai_runtime import gateway
+
+    res = gateway.authorize("anthropic", model, system, prompt, max_tokens)
+    try:
+        resp = httpx.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+            json={
+                "model": model,
+                "max_tokens": res.max_tokens,
+                "temperature": 0.2,
+                "system": f"{system}\n\nRespond with ONLY a valid JSON object, no prose.",
+                "messages": [{"role": "user", "content": content}],
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:
+        _settle_failed(res, exc)
+        raise
+    gateway.settle(res, data.get("usage") or {})
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return _parse_json_object(text)
+
+
+def _settle_failed(res, exc: Exception) -> None:
+    """A request that never left (connection refused, DNS) frees its reservation;
+    anything later may have been billed and keeps its worst case."""
+    from app.services.ai_runtime import gateway
+
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+        gateway.release(res)
+    else:
+        gateway.settle(res, None, error=type(exc).__name__)
 
 
 def _providers(design: bool = False) -> list[tuple[str, str, object, str]]:
@@ -188,6 +300,12 @@ def _providers(design: bool = False) -> list[tuple[str, str, object, str]]:
     return out
 
 
+_CALLS = {"openai": (_call_openai, _OPENAI_MODEL), "gemini": (_call_gemini, _GEMINI_MODEL),
+          "anthropic": (_call_anthropic, _ANTHROPIC_MODEL)}
+_DESIGN_MODELS = {"openai": _OPENAI_DESIGN_MODEL, "gemini": _GEMINI_DESIGN_MODEL,
+                  "anthropic": _ANTHROPIC_DESIGN_MODEL}
+
+
 class LLMClient:
     """JSON-only client with cross-provider fallback (OpenAI → Gemini → Claude)."""
 
@@ -197,8 +315,33 @@ class LLMClient:
         system: str = "You are a helpful AI assistant. Always respond with valid JSON.",
         model: Optional[str] = None,  # accepted for backward-compat; models are fixed per provider
         max_tokens: int = 512,
+        strong: bool = False,
     ) -> Optional[dict]:
-        providers = _providers()
+        # `strong` selects the providers' larger model (the one the design surfaces
+        # already use); every caller that does not ask for it is unchanged.
+        providers = _providers(design=strong)
+        from app.services import llm_test_budget as _budget
+        from app.services.ai_runtime import gateway
+
+        bill = gateway.current()
+        pinned = bill.credential
+        if pinned is not None:
+            # A turn that pinned its key (a conversation's or a link's own) uses that key
+            # and the model its owner chose, only: the credential and the budget belong
+            # to the same billing principal.
+            call, provider_model = _CALLS[pinned.provider]
+            providers = [(pinned.provider, pinned.key, call,
+                          pinned.model or (_DESIGN_MODELS[pinned.provider] if strong else provider_model))]
+        elif bill.needs_user_key:
+            # AI Chat and the public bot run on the key and model a person supplied -
+            # never on the server's (PO 2026-10-28)
+            raise gateway.NoCredential("Chưa có API key và model cho trợ lý AI này.",
+                                       {"reason": "user_key_required"})
+
+        if _budget.active():
+            # Under a test budget there is no automatic fallback to another provider
+            # (PO policy: no fallback to a model whose cost was not reserved).
+            providers = providers[:1]
         if not providers:
             logger.debug("LLMClient: no AI provider key configured (OPENAI/GEMINI/ANTHROPIC)")
             return None
@@ -208,6 +351,12 @@ class LLMClient:
                 if result is not None:
                     return result
                 logger.warning("LLMClient: provider %s returned no JSON — trying next", name)
+            except gateway.AiPolicyRefused as refused:
+                # The policy refused the call: no other provider may be tried around it.
+                if gateway.is_turn_scoped():
+                    raise
+                logger.warning("LLMClient: paid call refused by policy (%s)", refused.code)
+                return None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LLMClient: provider %s failed (%s) — falling back to next", name, exc)
                 continue
@@ -235,6 +384,8 @@ class LLMClient:
             logger.debug("LLMClient: no AI provider key configured for the design tier")
             return None
         clean_images = [img for img in (images or []) if isinstance(img, str) and img.strip()]
+        from app.services.ai_runtime import gateway
+
         for name, key, call, provider_model in providers:
             try:
                 result = call(key, system, prompt, max_tokens, provider_model,
@@ -242,6 +393,11 @@ class LLMClient:
                 if result is not None:
                     return result
                 logger.warning("LLMClient(design): provider %s returned no JSON — trying next", name)
+            except gateway.AiPolicyRefused as refused:
+                if gateway.is_turn_scoped():
+                    raise
+                logger.warning("LLMClient(design): paid call refused by policy (%s)", refused.code)
+                return None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("LLMClient(design): provider %s failed (%s) — falling back to next", name, exc)
                 continue

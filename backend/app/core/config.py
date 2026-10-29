@@ -147,6 +147,50 @@ class Settings(BaseSettings):
     # NEXT_PUBLIC_* flags) to restore it exactly as it was.
     WORKBOARDS_ENABLED: bool = False
 
+    # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──
+    # The Data Core answers every Chat turn through the Governed Query Service under
+    # the asker's identity; an Agent Flow is an optional extension. `chat: view` is
+    # the only module gate and NO setting here grants data (EXPLORE per Dataset does).
+    # AI_CHAT_ENABLED is the operator's EMERGENCY switch: off = new turns get a 503
+    # "temporarily unavailable" (history stays readable). It never routes anybody to
+    # another engine; there is none.
+    AI_CHAT_ENABLED: bool = True
+    # Per-person ceilings, checked BEFORE any model is called. 0 = unlimited.
+    AI_CHAT_TURNS_PER_USER_DAY: int = 100
+    AI_CHAT_MAX_RUNNING_PER_USER: int = 2
+    # A Flow extension's wall clock, inside the turn; its model and tool calls are
+    # capped by the turn (dispatch.run_as_extension), never raised by the flow.
+    AI_CHAT_EXTENSION_TIMEOUT_SECONDS: int = 40
+    AI_CHAT_EXTENSION_MAX_LLM_CALLS: int = 6
+    AI_CHAT_EXTENSION_MAX_TOOL_CALLS: int = 16
+    # A turn still `running` after this is shown as failed/interrupted (its worker died).
+    AI_CHAT_TURN_STALE_SECONDS: int = 900
+    # Data Core tunables. The ANALYST_ prefix is historical (the Core was the AI
+    # Analyst's); they are read by services/data_core and services/chat only.
+    # Accepting a dropped filter (a wider answer than asked). OFF until the consent
+    # journey is certified in the browser: with it off a dropped filter is a plain
+    # refusal, the consent endpoint answers 403 and a consent token is never spent.
+    ANALYST_DROP_CONSENT_ENABLED: bool = False
+    # Planner model tier: "default" (gpt-4o-mini, the certified baseline) or
+    # "strong" (the provider's larger model). Changed only on benchmark evidence.
+    ANALYST_PLANNER_MODEL: str = "default"
+    # Test-only AI spending cap (services/llm_test_budget.py). Empty = inert;
+    # refused when ENVIRONMENT=production.
+    LLM_TEST_BUDGET_USD: str = ""
+    LLM_TEST_LEDGER_PATH: str = ""
+    LLM_TEST_PRICES_JSON: str = ""
+    # Test-only: answer planner calls from recorded model outputs (JSONL of
+    # {"question", "followup", "raw"}) instead of calling a model. Refused in production.
+    ANALYST_PLANNER_REPLAY_PATH: str = ""
+    # Test-only: answer an AI Chat extension flow's model from recorded outputs (JSONL
+    # of {"flow_key", "question", "output"}); every gate and validation still runs.
+    # Refused in production.
+    AI_CHAT_EXTENSION_REPLAY_PATH: str = ""
+    ANALYST_MAX_QUERIES_PER_USER_DAY: int = 200
+    ANALYST_MAX_CONCURRENT_PER_DATASOURCE: int = 4
+    ANALYST_MAX_BQ_BYTES_PER_USER_DAY: int = 20 * 1024**3
+    ANALYST_MAX_ROWS: int = 500
+
     # ── Metadata Catalog / Governance (DB-backed) ───────────────────────
     # Default OFF — the catalog module is fully INERT until enabled (not even
     # imported while off; see app/api/__init__.py). When True, /api/v1/catalog/*
@@ -218,17 +262,23 @@ class Settings(BaseSettings):
     # on real traffic without ever rejecting a viewer; flip to "block" once the
     # log is clean. "off" disables it entirely.
     INTELLIGENCE_GUARD_MODE: str = "log"          # off | log | block
-    # Spend ceilings for the PUBLIC chat, enforced per shared link per rolling
-    # 24h / 1h. Only bind when the ORG's key pays (appearance_config.ai_bot_key);
-    # a viewer using their own key is metered but never blocked on cost.
-    # 0 = unlimited (the pre-v2 behaviour).
+    # Spend ceilings for the PUBLIC Dashboard AI Bot, per shared link per rolling
+    # 24h / 1h. A link's own `ai_bot_budget_usd_per_day` wins when > 0; a link is
+    # never unlimited, and no header a viewer sends changes which ceiling applies
+    # (services/dashboard_ai_bot/budget.py).
     AI_DEFAULT_BUDGET_USD_PER_DAY: float = 5.0
     AI_DEFAULT_TURNS_PER_HOUR: int = 120
-    # Direct Chat (signed-in users talking to a flow with no report) is metered per
-    # USER instead of per link: there is no link to hang a ceiling on, and the
-    # natural brake a public link has — somebody must find and open it — does not
-    # exist for a nav item every employee can click. 0 = unlimited.
-    DIRECT_CHAT_RUNS_PER_DAY: int = 100
+    # THE Model Gateway (services/ai_runtime/gateway.py): every paid model call -
+    # AI Chat, the public bot, an Agent Flow add-on, any other feature - reserves
+    # its worst case against these ceilings first (rolling 24h, fail closed).
+    AI_GLOBAL_USD_PER_DAY: float = 25.0
+    AI_USER_USD_PER_DAY: float = 2.0
+    AI_MAX_MODEL_CALLS_PER_TURN: int = 8
+    AI_MAX_USD_PER_TURN: float = 0.5
+    AI_MAX_OUTPUT_TOKENS_PER_CALL: int = 16384
+    AI_MAX_INPUT_TOKENS_PER_CALL: int = 120000
+    # Agent Flow add-on calls one turn may make (the Core decides; never recursive).
+    AI_MAX_EXTENSION_CALLS_PER_TURN: int = 1
     # Evidence ledger: persist one row per tool call so every number in an
     # answer can be traced back to the call that produced it.
     # ON by default. Verification is fail-closed, so an empty ledger would mean
@@ -333,6 +383,13 @@ class Settings(BaseSettings):
     # Hard cap BigQuery enforces on the job itself (QueryJobConfig.maximum_bytes_billed)
     # for user-submitted Query Runner SQL — bounds cost even when the dry run fails.
     BQ_MAX_BYTES_BILLED: int = 60 * 1024**3
+    # ── Governed Query Service bounds (intelligence-foundation spec §2.5) ───────
+    # A request may only LOWER these. The AI BigQuery bytes limit is its OWN hard
+    # limit, not the warehouse ceiling above: the job carries min(this, ceiling).
+    # Per-run / per-user-day BigQuery budgets need the audit ledger (PR-1C/1E).
+    GQS_MAX_ROWS: int = 5_000
+    GQS_TIMEOUT_SECONDS: int = 60
+    AI_BQ_MAX_BYTES_PER_QUERY: int = 1 * 1024**3
 
     # ── Source hardening (docs/features/source-core-hardening/spec.md) ──────────
     # Outbound policy for PostgreSQL/MySQL sources. Private addresses are refused

@@ -51,6 +51,10 @@ ENV NEXT_PUBLIC_PDF_PREVIEW_TAB=$NEXT_PUBLIC_PDF_PREVIEW_TAB
 # lands on Dashboards. See frontend/src/lib/feature-flags.ts.
 ARG NEXT_PUBLIC_HOME_MODULE_ENABLED=false
 ENV NEXT_PUBLIC_HOME_MODULE_ENABLED=$NEXT_PUBLIC_HOME_MODULE_ENABLED
+# The commit this bundle is built from (run.sh / compose pass GIT_SHA). Inlined
+# into the bundle and the HTML <meta name="appbi-build">; empty -> "unknown".
+ARG APPBI_BUILD_SHA=
+ENV NEXT_PUBLIC_APPBI_BUILD_SHA=$APPBI_BUILD_SHA
 
 # Copy dependencies from deps stage
 COPY --from=deps /app/node_modules ./node_modules
@@ -67,6 +71,8 @@ RUN npm run build
 # Stage 3: Runner
 FROM node:18-alpine AS runner
 WORKDIR /app
+ARG APPBI_BUILD_SHA=
+LABEL org.opencontainers.image.revision=$APPBI_BUILD_SHA
 
 # Set to production environment
 ENV NODE_ENV production

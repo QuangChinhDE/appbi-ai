@@ -19,6 +19,7 @@ importing test module is skipped — except in the CI security job, where
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 
 import pytest
@@ -54,7 +55,14 @@ if not os.environ.get("DATASOURCE_ENCRYPTION_KEY"):
     from cryptography.fernet import Fernet
 
     os.environ["DATASOURCE_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
-for _flag in ("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED", "WORKBOARDS_ENABLED", "OBSERVABILITY_ENABLED"):
+# The env var only reaches a `settings` built AFTER this line. When another test
+# module imported app.core.config first, the live settings had no key and every
+# "is this encrypted?" check ran on plaintext - the OCR ciphertext test passed
+# only because an app-role test happened to reload the config module later.
+if "app.core.config" in sys.modules and not sys.modules["app.core.config"].settings.DATASOURCE_ENCRYPTION_KEY:
+    sys.modules["app.core.config"].settings.DATASOURCE_ENCRYPTION_KEY = os.environ["DATASOURCE_ENCRYPTION_KEY"]
+for _flag in ("METADATA_CATALOG_ENABLED", "GOVERN_ENABLED", "WORKBOARDS_ENABLED", "OBSERVABILITY_ENABLED",
+              "ANALYST_ENABLED"):
     os.environ.setdefault(_flag, "true")
 
 from fastapi.testclient import TestClient  # noqa: E402

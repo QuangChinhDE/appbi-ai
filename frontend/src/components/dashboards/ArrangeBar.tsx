@@ -1,11 +1,13 @@
 'use client';
 
 /**
- * The Arrange bar: appears while tiles are selected in the manual builder.
- * Arrange actions (two or more tiles) are grid operations (lib/grid-arrange);
- * Frame (one or more charts) sets how much container each chart wears — a card,
- * a subtle panel, or flush on the canvas — so a manual report is not a wall of
- * identical cards. Both go through the page's layout-override path: undoable,
+ * The Arrange bar: appears while TWO OR MORE tiles are selected in the manual
+ * builder — arranging is a relation between tiles, so one selected tile shows no
+ * bar (its frame is set in the Inspector). Arrange actions are grid operations
+ * (lib/grid-arrange); Frame sets how much container each selected chart wears —
+ * a card, a subtle panel, or flush on the canvas. Both groups sit behind one
+ * menu each, so the bar is "N selected · Arrange · Frame · ×" rather than a row
+ * of eleven controls. Both go through the page's layout-override path: undoable,
  * saved to the draft, published with it. No coordinates are shown or typed.
  */
 import React from 'react';
@@ -15,6 +17,9 @@ import {
   AlignHorizontalDistributeCenter,
   AlignStartHorizontal,
   AlignStartVertical,
+  Check,
+  ChevronDown,
+  LayoutTemplate,
   StretchHorizontal,
   StretchVertical,
   X,
@@ -35,6 +40,71 @@ const ACTIONS: Array<{ op: ArrangeOp; icon: React.ComponentType<{ className?: st
 export type TileFrame = 'card' | 'subtle' | 'flush';
 const FRAMES: TileFrame[] = ['card', 'subtle', 'flush'];
 
+/** A bar menu: one trigger, a role=menu list, closes on pick / Escape / outside click. */
+function BarMenu({
+  id,
+  label,
+  icon: Icon,
+  children,
+}: {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const rootRef = React.useRef<HTMLDivElement | null>(null);
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const close = React.useCallback(() => { setOpen(false); triggerRef.current?.focus(); }, []);
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => { if (!rootRef.current?.contains(e.target as Node)) setOpen(false); };
+    // Escape closes the menu only — it must not also clear the selection.
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey, true);
+    rootRef.current?.querySelector<HTMLElement>('[role="menu"] button:not(:disabled)')?.focus();
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey, true); };
+  }, [open, close]);
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={triggerRef}
+        type="button"
+        data-testid={`arrange-${id}-open`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[12px] font-[510] transition-colors ${
+          open ? 'border-brand/40 bg-brand-container text-brand-on-container' : 'border-stroke-strong bg-surface-1 text-text-secondary hover:bg-surface-2 hover:text-text-primary'
+        }`}
+      >
+        <Icon className="h-3.5 w-3.5" />
+        {label}
+        <ChevronDown className="h-3 w-3 opacity-70" />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label={label}
+          className="bi-fade-in absolute left-0 top-full z-50 mt-1 w-60 overflow-hidden rounded-lg border border-stroke-strong bg-surface-1 py-1 shadow-popover"
+          onKeyDown={(e) => {
+            if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+            e.preventDefault();
+            const items = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled)'));
+            const i = items.indexOf(document.activeElement as HTMLElement);
+            items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+          }}
+        >
+          {children(close)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const ITEM = 'flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] font-[510] text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary focus-visible:bg-surface-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40';
+
 export function ArrangeBar({
   count,
   onArrange,
@@ -51,57 +121,62 @@ export function ArrangeBar({
   frame?: TileFrame | null;
 }) {
   const { t } = useI18n();
-  if (count < 1 || (count < 2 && !onFrame)) return null;
+  if (count < 2) return null;
   return (
     <div
       role="toolbar"
       aria-label={t('dashboards.arrange.title')}
       data-testid="arrange-bar"
       data-html2canvas-ignore
-      className="sticky top-2 z-40 mb-2 flex w-fit max-w-full flex-wrap items-center gap-0.5 rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-1 shadow-xl"
+      className="sticky top-2 z-40 mb-2 flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg border border-stroke-strong bg-surface-1 p-1 shadow-xl"
     >
-      <span className="px-2 text-[11px] font-medium text-text-tertiary">{t('dashboards.arrange.selected', { count })}</span>
+      <span className="px-2 text-[12px] font-medium text-text-primary">{t('dashboards.arrange.selected', { count })}</span>
+      <BarMenu id="align" label={t('dashboards.arrange.title')} icon={AlignStartVertical}>
+        {(close) => ACTIONS.map(({ op, icon: Icon, label, min }) => (
+          <button
+            key={op}
+            type="button"
+            role="menuitem"
+            data-testid={`arrange-${op}`}
+            disabled={count < min}
+            title={count < min ? t('dashboards.arrange.needsThree') : undefined}
+            onClick={() => { onArrange(op); close(); }}
+            className={ITEM}
+          >
+            <Icon className="h-4 w-4 shrink-0 text-text-tertiary" />
+            {t(label)}
+          </button>
+        ))}
+      </BarMenu>
       {onFrame && (
-        <span className="flex items-center gap-0.5 border-r border-[rgb(var(--border-line))] pr-1" role="group" aria-label={t('dashboards.arrange.frame.title')}>
-          <span className="px-1 text-[11px] text-text-quaternary">{t('dashboards.arrange.frame.title')}</span>
-          {FRAMES.map((f) => (
+        <BarMenu id="frame" label={t('dashboards.arrange.frame.title')} icon={LayoutTemplate}>
+          {(close) => FRAMES.map((f) => (
             <button
               key={f}
               type="button"
+              role="menuitemradio"
+              aria-checked={frame === f}
               data-testid={`arrange-frame-${f}`}
-              aria-pressed={frame === f}
-              onClick={() => onFrame(f)}
-              title={t(`dashboards.arrange.frame.${f}Hint`)}
-              className={`rounded-md px-2 py-1 text-[11px] font-medium transition ${
-                frame === f ? 'bg-brand/15 text-brand' : 'text-text-secondary hover:bg-surface-2 hover:text-text-primary'
-              }`}
+              onClick={() => { onFrame(f); close(); }}
+              className={ITEM}
             >
-              {t(`dashboards.arrange.frame.${f}`)}
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className={frame === f ? 'text-text-primary' : undefined}>{t(`dashboards.arrange.frame.${f}`)}</span>
+                <span className="text-[11px] font-normal leading-snug text-text-tertiary">{t(`dashboards.arrange.frame.${f}Hint`)}</span>
+              </span>
+              {frame === f && <Check className="h-3.5 w-3.5 shrink-0 text-brand" />}
             </button>
           ))}
-        </span>
+        </BarMenu>
       )}
-      {count >= 2 && ACTIONS.map(({ op, icon: Icon, label, min }) => (
-        <button
-          key={op}
-          type="button"
-          data-testid={`arrange-${op}`}
-          disabled={count < min}
-          onClick={() => onArrange(op)}
-          title={t(label)}
-          aria-label={t(label)}
-          className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-surface-2 hover:text-text-primary disabled:opacity-35"
-        >
-          <Icon className="h-4 w-4" />
-        </button>
-      ))}
-      <span className="mx-1 h-4 w-px bg-[rgb(var(--border-line))]" />
+      <span className="mx-0.5 h-4 w-px bg-stroke-line" aria-hidden />
       <button
         type="button"
+        data-testid="arrange-clear"
         onClick={onClear}
         title={t('dashboards.arrange.clear')}
         aria-label={t('dashboards.arrange.clear')}
-        className="rounded-md p-1.5 text-text-tertiary hover:bg-surface-2"
+        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-2 hover:text-text-primary"
       >
         <X className="h-4 w-4" />
       </button>

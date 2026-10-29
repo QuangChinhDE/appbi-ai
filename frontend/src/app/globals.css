@@ -28,68 +28,113 @@
 }
 
 /*
- * ── Design System: Linear-inspired (Light Mode) ─────────────────────
- * Hệ màu light-mode phỏng theo Linear. Dark-mode sẽ bật ở phase sau
- * bằng class "dark" trên <html>.
+ * ── Design System: Ocean Blue (Light Mode) ──────────────────────────
+ * ONE source of truth for the AppBI application chrome. Components read the
+ * semantic tokens below (via tailwind.config.js); they never hard-code a brand
+ * value. Every text/background pair is held to WCAG 2.2 AA by
+ * scripts/check-app-theme-contrast.mjs — change a value here, run it.
+ *
+ * The dashboard REPORT has its own content theme (DashboardThemeProvider): it
+ * may re-point --brand / surfaces inside the report, but the app chrome inside
+ * it re-asserts these values through `.app-chrome` (below), so a report's
+ * accent never recolours AppBI's own buttons, tabs or focus rings.
+ *
+ * Dark mode is out of scope for this phase; the `.dark` block is kept as is.
  */
 
 @layer base {
   :root {
-    /* — Surface luminance steps (light) — */
-    --surface-0: 247 248 248;        /* #f7f8f8 — page background */
-    --surface-1: 255 255 255;        /* #ffffff — panels, cards */
-    --surface-2: 243 244 245;        /* #f3f4f5 — hover / subtle fill */
-    --surface-3: 233 235 238;        /* #e9ebee — stronger fill */
-    --surface-inverse: 8 9 10;       /* #08090a — dark pill / invert */
+    /* — Surfaces — */
+    --surface-0: 246 248 252;        /* #F6F8FC — page */
+    --surface-1: 255 255 255;        /* #FFFFFF — card, panel, header, dialog */
+    --surface-2: 243 246 250;        /* #F3F6FA — secondary toolbar, neutral hover */
+    --surface-3: 232 238 246;        /* #E8EEF6 — segmented controls, pressed fill */
+    --surface-inverse: 23 38 60;     /* #17263C — tooltip / inverted pill */
     --overlay: 0 0 0;                /* modal/dialog backdrop — theme-independent */
 
-    /* — Text hierarchy (light) — */
-    --text-primary: 8 9 10;          /* #08090a */
-    --text-secondary: 60 65 73;      /* #3c4149 */
-    --text-tertiary: 107 111 118;    /* #6b6f76 */
-    --text-quaternary: 138 143 152;  /* #8a8f98 */
+    /* — Text — */
+    --text-primary: 23 38 60;        /* #17263C — titles, key content */
+    --text-secondary: 64 83 107;     /* #40536B — body, action labels */
+    --text-tertiary: 82 102 128;     /* #526680 — metadata, helper text */
+    --text-quaternary: 90 109 132;   /* #5A6D84 — low emphasis, still readable */
     --text-on-brand: 255 255 255;
 
-    /* — Brand & accent (unchanged across themes) — */
-    --brand: 94 106 210;             /* #5e6ad2 */
-    --brand-hover: 113 112 255;      /* #7170ff */
-    --brand-active: 130 143 255;     /* #828fff */
-    --brand-soft: 238 239 252;       /* tinted indigo wash */
+    /* — Brand (Ocean Blue) — */
+    --brand: 11 87 208;              /* #0B57D0 — primary actions, links, focus */
+    --brand-hover: 8 66 160;         /* #0842A0 — darker on hover */
+    --brand-active: 6 53 122;        /* #06357A — pressed */
+    --brand-navy: 13 59 122;         /* #0D3B7A — identity accent */
+    --brand-soft: 232 240 254;       /* #E8F0FE — kept name: soft brand wash */
+    --brand-container: 232 240 254;  /* #E8F0FE — selected nav, tonal button */
+    --brand-container-hover: 211 227 253; /* #D3E3FD */
+    --on-brand-container: 8 66 160;  /* #0842A0 — text/icon on the container */
 
-    /* — Status — */
-    --success: 39 166 68;            /* #27a644 */
-    --success-soft: 16 185 129;      /* #10b981 */
-    --warning: 217 119 6;            /* amber-600 */
-    --danger: 220 38 38;             /* red-600 */
-    --info: 37 99 235;               /* blue-600 */
+    /* — Status (foreground / soft background) — */
+    --success: 19 115 51;            /* #137333 */
+    --success-soft: 19 115 51;       /* badge tint source (used at /12) */
+    --success-bg: 232 245 237;       /* #E8F5ED */
+    --warning: 145 86 0;             /* #915600 */
+    --warning-bg: 255 245 229;       /* #FFF5E5 */
+    --danger: 179 38 30;             /* #B3261E */
+    --danger-bg: 252 234 232;        /* #FCEAE8 */
+    --info: 11 87 208;               /* #0B57D0 */
+    --info-bg: 232 240 254;          /* #E8F0FE */
 
-    /* — Borders (light: black at low alpha) — */
-    --border-subtle: 8 9 10;         /* use with /5  alpha */
-    --border-standard: 8 9 10;       /* use with /10 alpha */
-    --border-strong: 208 214 224;    /* #d0d6e0 solid */
-    --border-line: 230 230 230;      /* #e6e6e6 solid */
+    /* — Borders — */
+    --border-subtle: 23 38 60;       /* use with /5  alpha */
+    --border-standard: 23 38 60;     /* use with /10 alpha */
+    --border-strong: 200 212 229;    /* #C8D4E5 — card, group, panel */
+    --border-line: 224 231 240;      /* #E0E7F0 — light divider */
+    --border-control: 126 144 168;   /* #7E90A8 — input/control boundary (3:1) */
 
-    /* — shadcn/radix compat (mapped to our surfaces) — */
-    --background: 0 0% 97%;
-    --foreground: 220 9% 4%;
+    /* — shadcn/radix compat (same roles, HSL) — */
+    --background: 220 60% 98%;
+    --foreground: 215 45% 16%;
     --card: 0 0% 100%;
-    --card-foreground: 220 9% 4%;
+    --card-foreground: 215 45% 16%;
     --popover: 0 0% 100%;
-    --popover-foreground: 220 9% 4%;
-    --primary: 232 57% 60%;
+    --popover-foreground: 215 45% 16%;
+    --primary: 217 90% 43%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 210 11% 95%;
-    --secondary-foreground: 220 9% 14%;
-    --muted: 210 11% 95%;
-    --muted-foreground: 216 6% 44%;
-    --accent: 232 57% 60%;
+    --secondary: 214 43% 97%;
+    --secondary-foreground: 215 45% 16%;
+    --muted: 214 43% 97%;
+    --muted-foreground: 214 22% 41%;
+    --accent: 217 90% 43%;
     --accent-foreground: 0 0% 100%;
-    --destructive: 0 72% 51%;
+    --destructive: 3 71% 41%;
     --destructive-foreground: 0 0% 100%;
-    --border: 213 15% 89%;
-    --input: 213 15% 89%;
-    --ring: 232 57% 60%;
+    --border: 214 35% 91%;
+    --input: 214 22% 57%;
+    --ring: 217 90% 43%;
     --radius: 0.375rem;
+  }
+
+  /*
+   * App chrome inside a re-themed region (the dashboard report wrapper sets
+   * --brand / surfaces from the REPORT theme). Anything that is AppBI UI —
+   * the builder toolbar, its menus — carries `.app-chrome` and gets the app
+   * values back. Same values as :root; keep the two in step.
+   */
+  .app-chrome {
+    --surface-1: 255 255 255;
+    --surface-2: 243 246 250;
+    --surface-3: 232 238 246;
+    --text-primary: 23 38 60;
+    --text-secondary: 64 83 107;
+    --text-tertiary: 82 102 128;
+    --text-quaternary: 90 109 132;
+    --brand: 11 87 208;
+    --brand-hover: 8 66 160;
+    --brand-active: 6 53 122;
+    --brand-soft: 232 240 254;
+    --brand-container: 232 240 254;
+    --brand-container-hover: 211 227 253;
+    --on-brand-container: 8 66 160;
+    --border-strong: 200 212 229;
+    --border-line: 224 231 240;
+    --border-control: 126 144 168;
+    color-scheme: light;
   }
 
   /*
@@ -839,14 +884,11 @@
   background-position: top, top;
   background-repeat: no-repeat;
 }
+/* Dark: only the shadow differs. The stripe and the tint are the accent-bar rules'
+   (below), as on light - this rule used to repaint them at a higher specificity, so an
+   author's accent bar (side, size, none) was ignored on dark modern reports. */
 [data-dashboard-skin='modern'][data-dashboard-theme='dark'] .dashboard-tile {
   box-shadow: var(--dashboard-card-shadow, 0 1px 2px rgba(0, 0, 0, .4), 0 12px 28px -16px rgba(0, 0, 0, .7));
-  background-image:
-    linear-gradient(90deg, var(--dashboard-accent, #8b8cf0), color-mix(in srgb, var(--dashboard-accent, #8b8cf0) 55%, #ffffff)),
-    linear-gradient(180deg, color-mix(in srgb, var(--dashboard-accent, #8b8cf0) 15%, transparent), transparent 82px);
-  background-size: 100% 3px, 100% 100%;
-  background-position: top, top;
-  background-repeat: no-repeat;
 }
 
 /*
@@ -1215,6 +1257,33 @@
   background-color: transparent;
   background-image: none;
   box-shadow: none;
+}
+/* The card border the author chose (cardBorderStyle) beats the template's treatment.
+   Set only when the author set it (DashboardThemeProvider). It sets the variables the
+   tile frame's inline border reads (tile-frame.ts) - an inline style beats any rule -
+   and, after the treatment rules, the tile's own border. A legacy explicit
+   cardBorderColor/Width is set inline on the provider and still wins over this. */
+[data-dashboard-cardborder="none"] {
+  --dashboard-card-border-color: transparent;
+}
+[data-dashboard-cardborder="hairline"] {
+  --dashboard-card-border-width: 1px;
+  --dashboard-card-border-color: rgb(var(--border-line));
+}
+[data-dashboard-cardborder="strong"] {
+  --dashboard-card-border-width: 1.5px;
+  --dashboard-card-border-color: color-mix(in srgb, var(--dashboard-accent, #5b5bd6) 32%, rgb(var(--border-line)));
+}
+[data-dashboard-cardborder] .dashboard-tile {
+  border-width: var(--dashboard-card-border-width, 1px);
+  border-color: var(--dashboard-card-border-color, rgb(var(--border-line)));
+}
+/* The tile an AI Bot source chip brought into view, marked for a moment. */
+.ai-bot-focus {
+  outline: 2px solid var(--dashboard-accent, rgb(var(--brand)));
+  outline-offset: 3px;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--dashboard-accent, rgb(var(--brand))) 18%, transparent) !important;
+  transition: outline-color .3s ease, box-shadow .3s ease;
 }
 
 /* ── Per-tile frame (tileFrame / AI Design) ──────────────────────────────────
@@ -1833,6 +1902,11 @@
 .dashboard-tile-title-row[data-kpi]:focus-within > a,
 .dashboard-tile-title-row[data-kpi]:focus-within > button,
 .dashboard-tile-title-row[data-kpi]:focus-within > div { display: inline-flex; }
+/* Touch screens have no hover: keep the menu (the only way to Remove) reachable. */
+@media (hover: none) {
+  .dashboard-tile-title-row[data-kpi] > button,
+  .dashboard-tile-title-row[data-kpi] > div { display: inline-flex; }
+}
 
 /* KPI context: the span the number covers, then a comparison that carries its
    own window and value, so a change is never read as the total's change. */
@@ -1860,4 +1934,34 @@
 [data-emphasis="quiet"] [data-pdf-tile-title] {
   font-size: calc(var(--dash-font-chartTitle, 13px) * 0.92);
   color: rgb(var(--text-secondary));
+}
+
+/*
+ * Toasts (sonner, richColors) on the app's status tokens instead of sonner's
+ * own palette. Unlayered on purpose: sonner's CSS is unlayered, and a layered
+ * rule would lose to it whatever its specificity. `html` lifts specificity
+ * above sonner's [data-sonner-toaster][data-sonner-theme='light'].
+ */
+html [data-sonner-toaster][data-sonner-theme='light'] {
+  --normal-bg: rgb(var(--surface-1));
+  --normal-border: rgb(var(--border-strong));
+  --normal-text: rgb(var(--text-primary));
+  --success-bg: rgb(var(--success-bg));
+  --success-border: rgb(var(--success) / 0.3);
+  --success-text: rgb(var(--success));
+  --info-bg: rgb(var(--info-bg));
+  --info-border: rgb(var(--info) / 0.3);
+  --info-text: rgb(var(--on-brand-container));
+  --warning-bg: rgb(var(--warning-bg));
+  --warning-border: rgb(var(--warning) / 0.35);
+  --warning-text: rgb(var(--warning));
+  --error-bg: rgb(var(--danger-bg));
+  --error-border: rgb(var(--danger) / 0.3);
+  --error-text: rgb(var(--danger));
+}
+/* An action inside a toast reads as a button, not as text. */
+html [data-sonner-toast] [data-button] {
+  border: 1px solid currentColor;
+  border-radius: 0.375rem;
+  font-weight: 600;
 }

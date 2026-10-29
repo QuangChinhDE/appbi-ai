@@ -53,8 +53,16 @@ def sse(*events):
 
 
 def test_an_agent_step_on_gemini_uses_the_tool_calling_adapter(monkeypatch):
+    import sqlalchemy as sa
+    from app.models.ai_runtime import AiUsageLedger
     from app.services.agent_flows.runtime.handlers import agent as A
+    from app.services.ai_runtime import gateway
 
+    # every step reserves in the Model Gateway's ledger before it is sent
+    engine = sa.create_engine("sqlite://", poolclass=sa.pool.StaticPool,
+                              connect_args={"check_same_thread": False})
+    AiUsageLedger.__table__.create(engine)
+    monkeypatch.setattr(gateway, "_engine", lambda: engine)
     seen = {}
 
     async def fake_openai(**kw):
