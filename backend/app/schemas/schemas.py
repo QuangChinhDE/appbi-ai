@@ -686,6 +686,8 @@ class DashboardResponse(DashboardBase):
     id: int
     owner_id: Optional[UUID] = None
     owner_email: Optional[str] = None
+    #: Active, author-made public links (list view): the report list's Public column.
+    public_link_count: Optional[int] = None
     user_permission: Optional[str] = None
     # Backend-computed {action: bool} for THIS caller (UX only; every
     # mutation is re-checked). The frontend reads this, not owner/share/level.

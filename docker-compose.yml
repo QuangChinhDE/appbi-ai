@@ -97,6 +97,10 @@ services:
       # private network (incl. this stack's own Postgres) needs its CIDR listed here.
       SOURCE_ALLOW_PRIVATE_NETWORK: ${SOURCE_ALLOW_PRIVATE_NETWORK:-false}
       ALLOWED_PRIVATE_SOURCE_CIDRS: ${ALLOWED_PRIVATE_SOURCE_CIDRS:-}
+      # Report-as-Code: the separate origin report documents are served from
+      # (e.g. https://reports.example.com). Empty: derived for a localhost app;
+      # otherwise reports run without their custom JavaScript (fail closed).
+      REPORT_ARTIFACT_ORIGIN: ${REPORT_ARTIFACT_ORIGIN:-}
       SOURCE_QUERY_MAX_ROWS: ${SOURCE_QUERY_MAX_ROWS:-10000}
       BQ_MAX_BYTES_BILLED: ${BQ_MAX_BYTES_BILLED:-64424509440}
       PLATFORM_GCP_ALLOWED_PROJECTS: ${PLATFORM_GCP_ALLOWED_PROJECTS:-}

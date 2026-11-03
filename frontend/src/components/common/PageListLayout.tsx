@@ -140,6 +140,9 @@ export function PageListLayout({
                   <button
                     type="button"
                     onClick={() => setViewMode('grid')}
+                    aria-label={t('common.gridView')}
+                    aria-pressed={viewMode === 'grid'}
+                    data-testid="view-grid"
                     className={cn(
                       'inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors',
                       viewMode === 'grid'
@@ -153,6 +156,9 @@ export function PageListLayout({
                   <button
                     type="button"
                     onClick={() => setViewMode('list')}
+                    aria-label={t('common.listView')}
+                    aria-pressed={viewMode === 'list'}
+                    data-testid="view-list"
                     className={cn(
                       'inline-flex h-7 w-7 items-center justify-center rounded-sm transition-colors',
                       viewMode === 'list'

@@ -889,6 +889,8 @@ export interface Dashboard {
   /** Backend-computed actions for the caller (see getResourcePermissions). */
   capabilities?: Record<string, boolean> | null;
   share_token?: string | null;
+  /** Active, author-made public links (the report list's Public column). */
+  public_link_count?: number | null;
   created_at: string;
   updated_at: string;
   last_published_at?: string | null;  // Phase-B17 optimistic-concurrency version

@@ -198,6 +198,7 @@ test('S1 create a report from data (two datasets with independent semantics)', a
     [SALES_DATASET, 'Where does revenue come from, by region and channel?', 'sales'],
   ] as const) {
     await page.goto('/dashboards');
+    await page.getByTestId('build-manual-open').click(); // Dashboards: creation lives under Build Manual
     await page.getByTestId('report-starter-open').click();
     await page.selectOption('[data-testid="report-starter-dataset"]', { label: dataset });
     await page.fill('[data-testid="report-starter-goal"]', goal);

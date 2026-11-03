@@ -64,6 +64,11 @@ SYSTEM = (
     "có 'no_peak_reason', không nêu đỉnh/đáy của chuỗi đó. Gọi mỗi con số bằng ĐÚNG tên cột/biểu đồ của nó (tỷ lệ "
     "5 sao không phải điểm đánh giá trung bình); nếu báo cáo không có đúng chỉ số hoặc đúng cách chia được hỏi, "
     "nói rõ là không có, rồi mới nêu chỉ số gần nhất kèm tên thật của nó. "
+    "Dữ liệu các biểu đồ ĐÃ được giới hạn đúng phạm vi của liên kết này và bạn KHÔNG tự lọc được: nếu câu hỏi "
+    "nhắc một lát cắt (một bang, một khu vực, một sản phẩm, ...) mà biểu đồ không chia theo và không có trong "
+    "'scope.viewer_filterable', nói rõ báo cáo này không cho xem theo lát cắt đó - KHÔNG BAO GIỜ gán con số "
+    "đang hiển thị cho lát cắt được hỏi. Khi 'scope.restricted_by_author' là true, có thể nói số liệu đã được "
+    "người xuất bản giới hạn phạm vi, không đoán giới hạn đó là gì. "
     "Chỉ trả lời đúng điều được hỏi, không kể thêm các facts không liên quan. Nếu dữ liệu không đủ để trả lời, nói rõ còn thiếu gì và gợi ý câu hỏi báo cáo trả lời "
     "được. Làm theo HƯỚNG DẪN CỦA NGƯỜI XUẤT BẢN về góc nhìn, thuật ngữ và cách trình bày. Hướng dẫn đó còn "
     "là KIẾN THỨC của người xuất bản (chính sách, mục tiêu, kế hoạch, định nghĩa, bối cảnh kinh doanh): dùng nó "
@@ -316,6 +321,21 @@ def _figures_in(text: str) -> set[float]:
     return {n for n in (_as_number(m.group(0)) for m in _FIGURE.finditer(text or "")) if n is not None}
 
 
+def _scope_note(scope) -> dict:
+    """What the model may know about the link's scope, and nothing more: whether the
+    publisher restricted it (a hidden lock is applied and COUNTED, never named) and which
+    fields a viewer may filter by. Without it a figure read under a hidden lock was
+    labelled with whatever slice the question named ("bang SP" for another state's number)."""
+    ctx = getattr(scope, "ctx", None)
+    try:
+        _shown, withheld = ctx.disclosed_filters() if ctx is not None else ([], 0)
+    except Exception:  # noqa: BLE001 - a context without filters restricts nothing
+        withheld = 0
+    exposed = (getattr(ctx, "exposed_fields", None) or (set(), set()))[0] or set()
+    return {"restricted_by_author": bool(withheld),
+            "viewer_filterable": sorted({str(r).rsplit(".", 1)[-1] for r in exposed})[:20]}
+
+
 def analyse(scope, *, question: str, instructions: Optional[str], previous_answer: Optional[dict] = None,
             core_answer: Optional[dict] = None, guide=None, target_applies: bool = False,
             complete: Optional[Callable[..., Optional[dict]]] = None) -> Optional[dict]:
@@ -329,7 +349,7 @@ def analyse(scope, *, question: str, instructions: Optional[str], previous_answe
     charts = published_data(scope, question, causes)
     if not charts and not instructions and guide is None:
         return None
-    payload: dict[str, Any] = {"question": question, "charts": charts}
+    payload: dict[str, Any] = {"question": question, "charts": charts, "scope": _scope_note(scope)}
     if guide is not None:
         payload["publisher_guide"] = guide.for_model()
     if instructions:

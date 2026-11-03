@@ -121,7 +121,9 @@ _pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 2 hours â€” covers a full business meeting/presentation session without excessive re-auth
 # friction, while limiting the exposure window for forgotten open browser tabs.
-PUBLIC_SESSION_SECONDS = 7200
+from app.services import public_link_session as _link_session  # noqa: E402
+
+PUBLIC_SESSION_SECONDS = _link_session.PUBLIC_SESSION_SECONDS
 
 
 class _PasswordBody(BaseModel):
@@ -1580,27 +1582,14 @@ def _create_public_session(link: DashboardPublicLink) -> str:
     the link, or changing its expiry bumps `auth_version`, and every session
     minted before that stops verifying at once — instead of living out its 2h.
     `sub` stays the link token so a session can never be replayed on another link.
+    The implementation is shared with report links (services/public_link_session);
+    a dashboard session never verifies on a report link and vice versa.
     """
-    from app.core import tokens
-
-    return tokens.encode(tokens.PUBLIC_SESSION, {
-        "sub": link.token,
-        "lid": link.id,
-        "av": int(link.auth_version or 0),
-    }, ttl=timedelta(seconds=PUBLIC_SESSION_SECONDS))
+    return _link_session.create_session(link, _link_session.DASHBOARD)
 
 
 def _verify_public_session(session_token: str, link: DashboardPublicLink) -> bool:
-    from app.core import tokens
-
-    data = tokens.decode(session_token, tokens.PUBLIC_SESSION)
-    if data is None:
-        return False
-    return (
-        data.get("sub") == link.token
-        and data.get("lid") == link.id
-        and data.get("av") == int(link.auth_version or 0)
-    )
+    return _link_session.verify_session(session_token, link, _link_session.DASHBOARD)
 
 
 # Access-count telemetry is bumped on EVERY public/embed view. For a widely

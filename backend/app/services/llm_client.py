@@ -369,6 +369,7 @@ class LLMClient:
         system: str = "You are a helpful AI assistant. Always respond with valid JSON.",
         images: Optional[list[str]] = None,
         max_tokens: int = 512,
+        timeout: Optional[float] = None,
     ) -> Optional[dict]:
         """The design tier: 4o (or a vision fallback), with an optional reference
         image. Attaching no image is a legitimate call — it is how the smarter
@@ -389,7 +390,7 @@ class LLMClient:
         for name, key, call, provider_model in providers:
             try:
                 result = call(key, system, prompt, max_tokens, provider_model,
-                              clean_images or None, _DESIGN_TIMEOUT)
+                              clean_images or None, timeout or _DESIGN_TIMEOUT)
                 if result is not None:
                     return result
                 logger.warning("LLMClient(design): provider %s returned no JSON — trying next", name)

@@ -239,6 +239,40 @@ export const publicDashboardApi = {
   },
 };
 
+// ── Report-as-Code public links (/d/r/[token], /embed/r/[token]) ─────────────
+export interface PublicReportMeta {
+  name: string;
+  version: number;
+  published_at: string | null;
+  bindings: { id: string; title: string; kind: string }[];
+  filters: { key: string; label: string; kind: 'category' | 'date' }[];
+  document_url: string;
+  isolated: boolean;
+  link_name?: string;
+  /** Filters this link locks (shown read-only); hidden locks are never sent. */
+  locked_filters?: { key: string; label: string; kind: 'category' | 'date'; value: string[] }[];
+  appearance?: Record<string, unknown>;
+  preview?: boolean;
+}
+
+// A password-protected report link sends its session like a dashboard link does
+// (X-Public-Session); sessions are stored per link token in sessionStorage.
+const reportSession = (token: string) => {
+  const s = getPublicSession(token);
+  return s ? { 'X-Public-Session': s } : undefined;
+};
+
+export const publicReportApi = {
+  get: async (token: string): Promise<PublicReportMeta> =>
+    (await publicClient.get(`/public/reports/${encodeURIComponent(token)}`, { headers: reportSession(token) })).data,
+  auth: async (token: string, password: string): Promise<{ session_token: string; expires_in: number }> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/auth`, { password })).data,
+  data: async (token: string, binding: string, state: Record<string, unknown>): Promise<unknown> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/data`, { binding, state }, { headers: reportSession(token) })).data,
+  values: async (token: string, key: string, search: string, state: Record<string, unknown>): Promise<unknown[]> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/values`, { key, search, state }, { headers: reportSession(token) })).data?.values ?? [],
+};
+
 // ── Session storage helpers ──────────────────────────────────────────────────
 // Sessions are stored per-link in sessionStorage so they are scoped to the tab
 // and automatically cleared when the browser tab is closed.
@@ -381,9 +415,15 @@ export interface PublicAnswerRequest {
   idempotency_key: string;
   page_id?: string | null;
   viewer_filters?: unknown[];
+  /** A report link: the viewer's filter choices on the report ({key: value}). */
+  viewer_state?: Record<string, unknown>;
   follow_up?: boolean;
   choice_token?: string | null;
 }
+
+/** Which public link answers: a dashboard's (/public/dashboards) or an AI Vibe
+ *  Report's (/public/reports). Same Answer Core, same stream, same contract. */
+export type PublicBotSurface = 'dashboards' | 'reports';
 
 /** A refused/failed request before the turn exists (429 budget, 409 running, 410…). */
 export class PublicAnswerRejected extends Error {
@@ -413,8 +453,9 @@ export async function* askPublicAnswer(
   body: PublicAnswerRequest,
   sessionToken?: string | null,
   signal?: AbortSignal,
+  surface: PublicBotSurface = 'dashboards',
 ): AsyncGenerator<PublicAnswerEvent, void, unknown> {
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer`, {
+  const response = await fetch(`${API_BASE}/public/${surface}/${token}/ai/answer`, {
     method: 'POST',
     headers: publicHeaders(sessionToken),
     body: JSON.stringify(body),
@@ -447,8 +488,9 @@ export async function* askPublicAnswer(
 
 export async function cancelPublicAnswer(
   token: string, turnId: string, conversationKey: string, sessionToken?: string | null,
+  surface: PublicBotSurface = 'dashboards',
 ): Promise<{ cancelled: boolean; status: string }> {
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}/cancel`, {
+  const response = await fetch(`${API_BASE}/public/${surface}/${token}/ai/answer/${turnId}/cancel`, {
     method: 'POST',
     headers: publicHeaders(sessionToken),
     body: JSON.stringify({ conversation_key: conversationKey }),
@@ -459,8 +501,9 @@ export async function cancelPublicAnswer(
 
 export async function getPublicAnswerTurn(
   token: string, turnId: string, conversationKey: string, sessionToken?: string | null,
+  surface: PublicBotSurface = 'dashboards',
 ): Promise<{ turn_id: string; status: string; question: string; envelope: PublicAnswerEnvelope | null }> {
-  const url = `${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}`
+  const url = `${API_BASE}/public/${surface}/${token}/ai/answer/${turnId}`
     + `?conversation_key=${encodeURIComponent(conversationKey)}`;
   const response = await fetch(url, { headers: publicHeaders(sessionToken) });
   if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));
@@ -470,8 +513,9 @@ export async function getPublicAnswerTurn(
 /** The viewer's thumb on one answer of their conversation (one current verdict). */
 export async function ratePublicAnswer(
   token: string, turnId: string, conversationKey: string, rating: 'up' | 'down', sessionToken?: string | null,
+  surface: PublicBotSurface = 'dashboards',
 ): Promise<{ turn_id: string; rating: 'up' | 'down' }> {
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/answer/${turnId}/rating`, {
+  const response = await fetch(`${API_BASE}/public/${surface}/${token}/ai/answer/${turnId}/rating`, {
     method: 'POST',
     headers: publicHeaders(sessionToken),
     body: JSON.stringify({ conversation_key: conversationKey, rating }),
@@ -482,8 +526,9 @@ export async function ratePublicAnswer(
 
 export async function getPublicAiStatus(
   token: string, sessionToken?: string | null,
+  surface: PublicBotSurface = 'dashboards',
 ): Promise<{ enabled: boolean; ready: boolean }> {
-  const response = await fetch(`${API_BASE}/public/dashboards/${token}/ai/status`, {
+  const response = await fetch(`${API_BASE}/public/${surface}/${token}/ai/status`, {
     headers: publicHeaders(sessionToken),
   });
   if (!response.ok) throw new PublicAnswerRejected(response.status, await detailOf(response));

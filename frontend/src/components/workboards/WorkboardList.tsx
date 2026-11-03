@@ -1,7 +1,7 @@
 /**
  * WorkboardList — table view of workboards.
  *
- * Mirrors DashboardList so the workboards module reads consistently with the
+ * Mirrors the report list (components/dashboards/ReportList) so the workboards module reads consistently with the
  * rest of the catalog (dashboards / datasets / charts): same column layout,
  * same FilterTag chips, same selection + bulk-delete model, same EmptyState.
  */
