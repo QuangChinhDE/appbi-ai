@@ -236,3 +236,74 @@ def test_the_report_list_carries_every_report_without_a_silent_cut_off(client, o
     rows = client.get("/api/v1/report-artifacts", headers=owner.headers).json()
     mine = next(r for r in rows if r["id"] == report.id)
     assert mine["user_permission"] == "full" and mine["published_number"] == 1 and "binding_count" in mine
+
+
+def test_a_rollback_that_breaks_a_locked_link_says_so_and_the_link_fails_closed(client, db, owner):  # noqa: F811
+    """Rolling back to a version without the filter a link locks: the link must refuse to
+    serve (serving would drop the lock) - and the publisher must be told, not the viewer."""
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    art = ReportArtifact(name="RPL rollback", owner_id=owner.id)
+    db.add(art)
+    db.flush()
+    v1 = ReportArtifactRevision(artifact_id=art.id, number=1, html="<p>v1</p>", css="", js="", bindings=[], filters=[],
+                                source="manual", content_hash="d" * 64, created_by=owner.id)
+    v2 = ReportArtifactRevision(artifact_id=art.id, number=2, html="<p>v2</p>", css="", js="", bindings=[], filters=DECL,
+                                source="manual", content_hash="e" * 64, created_by=owner.id)
+    db.add_all([v1, v2])
+    db.flush()
+    art.draft_revision_id = art.published_revision_id = v2.id
+    db.commit()
+    link = _create(client, owner, art, filters_config=[{"field": "f1", "value": ["SP"]}])
+    r = client.post(f"/api/v1/report-artifacts/{art.id}/publish", json={"revision_id": v1.id}, headers=owner.headers)
+    assert r.status_code == 200
+    assert any("L" in w and "1" in w for w in r.json().get("warnings") or []), r.json()
+    assert client.get(f"/api/v1/public/reports/{link['token']}").status_code == 404, "fails closed"
+    ok = client.post(f"/api/v1/report-artifacts/{art.id}/publish", json={"revision_id": v2.id}, headers=owner.headers)
+    assert not ok.json().get("warnings") and client.get(f"/api/v1/public/reports/{link['token']}").status_code == 200
+
+
+# ── The list actions a dashboard has, on a Vibe Report: duplicate, share, export HTML ──
+
+def test_duplicate_copies_the_draft_for_the_caller_unpublished_and_without_links(client, db, owner, report):  # noqa: F811
+    from app.models.report_artifact import ReportArtifact, ReportArtifactPublicLink
+
+    _create(client, owner, report)
+    r = client.post(f"/api/v1/report-artifacts/{report.id}/duplicate", headers=owner.headers)
+    assert r.status_code == 201, r.text
+    copy = db.get(ReportArtifact, r.json()["id"])
+    db.refresh(copy)
+    assert copy.id != report.id and str(copy.owner_id) == str(owner.id)
+    assert copy.published_revision_id is None, "a copy is never published by duplicating"
+    assert db.query(ReportArtifactPublicLink).filter(ReportArtifactPublicLink.artifact_id == copy.id).count() == 0
+    detail = client.get(f"/api/v1/report-artifacts/{copy.id}", headers=owner.headers).json()
+    assert "DRAFT-SECRET" in detail["draft"]["html"], "the copy is the draft as it stands"
+
+
+def test_a_report_is_shared_through_the_one_share_system(client, db, owner, report):  # noqa: F811
+    other = make_user(db, "rpl-viewer", dashboards="view")
+    url = f"/api/v1/report-artifacts/{report.id}"
+    assert client.get(url, headers=other.headers).status_code in (403, 404), "not shared yet"
+    r = client.post(f"/api/v1/shares/report_artifact/{report.id}",
+                    json={"user_id": str(other.id), "permission": "view"}, headers=owner.headers)
+    assert r.status_code in (200, 201), r.text
+    seen = client.get(url, headers=other.headers)
+    assert seen.status_code == 200 and seen.json()["user_permission"] == "view"
+    listed = {x["id"]: x for x in client.get("/api/v1/report-artifacts", headers=other.headers).json()}
+    assert listed[report.id]["user_permission"] == "view"
+    # a view share does not let them change it, share it or manage its links
+    assert client.put(f"{url}/source", json={"html": "x", "css": "", "js": ""}, headers=other.headers).status_code in (403, 404)
+    assert client.post(f"/api/v1/shares/report_artifact/{report.id}", json={"user_id": str(other.id), "permission": "edit"},
+                       headers=other.headers).status_code in (403, 404)
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=other.headers).status_code in (403, 404)
+
+
+def test_export_html_is_a_standalone_page_with_a_data_snapshot_and_no_internals(client, owner, report):  # noqa: F811
+    r = client.get(f"/api/v1/report-artifacts/{report.id}/export-html", headers=owner.headers)
+    assert r.status_code == 200 and "attachment" in r.headers.get("content-disposition", "")
+    page = r.text
+    assert "DRAFT-SECRET" in page and "rac:init" in page and "MessageChannel" in page
+    import re as _re
+
+    assert '"chart_id"' not in page, "no chart id in the snapshot"
+    assert not _re.search(r"select[^<]{0,200}from", page, _re.I), "no SQL in the file"

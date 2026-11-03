@@ -23,7 +23,11 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.core.share_access import register_share_resource
 from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+from app.models.resource_share import ResourceType
+
+register_share_resource(ResourceType.REPORT_ARTIFACT, ReportArtifact, "dashboards")
 from app.services.report_code import bindings as B
 from app.services.report_code import document as D
 
@@ -135,6 +139,23 @@ def delete(db: Session, artifact: ReportArtifact) -> int:
 
 
 # ── Serialization ─────────────────────────────────────────────────────────────
+
+def duplicate(db: Session, art: ReportArtifact, *, user_id) -> ReportArtifact:
+    """A copy of the report as its draft stands: one new revision, owned by the caller,
+    unpublished, with no public link. Its bindings keep pointing at the same governed
+    charts (a chart used by another report is never deleted with this one: delete())."""
+    src = get_revision(db, art, art.draft_revision_id)
+    if src is None:
+        raise ValueError("Báo cáo chưa có phiên bản nào để nhân bản.")
+    copy = ReportArtifact(name=f"{art.name} (bản sao)"[:255], description=art.description,
+                          dataset_id=art.dataset_id, owner_id=user_id)
+    db.add(copy)
+    db.flush()
+    rev, _ = add_revision(db, copy, user_id=user_id, html=src.html, css=src.css, js=src.js,
+                          bindings=list(src.bindings or []), filters=list(src.filters or []),
+                          source="manual", note=f"Nhân bản từ “{art.name}” phiên bản {src.number}")
+    return copy
+
 
 def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
     """`summary` for many reports in three queries (revisions, link counts), not 3 per row."""

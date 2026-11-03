@@ -34,6 +34,10 @@ export interface SourceEditorHandle {
   openSearch: () => void;
   gotoLine: (line: number) => void;
   insertAtCursor: (text: string) => void;
+  /** Where the cursor is (0 = the author has not placed it yet). */
+  getCursor: () => number;
+  /** Replace [from, to) with text and put the cursor after it. */
+  replaceRange: (from: number, to: number, text: string) => void;
   getValue: () => string;
   setValue: (text: string) => void;
 }
@@ -150,6 +154,13 @@ export const SourceEditor = forwardRef<SourceEditorHandle, {
       if (!v) return;
       const pos = v.state.selection.main.head;
       v.dispatch({ changes: { from: pos, insert: text }, selection: EditorSelection.cursor(pos + text.length), scrollIntoView: true });
+      v.focus();
+    },
+    getCursor: () => view.current?.state.selection.main.head ?? 0,
+    replaceRange: (from: number, to: number, text: string) => {
+      const v = view.current;
+      if (!v) return;
+      v.dispatch({ changes: { from, to, insert: text }, selection: EditorSelection.cursor(from + text.length), scrollIntoView: true });
       v.focus();
     },
     getValue: () => view.current?.state.doc.toString() ?? '',

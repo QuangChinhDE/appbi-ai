@@ -99,6 +99,8 @@ RESOURCES: Tuple[ResourceSpec, ...] = (
     ResourceSpec("dataset", "Dataset", "datasets", policy="dataset"),
     ResourceSpec("chart", "Chart", "explore_charts"),
     ResourceSpec("dashboard", "Dashboard", "dashboards"),
+    ResourceSpec("report_artifact", "ReportArtifact", "dashboards",
+                 notes="AI Vibe Report: shared like a dashboard, same module ceiling"),
     ResourceSpec("workboard", "Workboard", "workboards"),
     ResourceSpec("workspace", "WorkboardWorkspace", "workboards",
                  notes="portal: view share = see it; edit share = manage it; never workboard data"),

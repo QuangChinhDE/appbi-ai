@@ -313,6 +313,13 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
     return out
 
 
+def _table_names(db: Session, ids: set) -> Dict[int, str]:
+    from app.models.dataset import DatasetTable
+    if not ids:
+        return {}
+    return {t.id: t.display_name for t in db.query(DatasetTable.id, DatasetTable.display_name).filter(DatasetTable.id.in_(ids))}
+
+
 def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal: str = "") -> Dict[str, Any]:
     html, css, js, warnings = normalize_sources(html, css, js)
     model = B.load_model(db, dataset_id)
@@ -323,6 +330,7 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
     slots = [] if compatible else detect_slots(html)
     proposals = propose(slots, cands, dims, goal) if slots else {}
     by_id = {c["id"]: c for c in cands}
+    table_names = _table_names(db, {c.get("table") for c in cands if c.get("table")})
     view = []
     for s in slots:
         p = proposals.get(s["id"], {})
@@ -339,7 +347,10 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
     return {
         "compatible": compatible, "slots": view, "warnings": warnings,
         "placeholders": sorted(set(_PLACEHOLDER.findall(html + js))) if compatible else [],
-        "candidates": [{"id": c["id"], "kind": c["kind"], "type": c["type"], "title": c["title"]}
+        # `source` = the table a measure lives in: two tables can carry the same measure name
+        # (group vs unit KPIs) and the picker must let the author tell them apart.
+        "candidates": [{"id": c["id"], "kind": c["kind"], "type": c["type"], "title": c["title"],
+                        "source": table_names.get(c.get("table"))}
                        for c in sorted(cands, key=lambda c: (c.get("rank", 9), c["id"]))[:300]],
         "dimensions": [{"id": d["id"], "label": d["label"], "kind": d["kind"]} for d in dims],
     }

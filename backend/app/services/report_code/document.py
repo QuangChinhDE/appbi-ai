@@ -439,9 +439,38 @@ main{min-width:0}
 body.rac-select [data-rac-region]{cursor:crosshair}
 body.rac-select [data-rac-region]:hover{outline:2px dashed var(--rac-accent);outline-offset:2px}
 [data-rac-region].rac-selected{outline:2px solid var(--rac-accent)!important;outline-offset:2px}
+.rac-flash{outline:3px solid var(--rac-accent)!important;outline-offset:3px;transition:outline-color .3s}
 body.rac-prov [data-rac-value],body.rac-prov [data-rac-viz]{outline:2px solid rgba(16,185,129,.85)!important;outline-offset:2px}
 body.rac-prov .rac-static{outline:2px dashed rgba(245,158,11,.95)!important;outline-offset:2px;background:rgba(245,158,11,.08)}
 """
+
+
+def build_export(*, html: str, css: str, js: str, title: str, bindings: List[Dict[str, Any]],
+                 snapshot: Dict[str, Any], stamp: str) -> str:
+    """The report as ONE standalone HTML file: its code, the runtime and a data snapshot.
+
+    A small host (the last script) plays the AppBI frame host locally: it hands the
+    runtime a MessagePort and answers it with the DTOs minted at export time - values
+    and meaning only, as a public viewer would receive them (no chart id, field ref or
+    SQL). The file opens anywhere; its filters are fixed at the export (a note says so)."""
+    import json as _json
+
+    doc = build_document(html=html, css=css, js=js, title=title, nonce="export")
+    snap = _json.dumps({"bindings": bindings, "data": snapshot}, ensure_ascii=False, default=str)
+    host = (
+        "(function(){var S=" + snap.replace("</", "<\\/") + ";var ch=new MessageChannel();"
+        "function all(){S.bindings.forEach(function(b){ch.port1.postMessage({type:'data',id:b.id,dto:S.data[b.id]});});}"
+        "ch.port1.onmessage=function(e){var m=e.data||{};"
+        "if(m.type==='ready'||m.type==='setFilter'||m.type==='clearFilters')all();"
+        "if(m.type==='values')ch.port1.postMessage({type:'values',reqId:m.reqId,values:[]});};"
+        "window.postMessage({type:'rac:init',v:1,context:{filters:[],state:{},bindings:S.bindings,mode:'view',"
+        "locale:'vi-VN'}},'*',[ch.port2]);})();"
+    )
+    # in the flow at the end of the page: a fixed badge sat on top of the report's content
+    note = (f"<footer style=\"clear:both;width:100%;text-align:right;font:11px system-ui;color:#64748b;"
+            f"padding:12px 16px\">AppBI · bản xuất {_html.escape(stamp)}"
+            " · số liệu chụp tại thời điểm xuất</footer>")
+    return doc.replace("</body></html>", f"{note}<script>{_no_close(host, 'script')}</script></body></html>")
 
 
 def build_document(*, html: str, css: str, js: str, title: str, nonce: str) -> str:

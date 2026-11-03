@@ -254,6 +254,17 @@ def list_dashboards(
         item.user_permission = perm_map.get(item.id, "none")
     _authz.attach_capabilities(db, current_user, items)
     stamp_owner_emails(db, items)
+    # one grouped count for the page (the report list's Public column)
+    if items:
+        from sqlalchemy import func
+
+        counts = dict(db.query(DashboardPublicLink.dashboard_id, func.count(DashboardPublicLink.id))
+                      .filter(DashboardPublicLink.dashboard_id.in_([d.id for d in items]),
+                              DashboardPublicLink.is_active.is_(True),
+                              DashboardPublicLink.source == "user")
+                      .group_by(DashboardPublicLink.dashboard_id).all())
+        for item in items:
+            item.public_link_count = int(counts.get(item.id, 0))
     return items
 
 

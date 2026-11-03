@@ -78,7 +78,7 @@ export interface ReportDetail extends ReportSummary {
 }
 
 export interface ReportCatalog {
-  candidates: { id: string; kind: string; type: string; title: string }[];
+  candidates: { id: string; kind: string; type: string; title: string; source?: string | null }[];
   dimensions: { id: string; label: string; kind: 'category' | 'date' }[];
 }
 
@@ -108,7 +108,7 @@ export interface ImportAnalysis {
   slots: ImportSlot[];
   warnings: string[];
   placeholders: string[];
-  candidates: { id: string; kind: string; type: string; title: string }[];
+  candidates: { id: string; kind: string; type: string; title: string; source?: string | null }[];
   dimensions: { id: string; label: string; kind: 'category' | 'date' }[];
 }
 
@@ -147,7 +147,12 @@ export const reportCodeApi = {
   revision: async (id: number, number: number): Promise<ReportRevision> => (await apiClient.get(`${base(id)}/revisions/${number}`)).data,
   restore: async (id: number, number: number): Promise<{ revision: ReportRevision }> =>
     (await apiClient.post(`${base(id)}/revisions/${number}/restore`)).data,
-  publish: async (id: number, revisionId?: number): Promise<ReportSummary> =>
+  /** A copy the caller owns: the draft as it stands, unpublished, no public link. */
+  duplicate: async (id: number): Promise<ReportSummary> => (await apiClient.post(`${base(id)}/duplicate`)).data,
+  /** The report as one standalone HTML file with a data snapshot. */
+  exportHtml: async (id: number): Promise<Blob> =>
+    (await apiClient.get(`${base(id)}/export-html`, { responseType: 'blob' })).data,
+  publish: async (id: number, revisionId?: number): Promise<ReportSummary & { warnings?: string[] }> =>
     (await apiClient.post(`${base(id)}/publish`, { revision_id: revisionId ?? null })).data,
   /** Named public links — the same contract (and PublicLink shape) as a dashboard's. */
   listPublicLinks: async (id: number): Promise<PublicLink[]> => (await apiClient.get(`${base(id)}/public-links`)).data,

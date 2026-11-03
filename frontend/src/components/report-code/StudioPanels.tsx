@@ -131,8 +131,8 @@ export function snippetFor(kind: string, id: string, title: string): string {
   if (kind === 'filter') return `<div data-rac-filter="${id}"></div>\n`;
   if (kind === 'value') return `<span data-rac-value="${id}"></span>`;
   const viz = kind === 'kpi' ? 'kpi' : kind === 'table' ? 'table' : kind === 'time' ? 'line' : 'bar';
-  const h = viz === 'kpi' ? '' : ' style="height:280px"';
-  return `<div class="card">\n  <h3 data-rac-title="${id}">${title.replace(/[<>&"]/g, '')}</h3>\n  <div data-rac-viz="${viz}" data-rac-bind="${id}"${h}></div>\n</div>\n`;
+  if (viz === 'kpi') return `<div class="card">\n  <div data-rac-viz="kpi" data-rac-bind="${id}"></div>\n</div>\n`; // the KPI shows its own title
+  return `<div class="card">\n  <h3 data-rac-title="${id}">${title.replace(/[<>&"]/g, '')}</h3>\n  <div data-rac-viz="${viz}" data-rac-bind="${id}" style="height:280px"></div>\n</div>\n`;
 }
 
 export function DataPanel({ detail, onChanged, html = '', onInsert, onPaste }: { detail: ReportDetail; onChanged: () => void; html?: string; onInsert?: (snippet: string) => void; onPaste?: () => void }) {

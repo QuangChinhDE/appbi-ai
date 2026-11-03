@@ -22,7 +22,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 export interface ReportActions {
   onDelete?: (row: ReportRow) => void;
   onPublicLinks?: (row: ReportRow) => void;
-  /** Build Manual only: resource grants, duplicate, HTML export. */
+  /** Resource grants, duplicate and HTML export - the same for both build methods. */
   onShare?: (row: ReportRow) => void;
   onDuplicate?: (row: ReportRow) => void;
   onExport?: (row: ReportRow) => void;
@@ -66,22 +66,21 @@ const ACCESS: Record<string, { tone: FilterTagTone; key: string }> = {
 function RowActions({ row, actions }: { row: ReportRow; actions: ReportActions }) {
   const { t } = useI18n();
   const busy = actions.busyKey === row.key;
-  const manual = row.kind === 'manual';
   return (
     <div className="flex items-center justify-end gap-1">
-      {manual && actions.onExport && (
+      {actions.onExport && (
         <IconButton aria-label={t('reportList.action.export')} title={t('reportList.action.export')} variant="ghost" size="xs"
           onClick={() => actions.onExport!(row)} disabled={busy}>
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
         </IconButton>
       )}
-      {manual && actions.onDuplicate && row.perms.canEdit && (
+      {actions.onDuplicate && row.perms.canEdit && (
         <IconButton aria-label={t('reportList.action.duplicate')} title={t('reportList.action.duplicate')} variant="ghost" size="xs"
           onClick={() => actions.onDuplicate!(row)} disabled={busy}>
           <Copy className="h-3.5 w-3.5" />
         </IconButton>
       )}
-      {manual && actions.onShare && row.perms.canShare && (
+      {actions.onShare && row.perms.canShare && (
         <IconButton aria-label={t('reportList.action.share')} title={t('reportList.action.share')} variant="ghost" size="xs"
           onClick={() => actions.onShare!(row)}>
           <Share2 className="h-3.5 w-3.5" />
@@ -137,12 +136,15 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
                     className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]" />
                 </th>
               )}
-              <th className="app-list-header w-[34%]">{t('reportList.col.report')}</th>
-              <th className="app-list-header w-[22%]">{t('reportList.col.status')}</th>
-              <th className="app-list-header w-[16%]">{t('reportList.col.owner')}</th>
-              <th className="app-list-header w-[10%]">{t('reportList.col.content')}</th>
-              <th className="app-list-header w-[10%]">{t('reportList.col.updated')}</th>
-              <th className="app-list-header w-[150px] text-right">{t('reportList.col.actions')}</th>
+              <th className="app-list-header w-[26%]">{t('reportList.col.report')}</th>
+              <th className="app-list-header w-[184px]">{t('reportList.col.status')}</th>
+              <th className="app-list-header">{t('reportList.col.method')}</th>
+              <th className="app-list-header">{t('reportList.col.public')}</th>
+              <th className="app-list-header">{t('reportList.col.access')}</th>
+              <th className="app-list-header">{t('reportList.col.owner')}</th>
+              <th className="app-list-header">{t('reportList.col.content')}</th>
+              <th className="app-list-header">{t('reportList.col.updated')}</th>
+              <th className="app-list-header w-[170px] text-right">{t('reportList.col.actions')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
@@ -164,23 +166,23 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
                       {row.description && <div className="app-list-text-sub text-tiny text-text-tertiary">{row.description}</div>}
                     </button>
                   </td>
-                  <td className="app-list-cell">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <ReportStatusChip status={row.status} />
-                      <BuildMethodBadge kind={row.kind} />
-                      {row.publicLinks ? <Badge variant="info" size="sm" pill><Globe className="h-3 w-3" />{row.publicLinks}</Badge> : null}
-                      {access && (
-                        <FilterTag tone={access.tone} active={activeFilters?.access === row.access}
-                          onClick={() => onFilterClick?.('access', row.access)}>{t(access.key)}</FilterTag>
-                      )}
-                    </div>
+                  <td className="app-list-cell whitespace-nowrap"><ReportStatusChip status={row.status} /></td>
+                  <td className="app-list-cell whitespace-nowrap"><BuildMethodBadge kind={row.kind} /></td>
+                  <td className="app-list-cell whitespace-nowrap text-caption text-text-tertiary" data-testid={`report-row-${row.key}-public-count`}>
+                    {row.publicLinks ? <span className="inline-flex items-center gap-1 text-text-secondary"><Globe className="h-3.5 w-3.5 text-info" />{row.publicLinks}</span> : '—'}
+                  </td>
+                  <td className="app-list-cell whitespace-nowrap">
+                    {access ? (
+                      <FilterTag tone={access.tone} active={activeFilters?.access === row.access}
+                        onClick={() => onFilterClick?.('access', row.access)}>{t(access.key)}</FilterTag>
+                    ) : <span className="text-caption text-text-tertiary">{t('reportList.access.full')}</span>}
                   </td>
                   <td className="app-list-cell">
                     <OwnerBadge email={row.ownerEmail ?? undefined} active={activeFilters?.owner === row.ownerEmail}
                       onClick={row.ownerEmail ? () => onFilterClick?.('owner', row.ownerEmail!) : undefined} />
                   </td>
-                  <td className="app-list-cell text-caption text-text-tertiary"><ContentLabel row={row} /></td>
-                  <td className="app-list-cell text-caption text-text-tertiary">{row.updatedAt ? new Date(row.updatedAt).toLocaleDateString(locale) : ''}</td>
+                  <td className="app-list-cell whitespace-nowrap text-caption text-text-tertiary"><ContentLabel row={row} /></td>
+                  <td className="app-list-cell whitespace-nowrap text-caption text-text-tertiary">{row.updatedAt ? new Date(row.updatedAt).toLocaleDateString(locale) : ''}</td>
                   <td className="app-list-cell-tight text-right"><RowActions row={row} actions={actions} /></td>
                 </tr>
               );

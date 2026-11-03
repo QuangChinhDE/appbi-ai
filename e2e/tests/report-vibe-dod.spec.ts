@@ -142,11 +142,20 @@ test('J1 /dashboards: one report list for both build methods', async ({ page }) 
   await expect(vibeRow).toBeVisible();
   await expect(vibeRow.getByTestId('report-kind-vibe')).toBeVisible();
   await expect(vibeRow.getByTestId('report-status')).toContainText(/Đã xuất bản|Published/);
-  await expect(page.locator('[data-testid^="report-row-manual-"]').first()).toBeVisible();
-  // a Vibe row has public links + delete; share / duplicate / export are dashboard actions
+  // a Vibe row has the same real actions as a dashboard row: export, duplicate, share, public, delete
   await expect(page.getByTestId(`report-row-vibe-${reportId}-public`)).toBeVisible();
-  await expect(vibeRow.getByRole('button', { name: /Nhân bản|Duplicate/ })).toHaveCount(0);
+  for (const name of [/Xuất HTML|Export to HTML/, /^(Nhân bản|Duplicate)$/, /Chia sẻ quyền|Share access/, /^(Xoá|Xóa|Delete)/]) {
+    await expect(vibeRow.getByRole('button', { name })).toBeVisible();
+  }
   await shot(page, 'j1-list-all');
+  // both methods are in the one list (by type, not by whichever happens to be on page 1)
+  await page.getByTestId('report-type-manual').click();
+  const manualRow = page.locator('[data-testid^="report-row-manual-"]').first();
+  await expect(manualRow).toBeVisible();
+  for (const name of [/Xuất HTML|Export to HTML/, /^(Nhân bản|Duplicate)$/, /Chia sẻ quyền|Share access/]) {
+    await expect(manualRow.getByRole('button', { name })).toBeVisible();
+  }
+  await page.getByTestId('report-type-all').click();
 
   await page.getByTestId('report-type-vibe').click();
   await expect(page).toHaveURL(/type=vibe/);
@@ -160,14 +169,18 @@ test('J1 /dashboards: one report list for both build methods', async ({ page }) 
   await page.getByPlaceholder(/Search|Tìm/).first().fill('');
 
   // grid: the same card for both methods, the method only as a small badge
-  await page.getByRole('button', { name: /grid|lưới/i }).first().click().catch(() => undefined);
-  if (await page.getByTestId(`report-card-vibe-${reportId}`).count()) {
-    await shot(page, 'j1-list-grid');
-    await page.getByRole('button', { name: /list|danh sách/i }).first().click().catch(() => undefined);
-  }
-  await page.getByTestId(`report-open-vibe-${reportId}`).click().catch(async () => page.getByTestId(`report-card-vibe-${reportId}-open`).click());
+  await page.getByTestId('view-grid').click();
+  await expect(page.getByTestId('view-grid')).toHaveAttribute('aria-pressed', 'true');
+  const card = page.getByTestId(`report-card-vibe-${reportId}`);
+  await expect(card).toBeVisible();
+  await expect(card.getByTestId('report-kind-vibe')).toBeVisible();
+  // every report card has the same mark: the product is the report, not its builder
+  await expect(card.locator('svg.lucide-layout-dashboard').first()).toBeVisible();
+  await shot(page, 'j1-list-grid');
+  await page.getByTestId('view-list').click();
+  await page.getByTestId(`report-open-vibe-${reportId}`).click();
   await page.waitForURL(new RegExp(`/dashboards/code/${reportId}$`));
-  await page.goto('/dashboards');
+  await page.goto('/dashboards?type=manual');
   await page.locator('[data-testid^="report-open-manual-"]').first().click();
   await page.waitForURL(/\/dashboards\/\d+$/);
 });
@@ -184,10 +197,12 @@ test('J3 AI scoped edit changes one region and scopes its CSS', async ({ page })
   await page.getByTestId('studio-ai-input').fill('Đổi nền vùng này sang xanh lá nhạt, giữ nguyên chữ và số');
   await page.getByTestId('studio-ai-send').click();
   // one Studio AI call (the deployment's Studio model); wait for its one terminal state
-  await expect(page.getByTestId('studio-job')).toBeVisible({ timeout: 15_000 }).catch(() => undefined);
+  await expect(page.getByTestId('studio-job')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId('studio-job')).toBeHidden({ timeout: 180_000 });
   const after = await (await page.request.get(`${RA}/${reportId}`)).json();
-  test.skip(after.draft.number === before.draft.number, 'Studio AI did not produce a revision on this stack (model unavailable)');
+  // no revision = the edit did not happen: that is a FAIL, never a skip
+  expect(after.draft.number, 'the AI edit produced a new revision').toBeGreaterThan(before.draft.number);
+  expect(after.draft.source).toBe('ai_edit');
   const added = after.draft.css.slice(before.draft.css.length);
   const rules = added.split('\n').filter((l: string) => l.includes('{') && !/^\s*(@|\/\*|\})/.test(l));
   expect(rules.every((r: string) => r.trim().startsWith('[data-rac-region="kpis"]')), added).toBeTruthy();
@@ -383,9 +398,9 @@ test('J7 Manual Dashboard regression: Public Modal and AI Bot surface unchanged'
   await expect(page.getByText('Agent Flow hỗ trợ (tuỳ chọn)')).toBeVisible();
   await page.getByTestId('ai-bot-enable-toggle').click();
   await page.getByTestId('public-link-tab-data').click();
-  if (await page.locator('[data-testid^="public-link-filter-row-"]').count()) {
-    await expect(page.getByTestId('public-link-filter-action-limit').first()).toBeVisible();
-  }
+  // this dashboard has slicers: the dashboard-only 'Giới hạn' option must still be offered
+  await expect(page.locator('[data-testid^="public-link-filter-row-"]').first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('public-link-filter-action-limit').first()).toBeVisible();
   await shot(page, 'j7-manual-modal');
   await page.getByTestId('public-link-create').click();
   await expect(page.getByText(/Public link created/)).toBeVisible();

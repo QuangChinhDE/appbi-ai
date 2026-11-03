@@ -19,6 +19,21 @@ import { useI18n } from '@/providers/LanguageProvider';
 export interface CodeSource { html: string; css: string; js: string }
 export interface CodeWorkspaceHandle { insertHtml: (snippet: string) => void; focus: (lang?: SourceLanguage) => void }
 
+/** Where a Data-tab snippet goes when the author has not placed the cursor: a filter into
+ *  the page's filter bar, a block in place of the empty card placeholder, else inside the
+ *  first data region (kpis / charts), else at the end. */
+export function placeFor(doc: string, snippet: string): { from: number; to: number; text: string } | null {
+  if (/data-rac-filter=/.test(snippet)) {
+    const bar = /<div class="filters">(\s*<!--[\s\S]*?-->\s*)?/.exec(doc);
+    if (bar) return { from: bar.index + '<div class="filters">'.length, to: bar.index + bar[0].length, text: snippet.trim() };
+  }
+  const empty = /<div class="card empty">[\s\S]*?<\/div>/.exec(doc);
+  if (empty) return { from: empty.index, to: empty.index + empty[0].length, text: snippet.trim() };
+  const region = /<(section|div)[^>]*data-rac-region="(kpis|charts)"[^>]*>/.exec(doc);
+  if (region) { const at = region.index + region[0].length; return { from: at, to: at, text: `\n${snippet}` }; }
+  return { from: doc.length, to: doc.length, text: `\n${snippet}` };
+}
+
 const FILES: { key: SourceLanguage; label: string }[] = [
   { key: 'html', label: 'HTML' }, { key: 'css', label: 'CSS' }, { key: 'js', label: 'JavaScript' },
 ];
@@ -51,7 +66,18 @@ export const CodeWorkspace = forwardRef<CodeWorkspaceHandle, {
   const editors = { html: useRef<SourceEditorHandle | null>(null), css: useRef<SourceEditorHandle | null>(null), js: useRef<SourceEditorHandle | null>(null) };
 
   useImperativeHandle(ref, () => ({
-    insertHtml: (snippet: string) => { setActive('html'); setTimeout(() => editors.html.current?.insertAtCursor(snippet), 0); },
+    insertHtml: (snippet: string) => {
+      setActive('html');
+      setTimeout(() => {
+        const ed = editors.html.current;
+        if (!ed) return;
+        // The author placed the cursor: insert exactly there. Not placed yet (still at 0):
+        // put the snippet where it belongs in the page, never above the layout.
+        const at = ed.getCursor() > 0 ? null : placeFor(ed.getValue(), snippet);
+        if (at) ed.replaceRange(at.from, at.to, at.text);
+        else ed.insertAtCursor(snippet);
+      }, 0);
+    },
     focus: (lang?: SourceLanguage) => { if (lang) setActive(lang); setTimeout(() => editors[lang || active].current?.focus(), 0); },
   }));
 

@@ -351,6 +351,37 @@ def delete_report(artifact_id: int, request: Request, db: Session = Depends(get_
     db.commit()
 
 
+@router.post("/{artifact_id}/duplicate", status_code=201)
+def duplicate_report(artifact_id: int, request: Request, db: Session = Depends(get_db),
+                     current_user: User = Depends(require_permission(MODULE, "edit"))):
+    """A copy the caller owns - the same bar as duplicating a dashboard: read the source, edit the module."""
+    art = _load(db, artifact_id, current_user, "view")
+    try:
+        copy = L.duplicate(db, art, user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    db.commit()  # like a dashboard's duplicate (and a report's create): not an audit event
+    return L.summary(db, copy)
+
+
+@router.get("/{artifact_id}/export-html")
+def export_report_html(artifact_id: int, db: Session = Depends(get_db),
+                       current_user: User = Depends(require_permission(MODULE, "view"))):
+    """The report as one standalone HTML file with a data snapshot (the dashboard's
+    Export HTML, for a Vibe Report). Data is minted under the caller's own rights."""
+    import datetime as _dt
+
+    art = _load(db, artifact_id, current_user, "view")
+    rev = _draft(db, art)
+    snapshot = {b["id"]: B.mint_dto(db, b, rev.filters or [], {}, public=True) for b in rev.bindings or []}
+    stamp = _dt.datetime.now().strftime("%H:%M %d/%m/%Y")
+    body = D.build_export(html=rev.html, css=rev.css, js=rev.js, title=art.name,
+                          bindings=B.public_bindings(rev.bindings or []), snapshot=snapshot, stamp=stamp)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", art.name).strip("-") or "report"
+    return HTMLResponse(body, headers={"Content-Disposition": f'attachment; filename="{safe}.html"',
+                                       "Cache-Control": "no-store"})
+
+
 @router.put("/{artifact_id}/source")
 def save_source(artifact_id: int, body: SourceBody, db: Session = Depends(get_db),
                 current_user: User = Depends(require_permission(MODULE, "edit"))):
@@ -436,7 +467,12 @@ def publish_report(artifact_id: int, body: PublishBody, request: Request, db: Se
           request=request, user_id=current_user.id, resource_type="report_artifact", resource_id=str(art.id),
           details={"revision": target.number, "previous": previous.number if previous else None})
     db.commit()
-    return L.summary(db, art)
+    refused = PL.links_refused_by(db, art, target)
+    out = L.summary(db, art)
+    if refused:
+        out["warnings"] = [f"Liên kết “{n}” sẽ ngừng hiển thị: nó khoá một bộ lọc mà phiên bản {target.number} "
+                           "không có. Sửa bộ lọc của liên kết hoặc xuất bản phiên bản có bộ lọc đó." for n in refused]
+    return out
 
 
 # ── Public links (the dashboard model: many named links per report) ─────────────

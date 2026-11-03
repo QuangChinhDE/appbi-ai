@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
 import { ClipboardPaste, Code2, Download, ImagePlus, LayoutDashboard, Sparkles, Wand2 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
@@ -10,6 +11,8 @@ import { Textarea } from '@/components/ui/Input';
 import { PasteCodeWizard } from '@/components/report-code/PasteCodeWizard';
 import { downloadContextPack } from '@/components/report-code/contextPack';
 import { readImage } from '@/components/report-code/StudioPanels';
+import { ReportCard } from '@/components/dashboards/ReportList';
+import { vibeRow } from '@/components/dashboards/reportRows';
 import { useDatasets } from '@/hooks/use-datasets';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
 import { reportCodeApi, type ReportSummary } from '@/lib/api/report-code';
@@ -31,6 +34,8 @@ export function ReportStudioHome() {
   const [image, setImage] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
+  // the most recent AI Vibe Reports, as the report list shows them (same card)
+  const { data: recent = [] } = useQuery({ queryKey: ['report-artifacts'], queryFn: () => reportCodeApi.list() });
 
 
   const create = async () => {
@@ -77,14 +82,14 @@ export function ReportStudioHome() {
 
   return (
     <div className="min-h-full bg-surface-0" data-testid="report-studio-home">
-      <div className="mx-auto max-w-6xl px-6 py-7">
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <div className="mb-2 inline-flex items-center gap-1.5 rounded-full bg-brand-container px-2.5 py-1 text-[11px] font-medium text-brand-on-container">
+      <div className="w-full px-4 pb-8 pt-6 sm:px-6 xl:px-8">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="mb-1.5 inline-flex items-center gap-1.5 rounded-full bg-brand-container px-2.5 py-0.5 text-tiny font-emphasis text-brand-on-container">
               <Sparkles className="h-3.5 w-3.5" />{t('reportCode.home.badge')}
             </div>
-            <h1 className="text-2xl font-semibold tracking-tight text-text-primary">{t('reportCode.home.title')}</h1>
-            <p className="mt-1 max-w-2xl text-sm text-text-secondary">{t('reportCode.home.subtitle')}</p>
+            <h1 className="text-h1 font-emphasis text-text-primary">{t('reportCode.home.title')}</h1>
+            <p className="mt-1 max-w-3xl text-caption text-text-tertiary">{t('reportCode.home.subtitle')}</p>
           </div>
           <Button variant="secondary" size="sm" leadingIcon={<LayoutDashboard className="h-3.5 w-3.5" />} onClick={() => router.push('/dashboards')}>
             {t('reportCode.home.manual')}
@@ -92,7 +97,7 @@ export function ReportStudioHome() {
         </div>
 
         {canEdit && (
-          <div className="mb-8 overflow-hidden rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm">
+          <div className="mb-6 overflow-hidden rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm">
             <div className="grid border-b border-stroke-line sm:grid-cols-3" role="tablist">
               {modes.map(({ key, icon: Icon, title, desc }) => (
                 <button key={key} type="button" role="tab" aria-selected={mode === key} onClick={() => setMode(key)} data-testid={`rc-mode-${key}`}
@@ -108,7 +113,7 @@ export function ReportStudioHome() {
 
             <div className="p-5">
               {mode === 'code' && (
-                <div className="grid gap-5 lg:grid-cols-[1fr_300px]" data-testid="rc-code-panel">
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]" data-testid="rc-code-panel">
                   <div className="space-y-2 text-sm text-text-secondary">
                     <p>{t('reportCode.home.newCodeHint')}</p>
                     <pre className="overflow-x-auto rounded-lg border border-stroke-line bg-surface-2 p-3 font-mono text-[11px] leading-relaxed text-text-secondary">{'<section data-rac-region="kpis">\n  <div data-rac-viz="kpi" data-rac-bind="b1"></div>\n</section>'}</pre>
@@ -127,7 +132,7 @@ export function ReportStudioHome() {
                 </div>
               )}
               {mode === 'ai' && (
-                <div className="grid gap-5 lg:grid-cols-[1fr_300px]">
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]">
                   <div className="space-y-3">
                     <label className="block">
                       <span className="mb-1 block text-xs font-medium text-text-secondary">{t('reportCode.home.prompt')}</span>
@@ -162,7 +167,7 @@ export function ReportStudioHome() {
                 </div>
               )}
               {mode === 'paste' && (
-                <div className="grid gap-5 lg:grid-cols-[1fr_300px]" data-testid="rc-paste-panel">
+                <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px]" data-testid="rc-paste-panel">
                   <div className="space-y-2 text-sm text-text-secondary">
                     <p>{t('reportCode.paste.intro')}</p>
                     <p className="text-xs text-text-tertiary">{t('reportCode.paste.preserve')}</p>
@@ -188,11 +193,21 @@ export function ReportStudioHome() {
           </div>
         )}
 
-        {/* Reports are managed in ONE place: /dashboards lists Build Manual and AI Vibe Reports together. */}
-        <Link href="/dashboards?type=vibe" data-testid="rc-manage-all"
-          className="inline-flex items-center gap-1.5 text-caption font-emphasis text-brand hover:text-brand-hover">
-          <LayoutDashboard className="h-3.5 w-3.5" />{t('reportList.manageAll')} →
-        </Link>
+        {/* Reports are managed in ONE place (/dashboards); this is only the latest few, same card. */}
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-small font-strong text-text-primary">{t('reportCode.home.recent')}</h2>
+          <Link href="/dashboards?type=vibe" data-testid="rc-manage-all"
+            className="inline-flex items-center gap-1.5 text-caption font-emphasis text-brand hover:text-brand-hover">
+            <LayoutDashboard className="h-3.5 w-3.5" />{t('reportList.manageAll')} →
+          </Link>
+        </div>
+        {recent.length ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4" data-testid="rc-recent">
+            {recent.slice(0, 8).map((r) => <ReportCard key={r.id} row={vibeRow(r)} actions={{}} />)}
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-stroke-strong bg-surface-1 p-6 text-center text-caption text-text-tertiary">{t('reportCode.home.empty')}</p>
+        )}
       </div>
       {showPaste && (
         <PasteCodeWizard datasets={datasets as { id: number; name: string }[]} datasetId={datasetId === '' ? null : datasetId}

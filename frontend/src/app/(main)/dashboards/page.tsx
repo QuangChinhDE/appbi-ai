@@ -229,6 +229,40 @@ export default function DashboardsPage() {
     }
   };
 
+  const [shareVibe, setShareVibe] = useState<ReportRow | null>(null);
+  const [vibeBusy, setVibeBusy] = useState<string | undefined>(undefined);
+  const duplicateVibe = async (row: ReportRow) => {
+    setVibeBusy(row.key);
+    try {
+      const copy = await reportCodeApi.duplicate(row.id);
+      toast.success(`Duplicated "${row.name}"`);
+      await queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
+      router.push(`/dashboards/code/${copy.id}`);
+    } catch (error: any) {
+      toast.error(`Could not duplicate: ${error?.response?.data?.detail || error?.message}`);
+    } finally {
+      setVibeBusy(undefined);
+    }
+  };
+  const exportVibe = async (row: ReportRow) => {
+    setVibeBusy(row.key);
+    try {
+      const blob = await reportCodeApi.exportHtml(row.id);
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${(row.name || 'report').replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'report'}.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (error: any) {
+      toast.error(`Could not export: ${error?.response?.data?.detail || error?.message}`);
+    } finally {
+      setVibeBusy(undefined);
+    }
+  };
+
   const confirmVibeDelete = async () => {
     if (!vibeToDelete) return;
     try {
@@ -243,12 +277,12 @@ export default function DashboardsPage() {
 
   // What the list may do with a report; the builder decides only where it differs.
   const actions: ReportActions = {
-    busyKey: exportingId !== undefined ? `manual-${exportingId}` : duplicatingId !== undefined ? `manual-${duplicatingId}` : undefined,
+    busyKey: vibeBusy ?? (exportingId !== undefined ? `manual-${exportingId}` : duplicatingId !== undefined ? `manual-${duplicatingId}` : undefined),
     onDelete: (row) => (row.kind === 'vibe' ? setVibeToDelete(row) : handleDelete(row.id)),
     onPublicLinks: (row) => (row.kind === 'vibe' ? openVibePublic(row) : setPublicShareDash(row.dashboard)),
-    onShare: (row) => { if (row.kind === 'manual') setShareDash(row.dashboard); },
-    onDuplicate: canEdit ? (row) => { if (row.kind === 'manual') void handleDuplicate(row.dashboard); } : undefined,
-    onExport: (row) => { if (row.kind === 'manual') void handleExport(row.dashboard); },
+    onShare: (row) => (row.kind === 'manual' ? setShareDash(row.dashboard) : setShareVibe(row)),
+    onDuplicate: canEdit ? (row) => (row.kind === 'manual' ? void handleDuplicate(row.dashboard) : void duplicateVibe(row)) : undefined,
+    onExport: (row) => (row.kind === 'manual' ? void handleExport(row.dashboard) : void exportVibe(row)),
   };
 
   const toggleSelect = (id: number) => {
@@ -335,8 +369,8 @@ export default function DashboardsPage() {
         searchPlaceholder={t('common.search')}
         defaultView="list"
         toolbarExtra={(
-          <>
-          <div className="flex items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5" role="tablist" aria-label={t('reportList.type')} data-testid="report-type-filter">
+          <div className="flex items-center gap-2">
+          <div className="inline-flex h-8 shrink-0 items-center rounded-md border border-[rgb(var(--border-strong))] bg-surface-1 p-0.5" role="tablist" aria-label={t('reportList.type')} data-testid="report-type-filter">
             {([
               ['all', t('reportList.type.all'), allRows.length],
               ['manual', t('reportList.kind.manual'), dashboardItems.length],
@@ -344,12 +378,14 @@ export default function DashboardsPage() {
             ] as const).map(([key, label, count]) => (
               <button key={key} type="button" role="tab" aria-selected={typeFilter === key} onClick={() => setTypeFilter(key)}
                 data-testid={`report-type-${key}`}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-caption font-emphasis transition-colors ${typeFilter === key ? 'bg-surface-1 text-brand shadow-sm' : 'text-text-tertiary hover:text-text-primary'}`}>
+                className={`inline-flex h-7 items-center gap-1.5 rounded-sm px-2.5 text-caption font-emphasis transition-colors ${typeFilter === key ? 'bg-surface-3 text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}>
                 {key === 'vibe' ? <Wand2 className="h-3.5 w-3.5" /> : key === 'manual' ? <LayoutDashboard className="h-3.5 w-3.5" /> : null}
                 {label}<span className="text-tiny text-text-quaternary">{count}</span>
               </button>
             ))}
           </div>
+          {/* compact on this toolbar: three 200px selects pushed past the view toggle */}
+          <div className="min-w-0 [&>div]:pb-0 [&>div>div]:min-w-[136px] [&>div>div]:flex-[0_0_148px]" data-testid="report-list-filters">
           <CrossModuleFilterControls
             index={relationIndex}
             configs={[
@@ -364,7 +400,8 @@ export default function DashboardsPage() {
             }}
             onChange={(key, value) => setListFilter(key as keyof DashboardListFilters, value)}
           />
-          </>
+          </div>
+          </div>
         )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
@@ -598,6 +635,15 @@ export default function DashboardsPage() {
         confirmLabel="Delete"
         variant="danger"
       />
+
+      {shareVibe && (
+        <ShareDialog
+          resourceType="report_artifact"
+          resourceId={shareVibe.id}
+          resourceName={shareVibe.name}
+          onClose={() => setShareVibe(null)}
+        />
+      )}
 
       {shareDash && (
         <ShareDialog

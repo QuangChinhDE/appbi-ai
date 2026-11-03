@@ -73,6 +73,12 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
     }
   };
 
+  // the same measure name can live in two tables: name the table only where it is ambiguous
+  const dupTitles = useMemo(() => {
+    const seen = new Map<string, number>();
+    for (const c of analysis?.candidates || []) seen.set(c.title, (seen.get(c.title) || 0) + 1);
+    return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+  }, [analysis]);
   const mapped = useMemo(() => analysis?.slots.filter((s) => (s.kind === 'filter' ? map[s.id]?.dimension : map[s.id]?.candidate)).length ?? 0, [analysis, map]);
 
   return (
@@ -198,7 +204,9 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
                               <select data-testid={`slot-${s.id}-candidate`} value={m.candidate || ''} onChange={(e) => setMap({ ...map, [s.id]: { ...m, candidate: e.target.value || null } })}
                                 className="w-full max-w-[320px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-1">
                                 <option value="">{t('reportCode.paste.keep')}</option>
-                                {analysis.candidates.filter((c) => (KIND_FOR[s.kind] || []).includes(c.kind)).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
+                                {analysis.candidates.filter((c) => (KIND_FOR[s.kind] || []).includes(c.kind)).map((c) => (
+                                  <option key={c.id} value={c.id}>{c.source && dupTitles.has(c.title) ? `${c.title} · ${c.source}` : c.title}</option>
+                                ))}
                               </select>
                             )}
                           </td>

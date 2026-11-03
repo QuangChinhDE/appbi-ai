@@ -645,3 +645,19 @@ def test_rules_leave_a_slot_unmapped_when_nothing_shares_its_meaning(monkeypatch
     out = I.propose([{"id": "s1", "kind": "value", "context": "Refund rate", "sample": "4.2%"}], cands, [])
     assert "s1" not in out or out["s1"].get("candidate") is None, out
 
+
+def test_the_ai_analysis_is_told_the_link_is_restricted_without_being_told_how():
+    """A hidden lock (state = AC) served AC's revenue; asked for SP, the analysis said
+    "Doanh thu của bang SP là 15.982,95" - another state's number under SP's name."""
+    from types import SimpleNamespace
+    from app.services.answer_core import guided_analysis as GA
+    from app.services.report_code import public_bot as PB
+
+    rev = SimpleNamespace(filters=_DECL, bindings=[])
+    link = SimpleNamespace(filters_config=[{"field": "f1", "value": ["AC"], "hidden": True}], appearance_config={})
+    note = GA._scope_note(SimpleNamespace(ctx=PB.build_context(SimpleNamespace(), rev, link, {})))
+    assert note["restricted_by_author"] is True
+    assert "state" not in note["viewer_filterable"], "the locked field is not a viewer filter"
+    assert "AC" not in json.dumps(note), "the hidden value is never named"
+    assert "KHÔNG BAO GIỜ gán con số" in GA.SYSTEM
+

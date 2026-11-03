@@ -31,6 +31,8 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
   const [attempt, setAttempt] = useState(0);
   // The viewer's filter choices in the report: the AI Bot reads the same filtered report.
   const [viewerState, setViewerState] = useState<FilterState>({});
+  // the AI Bot's source chip: bring that chart of the report into view (as a dashboard does)
+  const [focus, setFocus] = useState<{ id: string; n: number } | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -127,6 +129,7 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
         mode="view"
         title={meta.name}
         onStateChange={(st) => setViewerState({ ...st })}
+        focus={focus}
         className="min-h-0 flex-1"
       />
       {meta.appearance?.ai_bot_enabled === true && (
@@ -137,6 +140,12 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           dashboardName={headline || meta.name}
           viewerState={viewerState as Record<string, unknown>}
           chartTitles={meta.bindings.map((b) => b.title).filter(Boolean)}
+          onShowChart={(name) => {
+            const n = name.trim().toLowerCase();
+            const b = meta.bindings.find((x) => x.title.trim().toLowerCase() === n)
+              || meta.bindings.find((x) => n.includes(x.title.trim().toLowerCase()) || x.title.trim().toLowerCase().includes(n));
+            if (b) setFocus((f) => ({ id: b.id, n: (f?.n || 0) + 1 }));
+          }}
         />
       )}
       {variant === 'public' && (

@@ -153,6 +153,16 @@
       case 'selectMode':
         document.body.classList.toggle('rac-select', !!msg.on);
         break;
+      case 'focus':
+        // "show this chart" from the viewer's AI Bot: the block that draws this binding
+        var target = msg.id ? document.querySelector('[data-rac-bind="' + cssEsc(String(msg.id)) + '"],[data-rac-value="' + cssEsc(String(msg.id)) + '"]') : null;
+        if (target) {
+          var box = target.closest('.card,[data-rac-region]') || target;
+          box.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          box.classList.add('rac-flash');
+          setTimeout(function () { box.classList.remove('rac-flash'); }, 1600);
+        }
+        break;
       case 'provenance':
         // Studio overlay: what the BI Core supplies (solid green) vs a number the code
         // itself writes that matches no bound value (dashed amber, from the audit below).

@@ -47,14 +47,14 @@ export function manualRow(d: Dashboard & { has_draft?: boolean }): ReportRow {
     // A manual dashboard is served live; editor changes sit in a draft overlay until published.
     status: { label: d.has_draft ? 'changes' : 'published' },
     content: { count: d.dashboard_charts?.length || 0, unit: 'charts' },
-    publicLinks: null, datasetIds: [], href: `/dashboards/${d.id}`, canManagePublic: perms.canEdit,
+    publicLinks: d.public_link_count ?? null, datasetIds: [], href: `/dashboards/${d.id}`, canManagePublic: perms.canEdit,
   };
 }
 
 export function vibeRow(r: ReportSummary): ReportRow {
   const level = r.user_permission ?? 'view';
   const perms = getResourcePermissions(level, {
-    read: true, edit: level === 'edit' || level === 'full', delete: level === 'full', share: false,
+    read: true, edit: level === 'edit' || level === 'full', delete: level === 'full', share: level === 'full',
     publish: level === 'full',
   });
   return {

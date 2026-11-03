@@ -141,6 +141,21 @@ def effective_state(decl: List[Dict[str, Any]], config: Any, viewer_state: Any,
 
 # ── Resolution (public side) ─────────────────────────────────────────────────
 
+def links_refused_by(db: Session, art: ReportArtifact, rev: ReportArtifactRevision) -> List[str]:
+    """Active links that this revision would make REFUSE to serve: they lock or hide a
+    filter the revision does not declare (fail closed - serving it would drop the lock).
+    Told to the publisher at publish / rollback time, never to a viewer."""
+    out = []
+    for link in list_links(db, art):
+        if not link.is_active:
+            continue
+        try:
+            scope(rev.filters or [], link.filters_config)
+        except LinkRefused:
+            out.append(link.name)
+    return out
+
+
 def resolve(db: Session, token: str, session_token: Optional[str], *, track: bool = True
             ) -> Tuple[ReportArtifact, ReportArtifactRevision, ReportArtifactPublicLink]:
     from app.services import public_link_session as S

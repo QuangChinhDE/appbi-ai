@@ -44,6 +44,8 @@ export interface ReportFrameProps {
   selectMode?: boolean;
   /** Studio: outline what the BI Core supplies vs numbers the code writes itself. */
   provenance?: boolean;
+  /** Bring a binding's block into view (n changes per request, so the same id can be asked twice). */
+  focus?: { id: string; n: number } | null;
   selectedRegion?: string | null;
   onRegionSelected?: (region: string) => void;
   onIssue?: (issue: RuntimeIssue) => void;
@@ -56,7 +58,7 @@ const PARALLEL = 4;
 
 export function ReportFrame({
   src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
-  provenance = false, selectedRegion = null,
+  provenance = false, focus = null, selectedRegion = null,
   onRegionSelected, onIssue, onStateChange, className, title,
 }: ReportFrameProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -199,6 +201,7 @@ export function ReportFrame({
 
   useEffect(() => { postMsg({ type: 'selectMode', on: selectMode }); }, [selectMode, postMsg]);
   useEffect(() => { postMsg({ type: 'provenance', on: provenance }); }, [provenance, postMsg]);
+  useEffect(() => { if (focus) postMsg({ type: 'focus', id: focus.id }); }, [focus, postMsg]);
   useEffect(() => { postMsg({ type: 'highlight', region: selectedRegion }); }, [selectedRegion, postMsg]);
 
   const bindingKey = bindings.map((b) => `${b.id}:${b.kind}`).join(',');

@@ -48,6 +48,9 @@ class ResourceType(str, enum.Enum):
     #: above are the two retired stores; their shares were copied here at the same
     #: level by alembic 20261027_0001 and no new share of either can be made.
     CHAT_CONVERSATION = "chat_conversation"
+    #: An AI Vibe Report (Report-as-Code). Shared like a dashboard: view = open it,
+    #: edit = change it; the module level stays the ceiling (core.dependencies).
+    REPORT_ARTIFACT = "report_artifact"
 
 
 class SharePermission(str, enum.Enum):

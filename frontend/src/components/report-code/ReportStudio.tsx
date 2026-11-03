@@ -245,6 +245,8 @@ export function ReportStudio({ reportId }: { reportId: number }) {
     try {
       const s = await reportCodeApi.publish(reportId, revisionId);
       toast.success(t('reportCode.publish.done', { n: s.published_number ?? '' }));
+      // links this version makes refuse to serve (a locked filter it does not declare)
+      (s.warnings || []).forEach((w) => toast.warning(w));
       await load();
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || e?.message);
@@ -484,6 +486,12 @@ function VersionsDrawer({ reportId, detail, revisions, canPublish, editable, onC
 }) {
   const { t } = useI18n();
   const [busy, setBusy] = useState<number | null>(null);
+  // A drawer closes with Escape, as every AppBI drawer and modal does.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
   const restore = async (n: number) => {
     setBusy(n);
     try { await reportCodeApi.restore(reportId, n); toast.success(t('reportCode.versions.restored', { n })); onChanged(); } catch (e: any) { toast.error(e?.response?.data?.detail || e?.message); } finally { setBusy(null); }
