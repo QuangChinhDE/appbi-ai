@@ -380,6 +380,7 @@ async function publicShots(ctx: BrowserContext, url: string, r: ScenarioResult, 
 test('S1 grid-only creation: no Canvas, whitespace kept across save and reload', async ({ page, request }) => {
   const r = scenario('S1 grid-only creation');
   await page.goto('/dashboards');
+  await page.getByTestId('build-manual-open').click(); // Dashboards: creation lives under Build Manual
   await page.getByTestId('report-starter-open').click();
   await page.selectOption('[data-testid="report-starter-dataset"]', { label: SALES_DATASET });
   await page.fill('[data-testid="report-starter-goal"]', 'Where does revenue come from, by region and channel?');

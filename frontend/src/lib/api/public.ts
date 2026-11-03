@@ -239,6 +239,40 @@ export const publicDashboardApi = {
   },
 };
 
+// ── Report-as-Code public links (/d/r/[token], /embed/r/[token]) ─────────────
+export interface PublicReportMeta {
+  name: string;
+  version: number;
+  published_at: string | null;
+  bindings: { id: string; title: string; kind: string }[];
+  filters: { key: string; label: string; kind: 'category' | 'date' }[];
+  document_url: string;
+  isolated: boolean;
+  link_name?: string;
+  /** Filters this link locks (shown read-only); hidden locks are never sent. */
+  locked_filters?: { key: string; label: string; kind: 'category' | 'date'; value: string[] }[];
+  appearance?: Record<string, unknown>;
+  preview?: boolean;
+}
+
+// A password-protected report link sends its session like a dashboard link does
+// (X-Public-Session); sessions are stored per link token in sessionStorage.
+const reportSession = (token: string) => {
+  const s = getPublicSession(token);
+  return s ? { 'X-Public-Session': s } : undefined;
+};
+
+export const publicReportApi = {
+  get: async (token: string): Promise<PublicReportMeta> =>
+    (await publicClient.get(`/public/reports/${encodeURIComponent(token)}`, { headers: reportSession(token) })).data,
+  auth: async (token: string, password: string): Promise<{ session_token: string; expires_in: number }> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/auth`, { password })).data,
+  data: async (token: string, binding: string, state: Record<string, unknown>): Promise<unknown> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/data`, { binding, state }, { headers: reportSession(token) })).data,
+  values: async (token: string, key: string, search: string, state: Record<string, unknown>): Promise<unknown[]> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/values`, { key, search, state }, { headers: reportSession(token) })).data?.values ?? [],
+};
+
 // ── Session storage helpers ──────────────────────────────────────────────────
 // Sessions are stored per-link in sessionStorage so they are scoped to the tab
 // and automatically cleared when the browser tab is closed.

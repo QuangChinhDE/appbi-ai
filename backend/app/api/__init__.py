@@ -23,6 +23,14 @@ api_router.include_router(datasets.router, prefix="/datasets", tags=["datasets"]
 api_router.include_router(charts.router)
 api_router.include_router(dashboards.router)
 
+# Report-as-Code / AI Vibe Design: the studio API and its public links. A kill switch,
+# not a dependency of anything else — off, both surfaces are 404 and nothing else moves.
+if settings.REPORT_AS_CODE_ENABLED:
+    from app.api import public_reports, report_artifacts
+    api_router.include_router(report_artifacts.router)
+    api_router.include_router(public_reports.router)
+    api_router.include_router(public_reports.docs_router)
+
 # Workboards mini-app builder — toggleable via WORKBOARDS_ENABLED
 # (see backend/app/modules/workboards/ and docker-compose.workboard.yml).
 if settings.WORKBOARDS_ENABLED:

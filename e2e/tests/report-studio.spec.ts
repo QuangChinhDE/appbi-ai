@@ -97,6 +97,7 @@ test.beforeEach(() => { test.skip(!fixtureId, 'fixture not seeded (local run)');
 test('start from data builds a real report: headline bound to findings, a slicer, charts that ran, a detail table', async ({ page, request }) => {
   test.setTimeout(150_000);
   await page.goto('/dashboards');
+  await page.getByTestId('build-manual-open').click(); // Dashboards: creation lives under Build Manual
   await page.getByTestId('report-starter-open').click();
   await page.selectOption('[data-testid="report-starter-dataset"]', { label: DATASET });
   await page.fill('[data-testid="report-starter-goal"]', 'Where does revenue come from, by region and channel?');

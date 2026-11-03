@@ -1,8 +1,13 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2 } from 'lucide-react';
+import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2, Wand2 } from 'lucide-react';
+import { reportCodeApi, type ReportDetail } from '@/lib/api/report-code';
+import { reportLinkTarget } from '@/components/report-code/reportLinkTarget';
+import { ReportKindBadge, ReportStatusChip } from '@/components/dashboards/ReportKindBadge';
+import { isVibe, openHref, rowKey, vibeAsListItem, type ReportListItem, type ReportTypeFilter } from '@/components/dashboards/reportListItems';
 import { toast } from '@/lib/toast';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard, useDuplicateDashboard } from '@/hooks/use-dashboards';
@@ -60,11 +65,46 @@ export default function DashboardsPage() {
   const [shareDash, setShareDash] = useState<Dashboard | null>(null);
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
   const [isStarterOpen, setIsStarterOpen] = useState(false);
+  const [isManualChooserOpen, setIsManualChooserOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
+  // Report type filter (Tất cả | Build Manual | AI Vibe Report), kept in ?type= so a
+  // link or a reload lands on the same view.
+  const [typeFilter, setTypeFilterState] = useState<ReportTypeFilter>('all');
+  useEffect(() => {
+    try {
+      const v = new URLSearchParams(window.location.search).get('type');
+      if (v === 'manual' || v === 'vibe') setTypeFilterState(v);
+    } catch { /* no URL */ }
+  }, []);
+  const setTypeFilter = (next: ReportTypeFilter) => {
+    setTypeFilterState(next);
+    try {
+      const url = new URL(window.location.href);
+      if (next === 'all') url.searchParams.delete('type'); else url.searchParams.set('type', next);
+      window.history.replaceState(window.history.state, '', url.toString());
+    } catch { /* no URL */ }
+  };
+  const [vibeToDelete, setVibeToDelete] = useState<ReportListItem | null>(null);
+  const [vibePublic, setVibePublic] = useState<ReportDetail | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
+  const queryClient = useQueryClient();
+  // AI Vibe Reports, listed with the dashboards (the backend filters by access).
+  const { data: vibeReports, isLoading: vibeLoading } = useQuery({
+    queryKey: ['report-artifacts'],
+    queryFn: () => reportCodeApi.list(),
+  });
+  const vibeItems = useMemo(() => (vibeReports ?? []).map(vibeAsListItem), [vibeReports]);
+  const allItems = useMemo<ReportListItem[]>(() => {
+    const merged: ReportListItem[] = [
+      ...(dashboards ?? []).map((d) => ({ ...d, report_kind: 'manual' as const })),
+      ...vibeItems,
+    ];
+    // One list, newest change first, whichever builder made it.
+    return merged.sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0));
+  }, [dashboards, vibeItems]);
   const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
   const { data: datasets = [] } = useDatasets();
   const { data: dataSources = [] } = useDataSources();
@@ -90,7 +130,7 @@ export default function DashboardsPage() {
     0,
   );
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
-  const dashboardsUpdatedThisWeek = dashboardItems.filter((dashboard) => {
+  const reportsUpdatedThisWeek = allItems.filter((dashboard) => {
     const updatedAt = new Date(dashboard.updated_at).getTime();
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
@@ -187,6 +227,26 @@ export default function DashboardsPage() {
     }
   };
 
+  const openVibePublic = async (item: ReportListItem) => {
+    try {
+      setVibePublic(await reportCodeApi.get(item.id));
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || error?.message);
+    }
+  };
+
+  const confirmVibeDelete = async () => {
+    if (!vibeToDelete) return;
+    try {
+      await reportCodeApi.remove(vibeToDelete.id);
+      toast.success(t('reportList.deleted', { name: vibeToDelete.name }));
+      setVibeToDelete(null);
+      await queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
+    } catch (error: any) {
+      throw new Error(error?.response?.data?.detail || error?.message || 'error');
+    }
+  };
+
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -229,7 +289,7 @@ export default function DashboardsPage() {
     <>
       <PageListLayout
         title={t('module.dashboards.title')}
-        description={`${dashboards?.length ?? 0} dashboard${dashboards?.length !== 1 ? 's' : ''}`}
+        description={t('reportList.count', { manual: dashboards?.length ?? 0, vibe: vibeItems.length })}
         overview={(
           <ModuleOverview
               icon={LayoutDashboard}
@@ -237,9 +297,10 @@ export default function DashboardsPage() {
               description={t('overview.dashboards.description')}
               badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
               stats={[
-                { label: t('overview.dashboards.saved'), value: dashboardItems.length, helper: t('overview.dashboards.savedHelper') },
+                { label: t('overview.dashboards.saved'), value: allItems.length, helper: t('reportList.savedHelper', { manual: dashboardItems.length, vibe: vibeItems.length }) },
+                { label: t('reportList.published'), value: allItems.filter((i) => !isVibe(i) || !!i.vibe?.published_number).length, helper: t('reportList.publishedHelper') },
                 { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
-                { label: t('overview.dashboards.updated'), value: dashboardsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
+                { label: t('overview.dashboards.updated'), value: reportsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
               ]}
           />
         )}
@@ -248,35 +309,43 @@ export default function DashboardsPage() {
             <Button
               variant="secondary"
               size="sm"
+              data-testid="build-manual-open"
               leadingIcon={<LayoutDashboard className="h-3.5 w-3.5" />}
-              onClick={() => setIsHtmlImportOpen(true)}
+              onClick={() => setIsManualChooserOpen(true)}
             >
-              Import HTML
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              data-testid="report-starter-open"
-              leadingIcon={<Plus className="h-3.5 w-3.5" />}
-              onClick={() => setIsStarterOpen(true)}
-            >
-              {t('report.starter.open')}
+              {t('reportCode.create.manual')}
             </Button>
             <Button
               variant="primary"
               size="sm"
-              leadingIcon={<Plus className="h-3.5 w-3.5" />}
-              onClick={() => setIsCreating(true)}
+              data-testid="report-code-open"
+              leadingIcon={<Wand2 className="h-3.5 w-3.5" />}
+              onClick={() => router.push('/dashboards/code/new')}
             >
-              {t('action.newDashboard')}
+              {t('reportCode.entry')}
             </Button>
           </div>
         ) : undefined}
-        isLoading={isLoading}
+        isLoading={isLoading || vibeLoading}
         loadingText={t('common.loading')}
         searchPlaceholder={t('common.search')}
         defaultView="list"
         toolbarExtra={(
+          <>
+          <div className="flex items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5" role="tablist" aria-label={t('reportList.type')} data-testid="report-type-filter">
+            {([
+              ['all', t('reportList.type.all'), allItems.length],
+              ['manual', t('reportList.kind.manual'), dashboardItems.length],
+              ['vibe', t('reportList.kind.vibe'), vibeItems.length],
+            ] as const).map(([key, label, count]) => (
+              <button key={key} type="button" role="tab" aria-selected={typeFilter === key} onClick={() => setTypeFilter(key)}
+                data-testid={`report-type-${key}`}
+                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-caption font-emphasis transition-colors ${typeFilter === key ? 'bg-surface-1 text-brand shadow-sm' : 'text-text-tertiary hover:text-text-primary'}`}>
+                {key === 'vibe' ? <Wand2 className="h-3.5 w-3.5" /> : key === 'manual' ? <LayoutDashboard className="h-3.5 w-3.5" /> : null}
+                {label}<span className="text-tiny text-text-quaternary">{count}</span>
+              </button>
+            ))}
+          </div>
           <CrossModuleFilterControls
             index={relationIndex}
             configs={[
@@ -291,6 +360,7 @@ export default function DashboardsPage() {
             }}
             onChange={(key, value) => setListFilter(key as keyof DashboardListFilters, value)}
           />
+          </>
         )}
         activeFilters={activeListFilterCount > 0 ? (
           <>
@@ -342,7 +412,18 @@ export default function DashboardsPage() {
       >
         {({ viewMode, filterText }) => {
           const needle = filterText.trim().toLowerCase();
-          const filtered = (dashboards ?? []).filter((dashboard) => {
+          const filtered = allItems.filter((dashboard) => {
+            if (typeFilter !== 'all' && (isVibe(dashboard) ? 'vibe' : 'manual') !== typeFilter) return false;
+            if (isVibe(dashboard)) {
+              // Chart / source relations and the chart-state tag describe dashboards only.
+              const v = dashboard.vibe!;
+              const vibeSearch = needle.length === 0 || dashboard.name.toLowerCase().includes(needle)
+                || (dashboard.description ?? '').toLowerCase().includes(needle) || (dashboard.owner_email ?? '').toLowerCase().includes(needle);
+              return vibeSearch && !listFilters.state && !listFilters.chart && !listFilters.source
+                && (!listFilters.dataset || String(v.dataset_id ?? '') === listFilters.dataset)
+                && (!listFilters.access || accessTier(dashboard.user_permission, dashboard.capabilities) === listFilters.access)
+                && (!listFilters.owner || dashboard.owner_email === listFilters.owner);
+            }
             const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
             const accessState = accessTier(dashboard.user_permission, dashboard.capabilities);
             const relations = relationIndex.dashboardRelationsById.get(dashboard.id);
@@ -369,17 +450,17 @@ export default function DashboardsPage() {
             <PaginatedCollection
               items={filtered}
               viewMode={viewMode}
-              resetKey={JSON.stringify({ filterText, viewMode, listFilters })}
+              resetKey={JSON.stringify({ filterText, viewMode, listFilters, typeFilter })}
             >
               {({ pageItems, pagination, hasFooter }) => (
                 <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
-                  {(!dashboards || dashboards.length === 0) ? (
+                  {allItems.length === 0 ? (
                     <DashboardList dashboards={[]} onDelete={handleDelete} />
                   ) : filtered.length === 0 ? (
                     <div className="flex h-48 flex-col items-center justify-center text-center">
                       <Search className="mb-2 h-7 w-7 text-text-quaternary" />
                       <p className="text-caption text-text-tertiary">
-                        No dashboards matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;
+                        {filterText ? <>No reports matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;</> : t('reportList.emptyFiltered')}
                       </p>
                     </div>
                   ) : viewMode === 'grid' ? (
@@ -394,13 +475,14 @@ export default function DashboardsPage() {
 
                     return (
                       <div
-                        key={dashboard.id}
+                        key={rowKey(dashboard)}
+                        data-testid={`report-card-${rowKey(dashboard)}`}
                         className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear"
                       >
                         <div className="flex-1 p-4">
                           <div className="mb-3 flex items-start justify-between">
                             <div className="flex items-center gap-2">
-                              {canEdit && (
+                              {canEdit && !isVibe(dashboard) && (
                                 <input
                                   type="checkbox"
                                   aria-label={`Select ${dashboard.name}`}
@@ -410,7 +492,7 @@ export default function DashboardsPage() {
                                 />
                               )}
                               <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                                <LayoutDashboard className="h-4 w-4" />
+                                {isVibe(dashboard) ? <Wand2 className="h-4 w-4" /> : <LayoutDashboard className="h-4 w-4" />}
                               </div>
                             </div>
                             {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canDelete && (
@@ -418,7 +500,7 @@ export default function DashboardsPage() {
                                 aria-label="Delete"
                                 variant="ghost"
                                 size="xs"
-                                onClick={() => handleDelete(dashboard.id)}
+                                onClick={() => (isVibe(dashboard) ? setVibeToDelete(dashboard) : handleDelete(dashboard.id))}
                                 className="opacity-0 transition-opacity group-hover:opacity-100 text-text-tertiary hover:text-danger"
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
@@ -426,12 +508,16 @@ export default function DashboardsPage() {
                             )}
                           </div>
                           <h3 className="mb-1 truncate text-caption font-strong text-text-primary">{dashboard.name}</h3>
+                          <div className="mb-1.5 flex flex-wrap gap-1.5">
+                            <ReportKindBadge kind={isVibe(dashboard) ? 'vibe' : 'manual'} />
+                            <ReportStatusChip item={dashboard} />
+                          </div>
                           <OwnerBadge email={dashboard.owner_email} />
                           {dashboard.description && (
                             <p className="mt-1.5 line-clamp-2 text-caption text-text-tertiary">{dashboard.description}</p>
                           )}
                           <div className="mt-3 flex items-center justify-between text-tiny text-text-quaternary">
-                            <span>{chartCount} chart{chartCount !== 1 ? 's' : ''}</span>
+                            <span>{isVibe(dashboard) ? (dashboard.vibe?.public_enabled ? `${dashboard.vibe.public_link_count ?? 1} public link` : '—') : `${chartCount} chart${chartCount !== 1 ? 's' : ''}`}</span>
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
                               {updatedLabel}
@@ -440,7 +526,7 @@ export default function DashboardsPage() {
                         </div>
                         <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
                           <div className="flex items-center gap-3">
-                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
+                            {!isVibe(dashboard) && getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
                               <button
                                 onClick={() => setShareDash(dashboard)}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
@@ -450,9 +536,12 @@ export default function DashboardsPage() {
                                 Share
                               </button>
                             )}
-                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit && (
+                            {(isVibe(dashboard)
+                              ? getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canPublish
+                              : getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit) && (
                               <button
-                                onClick={() => setPublicShareDash(dashboard)}
+                                data-testid={`report-card-${rowKey(dashboard)}-public`}
+                                onClick={() => (isVibe(dashboard) ? openVibePublic(dashboard) : setPublicShareDash(dashboard))}
                                 className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
                                 title="Public links"
                               >
@@ -462,7 +551,8 @@ export default function DashboardsPage() {
                             )}
                           </div>
                           <button
-                            onClick={() => router.push(`/dashboards/${dashboard.id}`)}
+                            onClick={() => router.push(openHref(dashboard))}
+                            data-testid={`report-card-${rowKey(dashboard)}-open`}
                             className="ml-auto flex items-center gap-1 text-tiny font-emphasis text-brand transition-colors hover:text-brand-hover"
                           >
                             <Eye className="h-3 w-3" />
@@ -476,6 +566,8 @@ export default function DashboardsPage() {
                   ) : (
                     <DashboardList
                       dashboards={pageItems}
+                      onVibeDelete={(item) => setVibeToDelete(item)}
+                      onVibePublicLinks={(item) => openVibePublic(item)}
                       onDelete={canEdit ? handleDelete : undefined}
                       onShare={(dashboard) => setShareDash(dashboard)}
                       onPublicLinks={canEdit ? (dashboard) => setPublicShareDash(dashboard) : undefined}
@@ -600,6 +692,26 @@ export default function DashboardsPage() {
         />
       )}
 
+      {vibePublic && (
+        <PublicLinksManager
+          dashboardId={vibePublic.id}
+          dashboardName={vibePublic.name}
+          target={reportLinkTarget(vibePublic)}
+          onClose={() => { setVibePublic(null); void queryClient.invalidateQueries({ queryKey: ['report-artifacts'] }); }}
+        />
+      )}
+
+      <ConfirmDialog
+        isOpen={!!vibeToDelete}
+        onClose={() => setVibeToDelete(null)}
+        onConfirm={confirmVibeDelete}
+        title={t('reportList.deleteTitle')}
+        description={t('common.cannotUndo')}
+        details={vibeToDelete ? <ConfirmTargets names={[vibeToDelete.name]} /> : null}
+        confirmLabel="Delete"
+        variant="danger"
+      />
+
       {shareDash && (
         <ShareDialog
           resourceType="dashboard"
@@ -623,6 +735,25 @@ export default function DashboardsPage() {
           onClose={() => setIsHtmlImportOpen(false)}
           targetMode="new_dashboard"
         />
+      )}
+
+      {isManualChooserOpen && (
+        <Modal isOpen onClose={() => setIsManualChooserOpen(false)} title={t('reportCode.create.manualTitle')} size="lg">
+          <div className="grid gap-3 sm:grid-cols-3" data-testid="build-manual-chooser">
+            {([
+              { key: 'blank', testId: 'build-manual-blank', icon: Plus, title: t('action.newDashboard'), desc: t('reportCode.create.blankDesc'), run: () => setIsCreating(true) },
+              { key: 'starter', testId: 'report-starter-open', icon: LayoutDashboard, title: t('report.starter.open'), desc: t('reportCode.create.starterDesc'), run: () => setIsStarterOpen(true) },
+              { key: 'html', testId: 'build-manual-html', icon: Globe, title: t('reportCode.create.htmlNative'), desc: t('reportCode.create.htmlNativeDesc'), run: () => setIsHtmlImportOpen(true) },
+            ] as const).map(({ key, testId, icon: Icon, title, desc, run }) => (
+              <div key={key} className="relative flex flex-col items-start gap-2 rounded-xl border border-stroke-strong bg-surface-1 p-4 transition hover:border-brand/50 hover:bg-brand-container/30">
+                <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-container text-brand"><Icon className="h-4 w-4" /></span>
+                <button type="button" data-testid={testId} onClick={() => { setIsManualChooserOpen(false); run(); }}
+                  className="text-left text-sm font-semibold text-text-primary after:absolute after:inset-0 hover:text-brand">{title}</button>
+                <span className="text-xs leading-snug text-text-tertiary">{desc}</span>
+              </div>
+            ))}
+          </div>
+        </Modal>
       )}
     </>
   );

@@ -378,6 +378,7 @@ test('M1 blank to finished report, through the builder UI', async ({ page, reque
 
   // New report from the list.
   await page.goto('/dashboards');
+  await page.getByTestId('build-manual-open').click(); // Dashboards: creation lives under Build Manual
   await page.getByRole('button', { name: /^(New Dashboard|Tạo dashboard)$/ }).click();
   await page.getByTestId('dashboard-create-name').fill(name);
   await page.getByTestId('dashboard-create-description').fill(description);
@@ -768,6 +769,7 @@ test('M4 one report over two independent datasets', async ({ page, request, cont
   const name = `Two businesses ${Date.now().toString(36)}`;
   await page.setViewportSize({ width: 1440, height: 1800 });
   await page.goto('/dashboards');
+  await page.getByTestId('build-manual-open').click(); // Dashboards: creation lives under Build Manual
   await page.getByRole('button', { name: /^(New Dashboard|Tạo dashboard)$/ }).click();
   await page.getByTestId('dashboard-create-name').fill(name);
   await page.getByTestId('dashboard-create-description').fill('The marketplace and the sales business, side by side.');

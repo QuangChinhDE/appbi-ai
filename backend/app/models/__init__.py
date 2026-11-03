@@ -57,6 +57,7 @@ from app.models.agent_flow_delegation import AgentFlowDelegation  # noqa: F401
 from app.models.ai_provider_credential import AiProviderCredential
 from app.models.ai_runtime import AiUsageLedger, PublicAnswerTurn  # noqa: E402,F401
 from app.models.manual_source_asset import ManualSourceAsset
+from app.models.report_artifact import ReportArtifact, ReportArtifactPublicLink, ReportArtifactRevision  # noqa: E402,F401
 # Workboard models live under app.modules.workboards but are re-exported here
 # so SQLAlchemy metadata + alembic autogenerate always see them, regardless of
 # whether the workboards module router is enabled at runtime.

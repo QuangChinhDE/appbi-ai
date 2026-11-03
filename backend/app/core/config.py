@@ -147,6 +147,17 @@ class Settings(BaseSettings):
     # NEXT_PUBLIC_* flags) to restore it exactly as it was.
     WORKBOARDS_ENABLED: bool = False
 
+    # Report-as-Code / AI Vibe Design (docs/features/report-as-code/). Kill switch:
+    # false unmounts the studio API and the public /public/reports surface; report
+    # rows, charts and dashboards are untouched and come back as they were.
+    REPORT_AS_CODE_ENABLED: bool = True
+    # The origin report documents are served from — a DIFFERENT origin than the app
+    # (e.g. https://reports.example.com). There the frame gets a real origin, which
+    # is what lets the runtime cancel navigations before any request leaves. Empty:
+    # derived for a localhost app (localhost → 127.0.0.1); otherwise reports run in
+    # an opaque frame and their custom JavaScript is not executed (fail closed).
+    REPORT_ARTIFACT_ORIGIN: str = ""
+
     # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──
     # The Data Core answers every Chat turn through the Governed Query Service under
     # the asker's identity; an Agent Flow is an optional extension. `chat: view` is

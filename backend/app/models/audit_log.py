@@ -85,6 +85,10 @@ class AuditAction(str, enum.Enum):
     WORKSPACE_TOKEN_ROTATED = "workspace_token_rotated"
     PUBLIC_LINK_UPDATED = "public_link_updated"
     SHARE_UPDATED = "share_updated"
+    # Report-as-Code (migration 20261103_0001): which revision anonymous viewers get.
+    REPORT_ARTIFACT_PUBLISHED = "report_artifact_published"
+    REPORT_ARTIFACT_ROLLED_BACK = "report_artifact_rolled_back"
+    REPORT_ARTIFACT_DELETED = "report_artifact_deleted"
 
 
 class AuditSeverity(str, enum.Enum):

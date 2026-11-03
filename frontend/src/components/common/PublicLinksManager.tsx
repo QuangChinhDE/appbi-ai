@@ -30,9 +30,45 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { cn } from '@/lib/utils';
 
+/**
+ * What the manager shares. Defaults to the dashboard identified by `dashboardId`
+ * (every existing caller — behaviour unchanged). A report passes its own target:
+ * same link contract (list / create / update / delete / preview, PublicLink shape),
+ * its own public routes, and the filter rows it declares.
+ */
+export interface PublicLinkTarget {
+  kind: 'dashboard' | 'report';
+  list: () => Promise<PublicLink[]>;
+  create: (body: Parameters<typeof dashboardApi.createPublicLink>[1]) => Promise<PublicLink>;
+  update: (linkId: number, body: Parameters<typeof dashboardApi.updatePublicLink>[2]) => Promise<PublicLink>;
+  remove: (linkId: number) => Promise<unknown>;
+  preview: (body: { filters_config: any[]; appearance_config: Record<string, unknown> }) => Promise<{ token: string }>;
+  /** Route segment of the public page and the embed page ('d' / 'embed' for dashboards). */
+  publicPath: string;
+  embedPath: string;
+  features: { snapshot: boolean; aiBot: boolean; limit: boolean };
+  /** Non-dashboard targets: the filters a link may lock/hide, with their values. */
+  loadFilterRows?: () => Promise<{ rows: BaseFilter[]; values: Record<string, string[]> }>;
+}
+
+export function dashboardLinkTarget(dashboardId: number): PublicLinkTarget {
+  return {
+    kind: 'dashboard',
+    list: () => dashboardApi.listPublicLinks(dashboardId),
+    create: (body) => dashboardApi.createPublicLink(dashboardId, body),
+    update: (linkId, body) => dashboardApi.updatePublicLink(dashboardId, linkId, body),
+    remove: (linkId) => dashboardApi.deletePublicLink(dashboardId, linkId),
+    preview: (body) => dashboardApi.createPublicLinkPreview(dashboardId, body),
+    publicPath: 'd',
+    embedPath: 'embed',
+    features: { snapshot: true, aiBot: true, limit: true },
+  };
+}
+
 interface PublicLinksManagerProps {
   dashboardId: number;
   dashboardName: string;
+  target?: PublicLinkTarget;
   availableColumns?: ColumnInfo[];
   columnChartCount?: Map<string, number>;
   distinctValues?: Record<string, string[]>;
@@ -370,11 +406,13 @@ function toLocalInputValue(iso: string): string {
 export function PublicLinksManager({
   dashboardId,
   dashboardName,
+  target: targetProp,
   availableColumns: propColumns,
   columnChartCount: propChartCount,
   distinctValues: propDistinctValues,
   onClose,
 }: PublicLinksManagerProps) {
+  const target = useMemo(() => targetProp ?? dashboardLinkTarget(dashboardId), [targetProp, dashboardId]);
   const [links, setLinks] = useState<PublicLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -417,12 +455,13 @@ export function PublicLinksManager({
     // once so the appearance editor can show the TTL selector only when a
     // materialized (snapshot) source actually backs the report.
     let cancelled = false;
+    if (!target.features.snapshot) return undefined;
     dashboardApi
       .getSnapshotInfo(dashboardId)
       .then((info) => { if (!cancelled) setSnapshotEnabled(info?.mode === 'snapshot'); })
       .catch(() => { if (!cancelled) setSnapshotEnabled(false); });
     return () => { cancelled = true; };
-  }, [dashboardId]);
+  }, [dashboardId, target]);
 
   const [formName, setFormName] = useState('');
   // Unified-table rework (2026-06-18) — the link's filter UI is now ONE
@@ -463,7 +502,8 @@ export function PublicLinksManager({
   const [copiedEmbedId, setCopiedEmbedId] = useState<number | null>(null);
   const [copiedSnippetId, setCopiedSnippetId] = useState<number | null>(null);
 
-  const getEmbedUrl = (link: PublicLink) => `${origin.replace(/\/$/, '')}/embed/${link.token}`;
+  const getPublicUrl = (token: string | null | undefined) => `${origin.replace(/\/$/, '')}/${target.publicPath}/${token}`;
+  const getEmbedUrl = (link: PublicLink) => `${origin.replace(/\/$/, '')}/${target.embedPath}/${link.token}`;
 
   const getIframeSnippet = (link: PublicLink) =>
     `<iframe\n  src="${getEmbedUrl(link)}"\n  loading="lazy"\n  style="width:100%;min-height:680px;border:0;border-radius:24px;background:#f8fafc;"\n  referrerpolicy="strict-origin-when-cross-origin"\n  title="${link.name.replace(/"/g, '&quot;')}"\n></iframe>`;
@@ -473,6 +513,20 @@ export function PublicLinksManager({
   };
 
   const fetchColumnData = useCallback(async () => {
+    if (target.loadFilterRows) {
+      setColumnsLoading(true);
+      try {
+        const { rows, values } = await target.loadFilterRows();
+        setInheritedSlicers(rows);
+        setInheritedFilters([]);
+        setDv(values);
+      } catch {
+        // non-critical — section just renders empty
+      } finally {
+        setColumnsLoading(false);
+      }
+      return;
+    }
     // Always refresh inherited entries from BE even when the parent
     // pre-supplied columns — slicers_config + filters_config travel
     // on the dashboard object, not on the column list.
@@ -568,18 +622,18 @@ export function PublicLinksManager({
     } finally {
       setColumnsLoading(false);
     }
-  }, [dashboardId, propColumns]);
+  }, [dashboardId, propColumns, target]);
 
   const fetchLinks = useCallback(async () => {
     try {
-      const data = await dashboardApi.listPublicLinks(dashboardId);
+      const data = await target.list();
       setLinks(data);
     } catch {
       toast.error('Failed to load public links');
     } finally {
       setLoading(false);
     }
-  }, [dashboardId]);
+  }, [target]);
 
   useEffect(() => {
     fetchLinks();
@@ -717,7 +771,7 @@ export function PublicLinksManager({
     const seq = ++livePreviewSeq.current;
     setLivePreview((cur) => ({ ...cur, loading: true, error: null }));
     try {
-      const res = await dashboardApi.createPublicLinkPreview(dashboardId, {
+      const res = await target.preview({
         filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
         appearance_config: formAppearance as unknown as Record<string, unknown>,
       });
@@ -727,7 +781,7 @@ export function PublicLinksManager({
       const detail = err?.response?.data?.detail;
       setLivePreview({ token: null, loading: false, error: typeof detail === 'string' ? detail : 'Could not prepare the preview.' });
     }
-  }, [dashboardId, formAppearance, linkActions, unifiedRows]);
+  }, [target, formAppearance, linkActions, unifiedRows]);
   // Keep the preview in step with the form: refresh shortly after the last edit
   // while the configurator is open.
   const configuratorOpen = view === 'create' || view === 'edit';
@@ -791,7 +845,7 @@ export function PublicLinksManager({
     }
     setCreating(true);
     try {
-      const link = await dashboardApi.createPublicLink(dashboardId, {
+      const link = await target.create({
         name: formName.trim(),
         // Unified table → one entry per gated field (see buildLinkFiltersPayload).
         filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
@@ -839,7 +893,7 @@ export function PublicLinksManager({
       if (password !== undefined) {
         passwordField.password = password;
       }
-      const updated = await dashboardApi.updatePublicLink(dashboardId, editingLink.id, {
+      const updated = await target.update(editingLink.id, {
         name: formName.trim() || undefined,
         // Unified table → one entry per gated field (see buildLinkFiltersPayload).
         filters_config: buildLinkFiltersPayload(linkActions, unifiedRows),
@@ -879,7 +933,7 @@ export function PublicLinksManager({
   const handleToggleActive = async (link: PublicLink, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const updated = await dashboardApi.updatePublicLink(dashboardId, link.id, {
+      const updated = await target.update(link.id, {
         is_active: !link.is_active,
       });
       setLinks((prev) => prev.map((item) => (item.id === link.id ? updated : item)));
@@ -892,7 +946,7 @@ export function PublicLinksManager({
   const handleDelete = async (link: PublicLink, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await dashboardApi.deletePublicLink(dashboardId, link.id);
+      await target.remove(link.id);
       setLinks((prev) => prev.filter((item) => item.id !== link.id));
       toast.success('Link deleted');
     } catch {
@@ -1150,7 +1204,7 @@ export function PublicLinksManager({
               <iframe
                 key={`${previewMode}:${livePreview.token}`}
                 title="Public link preview"
-                src={`/${previewMode === 'public' ? 'd' : 'embed'}/${livePreview.token}`}
+                src={`/${previewMode === 'public' ? target.publicPath : target.embedPath}/${livePreview.token}`}
                 className="block h-[560px] w-full bg-surface-1"
                 data-testid="public-link-preview-frame"
               />
@@ -1213,14 +1267,14 @@ export function PublicLinksManager({
           <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
             <Link2 className="h-4 w-4 text-text-quaternary" />
             <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
-              {origin.replace(/\/$/, '')}/d/{editingLink!.token}
+              {getPublicUrl(editingLink!.token)}
             </span>
             <IconButton
               aria-label="Copy page URL"
               variant="ghost"
               size="sm"
               onClick={() => {
-                copyText(`${origin.replace(/\/$/, '')}/d/${editingLink!.token}`, () => {
+                copyText(getPublicUrl(editingLink!.token), () => {
                   setCopiedId(editingLink!.id);
                   setTimeout(() => setCopiedId(null), 2000);
                 });
@@ -1361,7 +1415,7 @@ export function PublicLinksManager({
                 <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                   <Link2 className="h-4 w-4 text-text-quaternary" />
                   <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
-                    {origin.replace(/\/$/, '')}/d/{link.token}
+                    {getPublicUrl(link.token)}
                   </span>
                   <IconButton
                     aria-label="Copy page URL"
@@ -1369,7 +1423,7 @@ export function PublicLinksManager({
                     size="sm"
                     onClick={(event) => {
                       event.stopPropagation();
-                      copyText(`${origin.replace(/\/$/, '')}/d/${link.token}`, () => {
+                      copyText(getPublicUrl(link.token), () => {
                         setCopiedId(link.id);
                         setTimeout(() => setCopiedId(null), 2000);
                       });
@@ -1382,7 +1436,7 @@ export function PublicLinksManager({
                 <div className="flex items-center gap-2 rounded-md border border-[rgb(var(--border-line))] bg-surface-2 px-3 py-2">
                   <Code2 className="h-4 w-4 text-text-quaternary" />
                   <span className="min-w-0 flex-1 truncate text-tiny font-mono text-text-tertiary">
-                    {origin.replace(/\/$/, '')}/embed/{link.token}
+                    {getEmbedUrl(link)}
                   </span>
                   <IconButton
                     aria-label="Copy embed URL"
@@ -1596,7 +1650,7 @@ export function PublicLinksManager({
                     { id: 'data', label: 'Dữ liệu (Filter)' },
                     { id: 'aibot', label: 'AI Bot' },
                     { id: 'security', label: 'Bảo mật & Chia sẻ' },
-                  ] as const).map((t) => (
+                  ] as const).filter((t) => t.id !== 'aibot' || target.features.aiBot).map((t) => (
                     <button
                       key={t.id}
                       type="button"
@@ -1694,7 +1748,7 @@ export function PublicLinksManager({
                                   { opt: 'limit' as const, label: '🎯 Giới hạn', on: 'bg-brand/15 text-brand' },
                                   { opt: 'lock' as const, label: '🔒 Khoá', on: 'bg-warning/15 text-warning' },
                                   { opt: 'hide' as const, label: '🚫 Ẩn', on: 'bg-[rgba(255,255,255,0.10)] text-text-secondary' },
-                                ];
+                                ].filter((x) => x.opt !== 'limit' || target.features.limit);
                                 return (
                                   <div key={row.key} data-testid={`public-link-filter-row-${row.source}-${row.field}`} className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-2.5">
                                     <div className="flex items-center justify-between gap-2">

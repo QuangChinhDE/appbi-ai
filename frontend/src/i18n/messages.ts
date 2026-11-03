@@ -339,6 +339,7 @@ import { observabilityCatalog } from './catalog/observability';
 import { publicCatalog } from './catalog/public';
 import { settingsCatalog } from './catalog/settings';
 import { sharedCatalog } from './catalog/shared';
+import { reportCodeCatalog } from './catalog/report-code';
 
 const moduleCatalogs: ModuleCatalog[] = [
   dashboardsCatalog,
@@ -360,6 +361,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   publicCatalog,
   settingsCatalog,
   sharedCatalog,
+  reportCodeCatalog,
 ];
 
 function mergeCatalogs(base: MessageCatalog, pick: (c: ModuleCatalog) => MessageCatalog): MessageCatalog {

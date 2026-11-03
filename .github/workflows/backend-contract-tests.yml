@@ -282,6 +282,7 @@ jobs:
             tests/test_dashboard_presentation_publish_is_atomic.py \
             tests/test_chart_value_normalization.py \
             tests/test_report_starter.py \
+            tests/test_report_code_contract.py \
             tests/test_unified_grid_contract.py \
             tests/test_dashboard_draft_removal_lifecycle.py \
             tests/test_public_link_filter_disclosure.py \
@@ -851,6 +852,7 @@ jobs:
             tests/test_chat_legacy_import_pg.py \
             tests/test_intelligence_gqs_mysql_fullpath_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
+            tests/test_report_public_links_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # A KNOWN-DEFECT LEDGER ON POSTGRES, RUN ON ITS OWN SO IT IS READ.

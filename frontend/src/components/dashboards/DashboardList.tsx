@@ -2,16 +2,22 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { Trash2, Share2, Globe, LayoutDashboard, Loader2, Copy, Download } from 'lucide-react';
+import { Trash2, Share2, Globe, LayoutDashboard, Loader2, Copy, Download, Wand2 } from 'lucide-react';
 import { Dashboard } from '@/types/api';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { IconButton } from '@/components/ui/Button';
 import { FilterTag, type FilterTagTone } from '@/components/ui/FilterTag';
+import { ReportKindBadge, ReportStatusChip } from '@/components/dashboards/ReportKindBadge';
+import { isVibe, openHref, rowKey, type ReportListItem } from '@/components/dashboards/reportListItems';
 
 interface DashboardListProps {
-  dashboards: Dashboard[];
+  /** Manual dashboards and AI Vibe Reports (tagged `report_kind: 'vibe'`) in one list. */
+  dashboards: ReportListItem[];
+  /** Actions on a Vibe Report row (a different resource than a dashboard). */
+  onVibeDelete?: (item: ReportListItem) => void;
+  onVibePublicLinks?: (item: ReportListItem) => void;
   onDelete?: (id: number) => void;
   onShare?: (dashboard: Dashboard) => void;
   /** Open the dashboard's public links.
@@ -40,6 +46,8 @@ interface DashboardListProps {
 
 export function DashboardList({
   dashboards,
+  onVibeDelete,
+  onVibePublicLinks,
   onDelete,
   onShare,
   onPublicLinks,
@@ -88,8 +96,9 @@ export function DashboardList({
   }
 
   const selectable = Boolean(onToggleSelect);
-  const allSelected = selectable && dashboards.length > 0 && dashboards.every((d) => selectedIds?.has(d.id));
-  const someSelected = selectable && dashboards.some((d) => selectedIds?.has(d.id));
+  const selectableRows = dashboards.filter((d) => !isVibe(d));
+  const allSelected = selectable && selectableRows.length > 0 && selectableRows.every((d) => selectedIds?.has(d.id));
+  const someSelected = selectable && selectableRows.some((d) => selectedIds?.has(d.id));
 
   return (
     <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
@@ -103,13 +112,13 @@ export function DashboardList({
                   type="checkbox"
                   checked={allSelected}
                   ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-                  onChange={() => onToggleSelectAll?.(dashboards.map((d) => d.id))}
+                  onChange={() => onToggleSelectAll?.(selectableRows.map((d) => d.id))}
                   className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
                 />
               </th>
             )}
             <th className="app-list-header w-[34%]">
-              Dashboard
+              Report
             </th>
             <th className="app-list-header w-[20%]">
               Tags
@@ -118,7 +127,7 @@ export function DashboardList({
               Owner
             </th>
             <th className="app-list-header w-[12%]">
-              Charts
+              Content
             </th>
             <th className="app-list-header w-[12%]">
               Updated
@@ -131,30 +140,32 @@ export function DashboardList({
         <tbody className="divide-y divide-[rgb(var(--border-line))] bg-surface-1">
           {dashboards.map((dashboard) => {
             const perms = getResourcePermissions(dashboard.user_permission, dashboard.capabilities);
+            const vibe = isVibe(dashboard);
             const chartCount = dashboard.dashboard_charts?.length || 0;
             const stateMeta = getStateMeta(chartCount);
             const accessMeta = getAccessMeta(dashboard.user_permission);
 
             return (
-              <tr key={dashboard.id} className="hover:bg-surface-2">
+              <tr key={rowKey(dashboard)} className="hover:bg-surface-2" data-testid={`report-row-${rowKey(dashboard)}`}>
                 {selectable && (
                   <td className="w-10 px-3 py-4">
-                    <input
+                    {!vibe && <input
                       type="checkbox"
                       checked={selectedIds?.has(dashboard.id) ?? false}
                       onChange={() => onToggleSelect?.(dashboard.id)}
                       className="h-3.5 w-3.5 rounded accent-[rgb(var(--brand))] cursor-pointer"
-                    />
+                    />}
                   </td>
                 )}
                 <td className="app-list-cell">
                   <button
                     type="button"
-                    onClick={() => router.push(`/dashboards/${dashboard.id}`)}
+                    onClick={() => router.push(openHref(dashboard))}
                     className="text-left min-w-0 w-full"
                   >
-                    <div className="app-list-text-main text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
-                      {dashboard.name}
+                    <div className="app-list-text-main flex items-center gap-1.5 text-caption font-emphasis text-text-primary transition-colors hover:text-brand">
+                      {vibe ? <Wand2 className="h-3.5 w-3.5 shrink-0 text-brand" /> : <LayoutDashboard className="h-3.5 w-3.5 shrink-0 text-text-tertiary" />}
+                      <span className="truncate">{dashboard.name}</span>
                     </div>
                     {dashboard.description && (
                       <div className="app-list-text-sub text-tiny text-text-tertiary">{dashboard.description}</div>
@@ -163,13 +174,15 @@ export function DashboardList({
                 </td>
                 <td className="app-list-cell">
                   <div className="flex flex-wrap gap-1.5">
-                    <FilterTag
+                    <ReportKindBadge kind={vibe ? 'vibe' : 'manual'} />
+                    <ReportStatusChip item={dashboard} />
+                    {!vibe && <FilterTag
                       tone={stateMeta.tone}
                       active={activeFilters?.state === stateMeta.value}
                       onClick={() => onFilterClick?.('state', stateMeta.value)}
                     >
                       {stateMeta.label}
-                    </FilterTag>
+                    </FilterTag>}
                     {accessMeta.value !== 'full' && (
                       <FilterTag
                         tone={accessMeta.tone}
@@ -189,14 +202,26 @@ export function DashboardList({
                   />
                 </td>
                 <td className="app-list-cell text-caption text-text-tertiary">
-                  {chartCount} charts
+                  {vibe ? (dashboard.vibe?.public_enabled ? `${dashboard.vibe.public_link_count ?? 1} public link` : '—') : `${chartCount} charts`}
                 </td>
                 <td className="app-list-cell text-caption text-text-tertiary">
                   {new Date(dashboard.updated_at).toLocaleDateString()}
                 </td>
                 <td className="app-list-cell-tight text-right">
                   <div className="flex items-center justify-end gap-1">
-                    {onExport && (
+                    {vibe && onVibePublicLinks && perms.canPublish && (
+                      <IconButton aria-label="Public links" variant="ghost" size="xs" onClick={() => onVibePublicLinks(dashboard)}
+                        title="Public links" data-testid={`report-row-${rowKey(dashboard)}-public`}>
+                        <Globe className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
+                    {vibe && onVibeDelete && perms.canDelete && (
+                      <IconButton aria-label="Delete report" variant="ghost" size="xs" onClick={() => onVibeDelete(dashboard)}
+                        title="Delete report" className="text-text-tertiary hover:text-danger hover:bg-danger/10">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
+                    {!vibe && onExport && (
                       <IconButton
                         aria-label="Export dashboard to HTML"
                         variant="ghost"
@@ -212,7 +237,7 @@ export function DashboardList({
                         )}
                       </IconButton>
                     )}
-                    {onDuplicate && perms.canEdit && (
+                    {!vibe && onDuplicate && perms.canEdit && (
                       <IconButton
                         aria-label="Duplicate dashboard"
                         variant="ghost"
@@ -228,7 +253,7 @@ export function DashboardList({
                         )}
                       </IconButton>
                     )}
-                    {onShare && perms.canShare && (
+                    {!vibe && onShare && perms.canShare && (
                       <IconButton
                         aria-label="Share dashboard"
                         variant="ghost"
@@ -239,7 +264,7 @@ export function DashboardList({
                         <Share2 className="h-3.5 w-3.5" />
                       </IconButton>
                     )}
-                    {onPublicLinks && perms.canEdit && (
+                    {!vibe && onPublicLinks && perms.canEdit && (
                       <IconButton
                         aria-label="Public links"
                         variant="ghost"
@@ -250,7 +275,7 @@ export function DashboardList({
                         <Globe className="h-3.5 w-3.5" />
                       </IconButton>
                     )}
-                    {onDelete && perms.canDelete && (
+                    {!vibe && onDelete && perms.canDelete && (
                       <IconButton
                         aria-label="Delete dashboard"
                         variant="ghost"
