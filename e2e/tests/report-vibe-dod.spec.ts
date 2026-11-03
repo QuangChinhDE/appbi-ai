@@ -365,8 +365,16 @@ test('J6 Public AI Bot: offered only when the link enables it; locks hold', asyn
 
 test('J7 Manual Dashboard regression: Public Modal and AI Bot surface unchanged', async ({ page, browser }) => {
   watchConsole(page, 'manual');
+  // a dashboard WITH slicers (the 'Giới hạn' option below exists only then): the CI fixture
+  // (seed_e2e_presentation.py), or locally the first manual one when it was never seeded
+  const dashes = await (await page.request.get(`${API}/api/v1/dashboards/`)).json();
+  const fx = (Array.isArray(dashes) ? dashes : dashes.items || []).find((d: any) => d.name === 'E2E Presentation fixture');
+  expect(fx || !process.env.CI, 'the E2E Presentation fixture dashboard exists on CI').toBeTruthy();
   await page.goto('/dashboards?type=manual');
-  const firstPublic = page.locator('[data-testid^="report-row-manual-"][data-testid$="-public"]').first();
+  if (fx) await page.getByPlaceholder(/Search|Tìm/).first().fill('E2E Presentation fixture');
+  const firstPublic = fx ? page.getByTestId(`report-row-manual-${fx.id}-public`)
+    : page.locator('[data-testid^="report-row-manual-"][data-testid$="-public"]').first();
+  await expect(firstPublic).toBeVisible();
   const key = (await firstPublic.getAttribute('data-testid'))!.replace('report-row-', '').replace('-public', '');
   const dashId = Number(key.replace('manual-', ''));
   await firstPublic.click();
