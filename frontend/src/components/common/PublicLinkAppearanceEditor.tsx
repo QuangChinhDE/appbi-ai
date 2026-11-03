@@ -28,6 +28,9 @@ interface PublicLinkAppearanceEditorProps {
   // report serves live/cached data and the TTL selector is hidden to avoid
   // implying a "refresh schedule" that does nothing.
   snapshotEnabled?: boolean;
+  /** A report link honours the title, logo, viewer-filter switch and filter banner;
+   *  page tabs, CSV/PDF export and snapshots do not exist for it and are not offered. */
+  kind?: 'dashboard' | 'report';
 }
 
 interface ToggleCardProps {
@@ -97,7 +100,9 @@ export function PublicLinkAppearanceEditor({
   dashboardName,
   onChange,
   snapshotEnabled = false,
+  kind = 'dashboard',
 }: PublicLinkAppearanceEditorProps) {
+  const isReport = kind === 'report';
   const appearance = normalizePublicLinkAppearance(value);
   const [logoError, setLogoError] = useState<string | null>(null);
 
@@ -168,10 +173,14 @@ export function PublicLinkAppearanceEditor({
         <SectionKicker
           icon={Sparkles}
           label="Viewer layout"
-          description="The shared report inherits the dashboard's own theme (colors, fonts) automatically. Here you only set the logo and whether viewers can use page tabs or filters."
+          description={isReport
+            ? "The report's own design is shown as published. Here you set the title and logo of the slim header and whether viewers can use the report's filters."
+            : "The shared report inherits the dashboard's own theme (colors, fonts) automatically. Here you only set the logo and whether viewers can use page tabs or filters."}
         />
         <div className="rounded-md border border-brand/20 bg-brand/10 px-4 py-3 text-caption leading-6 text-text-secondary">
-          Colors and typography follow the published dashboard theme, so the shared report stays consistent with the original.
+          {isReport
+            ? 'Colors, fonts and layout are the report’s own code, exactly as published.'
+            : 'Colors and typography follow the published dashboard theme, so the shared report stays consistent with the original.'}
         </div>
         <label className="mt-4 block">
           <span className="text-caption font-emphasis text-text-secondary">Title shown to viewers</span>
@@ -248,36 +257,36 @@ export function PublicLinkAppearanceEditor({
         />
 
         <div className="grid gap-2 md:grid-cols-2">
-          <ToggleCard
+          {!isReport && <ToggleCard
             checked={appearance.show_page_tabs}
             label="Show page tabs"
             description="Show page switching for multi-page reports. Hiding the tabs does not make other pages private."
             onToggle={() => updateField('show_page_tabs', !appearance.show_page_tabs)}
-          />
+          />}
           <ToggleCard
             checked={appearance.allow_viewer_filters}
             label="Allow viewer filters"
             description="Show filter controls to viewers. Locked and hidden link filters still apply either way."
             onToggle={() => updateField('allow_viewer_filters', !appearance.allow_viewer_filters)}
           />
-          <ToggleCard
+          {!isReport && <ToggleCard
             checked={appearance.allow_data_export}
             label="Allow data export"
             description="Offer a CSV download of the rows each chart already shows. Turning it off removes the button; it does not hide data the report displays."
             onToggle={() => updateField('allow_data_export', !appearance.allow_data_export)}
-          />
+          />}
           <ToggleCard
             checked={appearance.show_filter_banner}
             label="Show locked-filter banner"
             description="Show the “Đang lọc theo…” banner naming the link's locked filters. Hiding it does not remove the filters — the report stays scoped either way."
             onToggle={() => updateField('show_filter_banner', !appearance.show_filter_banner)}
           />
-          <ToggleCard
+          {!isReport && <ToggleCard
             checked={appearance.allow_report_export}
             label="Allow report export (PDF / PowerPoint) on embed"
             description="Show the Export button when this link is opened as /embed/… (e.g. inside an iframe). The /d/… page always offers export."
             onToggle={() => updateField('allow_report_export', !appearance.allow_report_export)}
-          />
+          />}
         </div>
       </div>
 
@@ -286,7 +295,7 @@ export function PublicLinkAppearanceEditor({
           Sheets, manual, or BQ not materialized) there is no snapshot to
           serve-stale/rebuild, so hiding this avoids implying a refresh schedule
           that does nothing. */}
-      {snapshotEnabled && (
+      {snapshotEnabled && !isReport && (
       <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
         <SectionKicker
           icon={Sparkles}

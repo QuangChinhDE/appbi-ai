@@ -506,3 +506,142 @@ def test_a_link_preview_token_is_signed_short_lived_and_carries_no_password(monk
     assert PL.read_preview(token[:-2] + ("AA" if token[-2:] != "AA" else "BB"), now=1001.0) is None, "tampered"
     with pytest.raises(ValueError):
         PL.make_preview(None, SimpleNamespace(id=5, published_revision_id=None), [], {})  # never a draft
+
+
+# ── P0: the reusable password session never sits in the report frame's URL ─────────
+
+def test_the_document_grant_opens_one_revision_of_one_link_at_one_security_generation():
+    from types import SimpleNamespace
+    from app.services.report_code import public_links as PL
+
+    link = SimpleNamespace(id=7, auth_version=2)
+    g = PL.make_doc_grant(link, 41, now=1000.0)
+    assert PL.doc_grant_ok(g, link, 41, now=1001.0)
+    assert not PL.doc_grant_ok(g, link, 42, now=1001.0), "another revision"
+    assert not PL.doc_grant_ok(g, SimpleNamespace(id=8, auth_version=2), 41, now=1001.0), "another link"
+    assert not PL.doc_grant_ok(g, SimpleNamespace(id=7, auth_version=3), 41, now=1001.0), "password changed since"
+    assert not PL.doc_grant_ok(g, link, 41, now=1000.0 + PL.DOC_GRANT_TTL_S + 1), "expired"
+    assert not PL.doc_grant_ok(g[:-2] + ("AA" if g[-2:] != "AA" else "BB"), link, 41, now=1001.0), "tampered"
+
+
+def test_a_document_grant_is_not_a_password_session():
+    from types import SimpleNamespace
+    from app.services import public_link_session as S
+    from app.services.report_code import public_links as PL
+
+    link = SimpleNamespace(id=7, token="rpt_x", auth_version=0)
+    assert not S.verify_session(PL.make_doc_grant(link, 1), link, "report")
+
+
+# ── AI scoped edit: a region edit cannot restyle another region ─────────────────────
+
+def test_region_css_is_scoped_by_the_server_whatever_the_model_writes():
+    from app.services.report_code.generation import scope_css
+
+    out = scope_css(":root{--a:1} .card,h3{color:red} body{margin:0} "
+                    "@media (max-width:600px){.card{padding:0}} @keyframes k{from{opacity:0}to{opacity:1}}", "kpis")
+    rules = [r for r in out.splitlines() if "{" in r and not r.startswith(("@media", "@keyframes"))]
+    assert rules and all(r.startswith('[data-rac-region="kpis"]') for r in rules), out
+    assert '[data-rac-region="kpis"] .card, [data-rac-region="kpis"] h3 {color:red}' in out
+    assert "body" not in out and ":root" not in out, "page-level selectors become the region itself"
+    assert '@media (max-width:600px) {\n[data-rac-region="kpis"] .card {padding:0}\n}' in out
+    assert "@keyframes k {from{opacity:0}to{opacity:1}}" in out
+
+
+# ── Public Modal settings take effect on the public side ────────────────────────────
+
+def test_viewer_filters_switched_off_leaves_the_viewer_no_filter_but_keeps_every_lock():
+    from app.services.report_code import public_links as PL
+
+    off = {"allow_viewer_filters": False}
+    viewer, locked, banner = PL.scope(_DECL, [{"field": "f1", "value": ["SP"]}], off)
+    assert viewer == [] and locked == {"f1": ["SP"]} and banner
+    with pytest.raises(ValueError):
+        PL.effective_state(_DECL, [], {"f2": ["2024-01-01", "2024-12-31"]}, off)
+    assert PL.effective_state(_DECL, [{"field": "f1", "value": ["SP"]}], {}, off) == {"f1": ["SP"]}
+
+
+def test_hiding_the_locked_filter_banner_hides_the_banner_not_the_lock():
+    from app.services.report_code import public_links as PL
+
+    viewer, locked, banner = PL.scope(_DECL, [{"field": "f1", "value": ["SP"]}], {"show_filter_banner": False})
+    assert banner == [] and locked == {"f1": ["SP"]}
+
+
+# ── The viewer's AI Bot on a report link ────────────────────────────────────────────
+
+def test_the_report_bot_reads_the_locks_and_never_names_a_hidden_one():
+    from types import SimpleNamespace
+    from app.services.report_code import public_bot as PB
+
+    rev = SimpleNamespace(filters=_DECL, bindings=[])
+    link = SimpleNamespace(filters_config=[{"field": "f1", "value": ["SP"]},
+                                           {"field": "f3", "value": ["web"], "hidden": True}],
+                           appearance_config={})
+    ctx = PB.build_context(SimpleNamespace(), rev, link, {"f2": ["2024-01-01", "2024-12-31"]})
+    by_field = {f["fieldKey"]: f for f in ctx.public_filters}
+    assert by_field["state"]["value"] == ["SP"] and not by_field["state"].get("hidden")
+    from app.services.filter_layered_merge import DISCLOSE_KEY
+
+    assert by_field["channel"][DISCLOSE_KEY] is False, "a hidden lock is applied but never disclosed"
+    assert by_field["day"]["operator"] == "between", "the viewer's own choice is applied too"
+    allowed, bare = ctx.exposed_fields
+    assert "state" not in allowed and "channel" not in allowed, "a model filter cannot loosen a lock"
+    assert "day" in allowed
+    disclosed, withheld = ctx.disclosed_filters()
+    assert withheld >= 1 and all(f.get("fieldKey") != "channel" for f in disclosed)
+
+
+def test_the_report_bot_refuses_a_viewer_override_of_a_lock():
+    from types import SimpleNamespace
+    from app.services.report_code import public_bot as PB
+
+    rev = SimpleNamespace(filters=_DECL, bindings=[])
+    link = SimpleNamespace(filters_config=[{"field": "f1", "value": ["SP"]}], appearance_config={})
+    with pytest.raises(ValueError):
+        PB.build_context(SimpleNamespace(), rev, link, {"f1": ["RJ"]})
+
+
+def test_report_links_never_share_a_dashboard_links_ai_budget():
+    from app.services.report_code import public_bot as PB
+
+    assert PB.ledger_link_id(3) == -3 and PB.ledger_link_id(3) != 3
+
+
+def test_a_data_script_block_is_never_imported_as_javascript():
+    raw = ('<html><body><h1>R</h1>'
+           '<script type="application/appbi-dashboard">{"version": "appbi-import/v1"}</script>'
+           '<script type="application/json">{"a": 1}</script>'
+           '<script>window.ok = 1;</script>'
+           '<script type="module">window.m = 1;</script></body></html>')
+    html, css, js, warnings = D.split_document(raw)
+    assert "appbi-import" not in js and '"a": 1' not in js, "an inert data block is not code"
+    assert "window.ok = 1;" in js and "window.m = 1;" in js
+    assert any("application/appbi-dashboard" in w for w in warnings)
+
+
+def test_a_money_figure_is_never_mapped_to_a_count(monkeypatch):
+    """The pasted 'R$ 16.0M Payments received' was bound to Unique Customers and printed
+    'R$ 96 N': a real number under the wrong meaning. Neither the rules nor the model may do that."""
+    from app.services import llm_client
+    from app.services.report_code import importer as I
+
+    cands = [{"id": "c1", "kind": "kpi", "title": "Unique Customers", "measure": "Unique Customers",
+              "measure_type": "count_distinct", "rank": 1},
+             {"id": "c2", "kind": "kpi", "title": "Order Count", "measure": "Order Count", "measure_type": "count", "rank": 2}]
+    slot = {"id": "s1", "kind": "value", "context": "Payments received", "sample": "R$ 16.0M"}
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json",
+                        staticmethod(lambda **kw: {"map": [{"slot": "s1", "id": "c1"}]}))
+    out = I.propose([slot], cands, [])
+    assert (out.get("s1") or {}).get("candidate") is None, out
+
+
+def test_rules_leave_a_slot_unmapped_when_nothing_shares_its_meaning(monkeypatch):
+    from app.services import llm_client
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(lambda **kw: {"map": []}))
+    cands = [{"id": "c1", "kind": "kpi", "title": "Delivery days", "measure": "Delivery days", "measure_type": "average"}]
+    out = I.propose([{"id": "s1", "kind": "value", "context": "Refund rate", "sample": "4.2%"}], cands, [])
+    assert "s1" not in out or out["s1"].get("candidate") is None, out
+

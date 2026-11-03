@@ -54,19 +54,21 @@ function Remove({ onClick }: { onClick: () => void }) {
   );
 }
 
-export function PublisherGuideEditor({ value, onChange, dashboardId, linkId }: {
+export function PublisherGuideEditor({ value, onChange, dashboardId, linkId, catalogOf }: {
   value: PublisherGuide | null | undefined;
   onChange: (guide: PublisherGuide | null) => void;
   dashboardId: number;
   /** Null while the link is still being created: the pickers need the link's catalog. */
   linkId: number | null;
+  /** A report link's catalog; absent = the dashboard link's. */
+  catalogOf?: (linkId: number) => Promise<PublicLinkAiCatalog>;
 }) {
   const [catalog, setCatalog] = useState<PublicLinkAiCatalog | null>(null);
   const [catalogError, setCatalogError] = useState(false);
   const loadCatalog = () => {
     if (!linkId) return;
     setCatalogError(false);
-    dashboardApi.getPublicLinkAiCatalog(dashboardId, linkId)
+    (catalogOf ? catalogOf(linkId) : dashboardApi.getPublicLinkAiCatalog(dashboardId, linkId))
       .then(setCatalog)
       .catch(() => setCatalogError(true));
   };

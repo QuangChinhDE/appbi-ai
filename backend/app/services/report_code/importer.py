@@ -224,6 +224,25 @@ def _score(slot: Dict[str, Any], cand: Dict[str, Any]) -> float:
     return s
 
 
+_MONEY_RX = re.compile(r"(R\$|US\$|\$|€|£|¥|₫|\bVND\b|\bUSD\b|\bBRL\b|\bđ\b)", re.I)
+_COUNT_TYPES = {"count", "count_distinct", "countd", "distinct_count"}
+
+
+def _is_money_slot(slot: Dict[str, Any]) -> bool:
+    return bool(_MONEY_RX.search(str(slot.get("sample") or "")))
+
+
+def compatible(slot: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    """Does the candidate's UNIT fit what the slot prints? A money figure (R$ 16.0M,
+    1.2 tỷ ₫) is never a count of things (orders, customers): binding it to one prints
+    "R$ 96 N" — a real number under the wrong meaning. Judged from the semantic model's
+    measure type, not from words."""
+    mtype = str(cand.get("measure_type") or "").lower()
+    if _is_money_slot(slot) and mtype in _COUNT_TYPES:
+        return False
+    return True
+
+
 def _dims_score(slot: Dict[str, Any], dim: Dict[str, Any]) -> float:
     sw = _words(slot.get("context", "")) | _words(" ".join(slot.get("options") or []))
     dw = _words(dim.get("label", ""))
@@ -239,9 +258,11 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
             if best and _dims_score(s, best) > 0:
                 out[s["id"]] = {"dimension": best["id"], "confidence": round(min(1.0, _dims_score(s, best)), 2), "source": "rules"}
             continue
-        pool = [c for c in cands if c["kind"] in _kinds_for(s)]
+        pool = [c for c in cands if c["kind"] in _kinds_for(s) and compatible(s, c)]
         best = max(pool, key=lambda c: (_score(s, c), -c.get("rank", 9)), default=None)
-        if best is not None:
+        # Rules propose only what shares meaning with the slot's own label; "nothing in
+        # common" is left for the author (or the model) — never the first candidate.
+        if best is not None and _score(s, best) > 0:
             out[s["id"]] = {"candidate": best["id"], "confidence": round(min(1.0, _score(s, best)), 2), "source": "rules"}
     data_slots = [s for s in slots if s["kind"] != "filter"]
     if data_slots and cands:
@@ -267,6 +288,10 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
                 for item in res.get("map") or []:
                     sid, cid = (item or {}).get("slot"), (item or {}).get("id")
                     slot = next((s for s in slots if s["id"] == sid), None)
+                    if slot and cid in known and known[cid]["kind"] in _kinds_for(slot) and not compatible(slot, known[cid]):
+                        # the model's pick has the wrong unit for what the slot prints
+                        out.setdefault(sid, {"candidate": None, "confidence": 0.0, "source": "rules", "note": "unit_mismatch"})
+                        continue
                     if slot and cid in known and known[cid]["kind"] in _kinds_for(slot):
                         # The model must agree with what the slot SAYS: a pick that shares no
                         # meaning with its own label loses to a rules pick that does.

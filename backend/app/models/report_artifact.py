@@ -9,7 +9,7 @@ The code itself never holds data or queries: `bindings` names saved charts (the 
 Chart Configuration + Query Core every dashboard uses) and `filters` names the semantic
 dimensions a viewer may filter by. Both are resolved server-side on every data request.
 """
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.sql import func
 
@@ -96,3 +96,29 @@ class ReportArtifactPublicLink(Base):
     @property
     def has_password(self) -> bool:
         return bool(self.password_hash)
+
+
+class ReportAnswerTurn(Base):
+    """One AI Bot question on a REPORT public link — the same record the dashboard bot
+    keeps in public_answer_turns (services/answer_core/public_turn.py runs both), on
+    its own table so its foreign key names the report link it belongs to."""
+    __tablename__ = "report_answer_turns"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    link_id = Column(Integer, ForeignKey("report_artifact_public_links.id", ondelete="CASCADE"), nullable=False)
+    conversation_key = Column(String(64), nullable=False)
+    turn_id = Column(String(32), nullable=False, unique=True)
+    idempotency_key = Column(String(64), nullable=False)
+    question = Column(Text, nullable=False)
+    status = Column(String(24), nullable=False)
+    envelope = Column(JSONB, nullable=True)
+    plan = Column(JSONB, nullable=True)
+    usd = Column(Float, nullable=True)
+    rating = Column(String(8), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("link_id", "idempotency_key", name="uq_report_answer_turns_link_idem"),
+        Index("ix_report_answer_turns_conversation", "link_id", "conversation_key", "created_at"),
+    )

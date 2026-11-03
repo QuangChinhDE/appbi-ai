@@ -42,6 +42,8 @@ export interface ReportFrameProps {
   fetchValues: (key: string, search: string, state: FilterState) => Promise<unknown[]>;
   mode?: 'studio' | 'view';
   selectMode?: boolean;
+  /** Studio: outline what the BI Core supplies vs numbers the code writes itself. */
+  provenance?: boolean;
   selectedRegion?: string | null;
   onRegionSelected?: (region: string) => void;
   onIssue?: (issue: RuntimeIssue) => void;
@@ -53,7 +55,8 @@ export interface ReportFrameProps {
 const PARALLEL = 4;
 
 export function ReportFrame({
-  src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false, selectedRegion = null,
+  src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
+  provenance = false, selectedRegion = null,
   onRegionSelected, onIssue, onStateChange, className, title,
 }: ReportFrameProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -61,8 +64,8 @@ export function ReportFrame({
   const loadsRef = useRef(0);
   const stateRef = useRef<FilterState>({});
   const seqRef = useRef<Record<string, number>>({});
-  const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode });
-  propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode };
+  const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance });
+  propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance };
   const [blocked, setBlocked] = useState(false);
   const [frameName] = useState(() => Math.random().toString(36).slice(2));
 
@@ -101,6 +104,7 @@ export function ReportFrame({
       case 'ready':
         p.onGuard?.({ guard: msg.guard });
         pushContext();
+        if (p.provenance) postMsg({ type: 'provenance', on: true });
         void loadAll();
         break;
       case 'setFilter':
@@ -194,6 +198,7 @@ export function ReportFrame({
   }, [src, postKey, sandbox]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { postMsg({ type: 'selectMode', on: selectMode }); }, [selectMode, postMsg]);
+  useEffect(() => { postMsg({ type: 'provenance', on: provenance }); }, [provenance, postMsg]);
   useEffect(() => { postMsg({ type: 'highlight', region: selectedRegion }); }, [selectedRegion, postMsg]);
 
   const bindingKey = bindings.map((b) => `${b.id}:${b.kind}`).join(',');

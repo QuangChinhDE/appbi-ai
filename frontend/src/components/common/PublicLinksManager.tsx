@@ -46,7 +46,12 @@ export interface PublicLinkTarget {
   /** Route segment of the public page and the embed page ('d' / 'embed' for dashboards). */
   publicPath: string;
   embedPath: string;
-  features: { snapshot: boolean; aiBot: boolean; limit: boolean };
+  features: { snapshot: boolean; aiBot: boolean; limit: boolean; flow?: boolean };
+  /** The link's AI Bot readiness and catalog when they are not the dashboard's. */
+  ai?: {
+    status: (linkId: number) => Promise<any>;
+    catalog: (linkId: number) => Promise<any>;
+  };
   /** Non-dashboard targets: the filters a link may lock/hide, with their values. */
   loadFilterRows?: () => Promise<{ rows: BaseFilter[]; values: Record<string, string[]> }>;
 }
@@ -61,7 +66,7 @@ export function dashboardLinkTarget(dashboardId: number): PublicLinkTarget {
     preview: (body) => dashboardApi.createPublicLinkPreview(dashboardId, body),
     publicPath: 'd',
     embedPath: 'embed',
-    features: { snapshot: true, aiBot: true, limit: true },
+    features: { snapshot: true, aiBot: true, limit: true, flow: true },
   };
 }
 
@@ -413,6 +418,9 @@ export function PublicLinksManager({
   onClose,
 }: PublicLinksManagerProps) {
   const target = useMemo(() => targetProp ?? dashboardLinkTarget(dashboardId), [targetProp, dashboardId]);
+  // What the link shares, in the modal's copy: a dashboard keeps its exact wording.
+  const isReport = target.kind === 'report';
+  const noun = isReport ? 'report' : 'dashboard';
   const [links, setLinks] = useState<PublicLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -563,7 +571,9 @@ export function PublicLinksManager({
     setColumnsLoading(true);
     try {
       const dash = await dashboardApi.getById(dashboardId);
-      const charts = dash.dashboard_charts ?? [];
+      // Only chart tiles have data: a text / AI / control tile has no chart_id, and asking
+      // for /charts/null/data was a 422 every time the modal opened.
+      const charts = (dash.dashboard_charts ?? []).filter((dc) => dc.chart_id);
       if (!charts.length) return;
 
       const colMap = new Map<string, ColumnInfo>();
@@ -1148,7 +1158,7 @@ export function PublicLinksManager({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary" data-testid="public-link-preview-title">Preview · published report</p>
-              <p className="mt-1 text-caption text-text-tertiary">What viewers of this link will see if you save these settings now. It shows the report as currently published — unpublished dashboard edits are not included.</p>
+              <p className="mt-1 text-caption text-text-tertiary">What viewers of this link will see if you save these settings now. It shows the report as currently published — unpublished {noun} edits are not included.</p>
             </div>
             <div className="flex items-center rounded-full border border-[rgb(var(--border-line))] bg-surface-2 p-1">
               <button
@@ -1226,7 +1236,7 @@ export function PublicLinksManager({
             <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
               <p className="text-tiny font-emphasis text-text-tertiary">Access scope</p>
               <p className="mt-1 text-caption font-strong text-text-primary">
-                {configuredAccessFilterCount > 0 ? `${configuredAccessFilterCount} access filter${configuredAccessFilterCount === 1 ? '' : 's'}` : 'All dashboard data'}
+                {configuredAccessFilterCount > 0 ? `${configuredAccessFilterCount} access filter${configuredAccessFilterCount === 1 ? '' : 's'}` : `All ${noun} data`}
               </p>
             </div>
             <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 px-4 py-3">
@@ -1587,8 +1597,8 @@ export function PublicLinksManager({
                 <div className="rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 p-5 shadow-linear-sm">
                   <p className="text-tiny font-strong uppercase tracking-[0.14em] text-text-quaternary">Tips</p>
                   <div className="mt-3 space-y-3 text-caption text-text-tertiary">
-                    <p>Use the headline to rename the same dashboard for different audiences without cloning it.</p>
-                    <p>Keep tabs on only when the dashboard really has multiple pages worth switching between.</p>
+                    <p>Use the headline to rename the same {noun} for different audiences without cloning it.</p>
+                    {!isReport && <p>Keep tabs on only when the dashboard really has multiple pages worth switching between.</p>}
                     <p>Turn viewer filters off for locked executive views, and keep them on when viewers need light exploration.</p>
                   </div>
                 </div>
@@ -1605,7 +1615,7 @@ export function PublicLinksManager({
                     <Globe className="mx-auto h-10 w-10 text-text-quaternary" />
                     <p className="mt-4 text-small font-strong text-text-secondary">No public links yet</p>
                     <p className="mt-2 text-caption text-text-tertiary">
-                      Create a link to publish this dashboard with its own filters and presentation settings.
+                      Create a link to publish this {noun} with its own filters and presentation settings.
                     </p>
                   </div>
                 ) : (
@@ -1670,6 +1680,7 @@ export function PublicLinksManager({
 
                 {formTab === 'appearance' && (
                   <PublicLinkAppearanceEditor
+                    kind={target.kind}
                     value={formAppearance}
                     dashboardName={dashboardName}
                     onChange={setFormAppearance}
@@ -1684,6 +1695,9 @@ export function PublicLinksManager({
                     dashboardId={dashboardId}
                     linkId={editingLink?.id ?? null}
                     registerBindingFlush={registerBindingFlush}
+                    aiStatusOf={target.ai?.status}
+                    aiCatalogOf={target.ai?.catalog}
+                    allowFlow={target.features.flow !== false}
                   />
                 )}
 
@@ -1707,12 +1721,14 @@ export function PublicLinksManager({
                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md bg-surface-2 px-3 py-2 text-tiny">
                     <span className="text-text-tertiary">Người xem sẽ thấy:</span>
                     <span className="text-success">👁 {unifiedRows.filter((r) => effectiveAction(r) === 'show').length} control</span>
-                    <span className="text-brand">🎯 {unifiedRows.filter((r) => effectiveAction(r) === 'limit').length} giới hạn</span>
+                    {!isReport && <span className="text-brand">🎯 {unifiedRows.filter((r) => effectiveAction(r) === 'limit').length} giới hạn</span>}
                     <span className="text-warning">🔒 {unifiedRows.filter((r) => effectiveAction(r) === 'lock').length} khoá</span>
                     <span className="text-text-secondary">🚫 {unifiedRows.filter((r) => effectiveAction(r) === 'hide').length} ẩn</span>
                   </div>
                   <p className="mt-1.5 text-tiny text-text-quaternary">
-                    Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá link</span> → <span className="text-text-secondary">🎯 Giới hạn</span> → <span className="text-text-secondary">Filter trang</span> → <span className="text-text-secondary">Slicer người xem</span>.
+                    {isReport
+                      ? <>Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá / 🚫 Ẩn của link</span> → <span className="text-text-secondary">Bộ lọc người xem</span>.</>
+                      : <>Thứ tự lọc: <span className="text-text-secondary">🔒 Khoá link</span> → <span className="text-text-secondary">🎯 Giới hạn</span> → <span className="text-text-secondary">Filter trang</span> → <span className="text-text-secondary">Slicer người xem</span>.</>}
                   </p>
 
                   <div className="mt-4 space-y-4">
@@ -1723,11 +1739,13 @@ export function PublicLinksManager({
                       </div>
                     ) : unifiedRows.length === 0 ? (
                       <p className="rounded-lg border border-dashed border-[rgb(var(--border-strong))] bg-surface-2 px-4 py-6 text-center text-tiny text-text-tertiary">
-                        Chưa có field nào để cấu hình. Thêm chart/slicer vào dashboard trước, hoặc thêm field bên dưới.
+                        {isReport
+                          ? 'Bản đã xuất bản của báo cáo chưa khai báo bộ lọc nào. Thêm bộ lọc ở tab Dữ liệu của Studio rồi xuất bản lại.'
+                          : 'Chưa có field nào để cấu hình. Thêm chart/slicer vào dashboard trước, hoặc thêm field bên dưới.'}
                       </p>
                     ) : (
                       ([
-                        { key: 'slicer', title: 'Slicer' },
+                        { key: 'slicer', title: isReport ? 'Bộ lọc của báo cáo (bản đã xuất bản)' : 'Slicer' },
                         { key: 'filter', title: 'Filter trang / dashboard' },
                         { key: 'extra', title: 'Thêm thủ công' },
                       ] as const).map((grp) => {
@@ -1801,7 +1819,7 @@ export function PublicLinksManager({
                                             ? 'Dữ liệu vẫn bị lọc theo giá trị này; viewer KHÔNG thấy control/banner.'
                                             : action === 'limit'
                                               ? 'Viewer thấy slicer tương tác nhưng CHỈ chọn được trong các giá trị này (vd 3/5 RC).'
-                                              : 'Viewer thấy banner read-only với giá trị này. Để trống = dùng giá trị dashboard.'}
+                                              : `Viewer thấy banner read-only với giá trị này. Để trống = dùng giá trị ${isReport ? 'báo cáo' : 'dashboard'}.`}
                                         </p>
                                       </div>
                                     )}

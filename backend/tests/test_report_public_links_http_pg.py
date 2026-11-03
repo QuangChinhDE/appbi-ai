@@ -95,12 +95,20 @@ def test_password_session_is_bound_to_the_link_and_its_security_generation(clien
     session = client.post(url + "/auth", json={"password": "s3cret!"}).json()["session_token"]
     ok = client.get(url, headers={"X-Public-Session": session})
     assert ok.status_code == 200
-    assert "s=" in ok.json()["document_url"], "the frame carries the session (it cannot send a header)"
-    assert client.get(url + "/document", params={"s": session}).status_code == 200
+    doc_url = ok.json()["document_url"]
+    assert session not in doc_url, "the reusable session must never sit in a URL the report's code can read"
+    grant = doc_url.split("g=", 1)[1]
+    assert client.get(url + "/document", params={"g": grant}).status_code == 200, "the grant opens the document"
+    assert client.get(url + "/document", params={"s": session}).status_code == 401, "a session in the URL is not accepted"
+    # the grant is no session: it opens nothing but the document
+    assert client.get(url, headers={"X-Public-Session": grant}).status_code == 401
+    assert client.post(url + "/data", json={"binding": "b1", "state": {}},
+                       headers={"X-Public-Session": grant}).status_code == 401
 
     client.patch(f"/api/v1/report-artifacts/{report.id}/public-links/{link['id']}", json={"password": "changed!"},
                  headers=owner.headers)
     assert client.get(url, headers={"X-Public-Session": session}).status_code == 401, "old session dies with the password"
+    assert client.get(url + "/document", params={"g": grant}).status_code == 401, "and so does the document grant"
 
     # A report session never opens a dashboard link, whatever the ids.
     from app.api.public import _verify_public_session
@@ -139,3 +147,92 @@ def test_managing_links_needs_full_access_and_tokens_are_not_shown_to_others(cli
     assert client.post(base, json={"name": "x"}, headers=other.headers).status_code in (403, 404)
     listed = client.get(base, headers=other.headers)
     assert listed.status_code in (403, 404) or all(link["token"] is None for link in listed.json())
+
+
+# ── The viewer's AI Bot on a report link ─────────────────────────────────────────────
+
+def test_the_report_bot_is_closed_unless_the_link_opens_it_and_never_on_a_preview(client, owner, report):  # noqa: F811
+    link = _create(client, owner, report)
+    url = f"/api/v1/public/reports/{link['token']}"
+    assert client.get(url + "/ai/status").json() == {"enabled": False, "ready": False}
+    ask = {"question": "Doanh thu?", "conversation_key": "conv-12345678", "idempotency_key": "idem-12345678"}
+    assert client.post(url + "/ai/answer", json=ask).status_code == 403, "bot not enabled on this link"
+    preview = client.post(f"/api/v1/report-artifacts/{report.id}/public-links/preview",
+                          json={"filters_config": [], "appearance_config": {"ai_bot_enabled": True}},
+                          headers=owner.headers).json()["token"]
+    assert client.post(f"/api/v1/public/reports/{preview}/ai/answer", json=ask).status_code == 404
+    assert client.get(f"/api/v1/public/reports/{preview}").json()["appearance"]["ai_bot_enabled"] is False
+
+
+def test_the_report_bot_refuses_a_lock_override_before_admitting_the_turn(client, db, owner, report):  # noqa: F811
+    from app.models.report_artifact import ReportAnswerTurn
+
+    link = _create(client, owner, report, filters_config=[{"field": "f1", "value": ["SP"]}],
+                   appearance_config={"ai_bot_enabled": True})
+    ask = {"question": "Doanh thu?", "conversation_key": "conv-12345678", "idempotency_key": "idem-12345678",
+           "viewer_state": {"f1": ["RJ"]}}
+    r = client.post(f"/api/v1/public/reports/{link['token']}/ai/answer", json=ask)
+    assert r.status_code == 400, r.text
+    assert db.query(ReportAnswerTurn).filter(ReportAnswerTurn.link_id == link["id"]).count() == 0, "nothing admitted"
+
+
+def test_a_password_report_link_keeps_its_bot_behind_the_password(client, owner, report):  # noqa: F811
+    link = _create(client, owner, report, password="s3cret!", appearance_config={"ai_bot_enabled": True})
+    url = f"/api/v1/public/reports/{link['token']}"
+    assert client.get(url + "/ai/status").status_code == 401
+    ask = {"question": "Doanh thu?", "conversation_key": "conv-12345678", "idempotency_key": "idem-12345678"}
+    assert client.post(url + "/ai/answer", json=ask).status_code == 401
+
+
+def test_a_report_links_ai_key_is_never_stored_or_returned_in_plain_text(client, db, owner, report):  # noqa: F811
+    from app.models.report_artifact import ReportArtifactPublicLink
+
+    link = _create(client, owner, report, appearance_config={"ai_bot_enabled": True, "ai_bot_key": "test-only-not-a-real-key-1234", "ai_bot_provider": "openai"})
+    stored = db.get(ReportArtifactPublicLink, link["id"])
+    db.refresh(stored)
+    assert "ai_bot_key" not in (stored.appearance_config or {}), "the key goes to the encrypted credential store"
+    assert stored.appearance_config.get("ai_bot_credential_id"), "the link references the credential"
+    assert "ai_bot_key" not in link["appearance_config"] and link["appearance_config"]["ai_bot_key_configured"] is True
+    assert link["appearance_config"]["ai_bot_key_hint"] == "1234"
+
+
+# ── Lifecycle: the charts a report made go with it, unless something else uses them ──
+
+def test_deleting_a_report_removes_its_own_charts_and_keeps_one_a_dashboard_uses(client, db, owner):  # noqa: F811
+    from app.models.models import Chart, ChartType, Dashboard, DashboardChart
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    def chart(name):
+        c = Chart(name=name, chart_type=ChartType.KPI, config={}, owner_id=owner.id)
+        db.add(c)
+        db.flush()
+        return c
+
+    tag = uuid.uuid4().hex[:8]
+    own, shared = chart(f"RPL own {tag}"), chart(f"RPL shared {tag}")
+    dash = Dashboard(name=f"RPL dash {tag}", owner_id=owner.id)
+    db.add(dash)
+    db.flush()
+    db.add(DashboardChart(dashboard_id=dash.id, chart_id=shared.id, layout={}))
+    art = ReportArtifact(name="RPL lifecycle", owner_id=owner.id)
+    db.add(art)
+    db.flush()
+    rev = ReportArtifactRevision(artifact_id=art.id, number=1, html="<p></p>", css="", js="", filters=[],
+                                 bindings=[{"id": "b1", "chart_id": own.id, "title": "a", "kind": "kpi"},
+                                           {"id": "b2", "chart_id": shared.id, "title": "b", "kind": "kpi"}],
+                                 source="manual", content_hash="c" * 64, created_by=owner.id)
+    db.add(rev)
+    db.flush()
+    art.draft_revision_id = rev.id
+    db.commit()
+    own_id, shared_id = own.id, shared.id
+    assert client.delete(f"/api/v1/report-artifacts/{art.id}", headers=owner.headers).status_code == 204
+    db.expire_all()
+    assert db.get(Chart, own_id) is None, "the report's own chart is not left orphaned in Explore"
+    assert db.get(Chart, shared_id) is not None, "a chart a dashboard still shows is kept"
+
+
+def test_the_report_list_carries_every_report_without_a_silent_cut_off(client, owner, report):  # noqa: F811
+    rows = client.get("/api/v1/report-artifacts", headers=owner.headers).json()
+    mine = next(r for r in rows if r["id"] == report.id)
+    assert mine["user_permission"] == "full" and mine["published_number"] == 1 and "binding_count" in mine

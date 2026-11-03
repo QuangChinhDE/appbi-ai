@@ -148,6 +148,9 @@ def _detail(db: Session, art: ReportArtifact, user: User) -> Dict[str, Any]:
     out = L.summary(db, art)
     draft = L.get_revision(db, art, art.draft_revision_id)
     out["draft"] = L.revision_view(draft, with_source=True) if draft else None
+    # What a public link meets: the PUBLISHED revision's filters (the Public Modal's rows).
+    pub = L.get_revision(db, art, art.published_revision_id)
+    out["published_filters"] = B.public_filters(pub.filters or []) if pub else []
     out["user_permission"] = get_effective_permission(db, user, art, MODULE)
     if draft:
         out["warnings"] = D.validate(draft.html, draft.css, draft.js).warnings
@@ -158,17 +161,17 @@ def _detail(db: Session, art: ReportArtifact, user: User) -> Dict[str, Any]:
 
 @router.get("")
 def list_reports(db: Session = Depends(get_db), current_user: User = Depends(require_permission(MODULE, "view"))):
-    rows = db.query(ReportArtifact).order_by(ReportArtifact.updated_at.desc()).limit(500).all()
-    owners = {u.id: u.email for u in db.query(User).filter(User.id.in_({a.owner_id for a in rows if a.owner_id})).all()} if rows else {}
-    out = []
-    for a in rows:
-        level = get_effective_permission(db, current_user, a, MODULE)
-        if level == "none":
-            continue
-        # The same per-row facts the dashboard list carries, so /dashboards decides the
-        # actions on both kinds of report the same way (UX only; every action re-checks).
-        out.append({**L.summary(db, a), "user_permission": level, "owner_email": owners.get(a.owner_id)})
-    return out
+    """Every report the caller may see - no silent cut-off; the summaries are built in a
+    fixed number of queries (lifecycle.summaries), not several per report."""
+    rows = db.query(ReportArtifact).order_by(ReportArtifact.updated_at.desc()).all()
+    levels = {a.id: get_effective_permission(db, current_user, a, MODULE) for a in rows}
+    rows = [a for a in rows if levels[a.id] != "none"]
+    owner_ids = {a.owner_id for a in rows if a.owner_id}
+    owners = {u.id: u.email for u in db.query(User).filter(User.id.in_(owner_ids)).all()} if owner_ids else {}
+    # The same per-row facts the dashboard list carries, so /dashboards decides the
+    # actions on both kinds of report the same way (UX only; every action re-checks).
+    return [{**summary, "user_permission": levels[a.id], "owner_email": owners.get(a.owner_id)}
+            for a, summary in zip(rows, L.summaries(db, rows))]
 
 
 @router.post("", status_code=201)
@@ -340,9 +343,11 @@ def update_meta(artifact_id: int, body: MetaBody, db: Session = Depends(get_db),
 def delete_report(artifact_id: int, request: Request, db: Session = Depends(get_db),
                   current_user: User = Depends(require_permission(MODULE, "edit"))):
     art = _load(db, artifact_id, current_user, "full")
+    name = art.name
+    removed = L.delete(db, art)
     audit(db, AuditAction.REPORT_ARTIFACT_DELETED, request=request, user_id=current_user.id,
-          resource_type="report_artifact", resource_id=str(art.id), details={"name": art.name})
-    L.delete(db, art)
+          resource_type="report_artifact", resource_id=str(artifact_id),
+          details={"name": name, "charts_removed": removed})
     db.commit()
 
 
@@ -438,6 +443,49 @@ def publish_report(artifact_id: int, body: PublishBody, request: Request, db: Se
 # Listing is a view-level read; the token (the anonymous bearer capability) and every
 # change need FULL access — the same bar as publishing, as for dashboards.
 
+def _link_out(db: Session, link, *, with_token: bool) -> Dict[str, Any]:
+    """A link as the publisher's client receives it: never a secret. The link's own AI
+    key lives in the encrypted credential store; the link holds only its id (as on a
+    dashboard link: api/dashboards.py:_sanitize_link_for_admin)."""
+    out = PL.view(link, with_token=with_token)
+    raw = dict(out.get("appearance_config") or {})
+    raw.pop("ai_bot_key", None)
+    raw["ai_bot_key_configured"] = bool(raw.get("ai_bot_credential_id"))
+    if raw.get("ai_bot_credential_id"):
+        from app.models.ai_provider_credential import AiProviderCredential
+
+        cred = db.get(AiProviderCredential, int(raw["ai_bot_credential_id"]))
+        raw["ai_bot_key_hint"] = str(getattr(cred, "key_hint", "") or "")[-4:] if cred is not None else ""
+    out["appearance_config"] = raw
+    return out
+
+
+def _link_catalog(db: Session, art: ReportArtifact, link) -> dict:
+    """What the link's AI Bot reads (published charts, the link's locks) — built
+    exactly as a turn builds it, for the publisher guide's pickers and save check."""
+    from app.services.answer_core.published_report import PublishedReportScope
+    from app.services.answer_core.publisher_guide import catalog_payload
+    from app.services.report_code import public_bot as PB
+
+    rev = L.get_revision(db, art, art.published_revision_id)
+    if rev is None:
+        return {"charts": [], "fields": []}
+    ctx = PB.build_context(db, rev, link, {})
+    return catalog_payload(PublishedReportScope(db, ctx=ctx, link_id=PB.ledger_link_id(link.id),
+                                                turn_id=f"guide-r{link.id}"))
+
+
+def _stored_appearance(db: Session, user: User, art: ReportArtifact, incoming: Optional[dict], link=None) -> dict:
+    """The appearance to STORE: no plaintext key ever (moved to the encrypted store),
+    a credential only the saver owns, a model the key can call, a well-formed guide
+    naming only what the link's bot reads - the dashboard link's rules, reused."""
+    from app.api.dashboards import _apply_ai_credential, _with_checked_guide
+
+    out = _apply_ai_credential(db, user, dict(incoming or {}), dict(getattr(link, "appearance_config", None) or {}),
+                               getattr(link, "id", None))
+    return _with_checked_guide(out, (lambda: _link_catalog(db, art, link)) if link is not None else None)
+
+
 def _can_publish(db: Session, user: User, art: ReportArtifact) -> bool:
     from app.core.dependencies import get_effective_permission
 
@@ -449,7 +497,7 @@ def list_public_links(artifact_id: int, db: Session = Depends(get_db),
                       current_user: User = Depends(require_permission(MODULE, "view"))):
     art = _load(db, artifact_id, current_user)
     publisher = _can_publish(db, current_user, art)
-    return [PL.view(link, with_token=publisher) for link in PL.list_links(db, art)]
+    return [_link_out(db, link, with_token=publisher) for link in PL.list_links(db, art)]
 
 
 @router.post("/{artifact_id}/public-links", status_code=status.HTTP_201_CREATED)
@@ -458,7 +506,8 @@ def create_public_link(artifact_id: int, body: PublicLinkCreate, request: Reques
     art = _load(db, artifact_id, current_user, "full")
     try:
         link = PL.create(db, art, name=body.name, filters_config=body.filters_config,
-                         appearance_config=body.appearance_config, password=body.password,
+                         appearance_config=_stored_appearance(db, current_user, art, body.appearance_config),
+                         password=body.password,
                          expires_at=body.expires_at, user_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -466,7 +515,7 @@ def create_public_link(artifact_id: int, body: PublicLinkCreate, request: Reques
           resource_type="report_artifact", resource_id=str(art.id), details={"link": link.id, "name": link.name})
     db.commit()
     db.refresh(link)
-    return PL.view(link, with_token=True)
+    return _link_out(db, link, with_token=True)
 
 
 @router.post("/{artifact_id}/public-links/preview")
@@ -474,7 +523,9 @@ def preview_public_link(artifact_id: int, body: PublicLinkPreviewRequest, db: Se
                         current_user: User = Depends(require_permission(MODULE, "edit"))):
     art = _load(db, artifact_id, current_user, "edit")
     try:
-        token, expires_at = PL.make_preview(db, art, body.filters_config, body.appearance_config)
+        # a preview shows the report; it never opens (or spends) the AI bot nor carries a key
+        appearance = {k: v for k, v in dict(body.appearance_config or {}).items() if not str(k).startswith("ai_bot")}
+        token, expires_at = PL.make_preview(db, art, body.filters_config, appearance)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"token": token, "expires_at": expires_at}
@@ -488,6 +539,8 @@ def update_public_link(artifact_id: int, link_id: int, body: PublicLinkUpdate, r
     if link is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
     fields = {k: getattr(body, k) for k in body.model_fields_set}
+    if fields.get("appearance_config") is not None:
+        fields["appearance_config"] = _stored_appearance(db, current_user, art, fields["appearance_config"], link)
     try:
         PL.update(db, art, link, fields)
     except ValueError as exc:
@@ -498,7 +551,31 @@ def update_public_link(artifact_id: int, link_id: int, body: PublicLinkUpdate, r
                    "password_changed": "password" in fields})
     db.commit()
     db.refresh(link)
-    return PL.view(link, with_token=True)
+    return _link_out(db, link, with_token=True)
+
+
+@router.get("/{artifact_id}/public-links/{link_id}/ai-status")
+def public_link_ai_status(artifact_id: int, link_id: int, db: Session = Depends(get_db),
+                          current_user: User = Depends(require_permission(MODULE, "edit"))):
+    """Is the model ready for this link's AI Bot? Never a key, never a credential secret."""
+    from app.services.ai_runtime import gateway
+
+    art = _load(db, artifact_id, current_user, "full")
+    link = PL.get_link(db, art, link_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
+    return {**gateway.readiness(db, dict(link.appearance_config or {})), "models": gateway.answer_models()}
+
+
+@router.get("/{artifact_id}/public-links/{link_id}/ai/catalog")
+def public_link_ai_catalog(artifact_id: int, link_id: int, db: Session = Depends(get_db),
+                           current_user: User = Depends(require_permission(MODULE, "edit"))):
+    """What the link's AI Bot can read, for the publisher guide's pickers."""
+    art = _load(db, artifact_id, current_user, "full")
+    link = PL.get_link(db, art, link_id)
+    if link is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
+    return _link_catalog(db, art, link)
 
 
 @router.delete("/{artifact_id}/public-links/{link_id}")

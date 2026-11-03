@@ -290,6 +290,8 @@ def replace_region(text: str, region_id: str, new_markup: str) -> str:
 
 _STYLE_RX = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.I | re.S)
 _SCRIPT_RX = re.compile(r"<script\b([^>]*)>(.*?)</script\s*>", re.I | re.S)
+_JS_TYPES = {"text/javascript", "application/javascript", "application/ecmascript", "text/ecmascript",
+             "module", "text/jscript", "application/x-javascript"}
 _BODY_RX = re.compile(r"<body\b[^>]*>(.*)</body\s*>", re.I | re.S)
 
 
@@ -305,7 +307,14 @@ def split_document(raw: str) -> Tuple[str, str, str, List[str]]:
             src = re.search(r"src\s*=\s*['\"]?([^'\"\s>]+)", attrs, re.I)
             warnings.append(f"External script {src.group(1)[:80] if src else ''} was not imported — reports cannot load scripts from outside.")
             continue
-        if re.search(r"type\s*=\s*['\"]?(application/json|text/template|module)", attrs, re.I) and "module" not in attrs.lower():
+        # A browser runs a <script> only without a type or with a JavaScript MIME type;
+        # anything else (application/json, an import manifest like
+        # application/appbi-dashboard, a template) is an inert DATA block. Treating it as
+        # code put a JSON object into the JS file: a syntax error the editor flagged
+        # and the runtime reported, on a report that runs fine as written.
+        tm = re.search(r"\btype\s*=\s*['\"]?([^'\"\s>]+)", attrs, re.I)
+        if tm and tm.group(1).lower() not in _JS_TYPES:
+            warnings.append(f"A <script type=\"{tm.group(1)[:60]}\"> data block was not imported as JavaScript.")
             continue
         if body.strip():
             js_parts.append(body.strip())
@@ -430,6 +439,8 @@ main{min-width:0}
 body.rac-select [data-rac-region]{cursor:crosshair}
 body.rac-select [data-rac-region]:hover{outline:2px dashed var(--rac-accent);outline-offset:2px}
 [data-rac-region].rac-selected{outline:2px solid var(--rac-accent)!important;outline-offset:2px}
+body.rac-prov [data-rac-value],body.rac-prov [data-rac-viz]{outline:2px solid rgba(16,185,129,.85)!important;outline-offset:2px}
+body.rac-prov .rac-static{outline:2px dashed rgba(245,158,11,.95)!important;outline-offset:2px;background:rgba(245,158,11,.08)}
 """
 
 

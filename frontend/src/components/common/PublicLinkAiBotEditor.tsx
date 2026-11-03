@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Bot, Workflow } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { AiModelProvider, PublicLinkAppearanceConfig } from '@/types/api';
+import type { AiModelProvider, PublicLinkAiCatalog, PublicLinkAppearanceConfig } from '@/types/api';
 import { Input } from '@/components/ui/Input';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { AiModelKeyPicker } from '@/components/common/AiModelKeyPicker';
@@ -32,6 +32,11 @@ interface PublicLinkAiBotEditorProps {
   /** Passed straight to the flow editor so the modal's own Save can write a flow
    *  the author picked here (see `FlowBindingEditorProps.registerFlush`). */
   registerBindingFlush?: (flush: BindingFlush | null) => void;
+  /** A report link reads its own readiness and catalog; absent = the dashboard's. */
+  aiStatusOf?: (linkId: number) => Promise<Readiness>;
+  aiCatalogOf?: (linkId: number) => Promise<PublicLinkAiCatalog>;
+  /** The Agent Flow add-on is a dashboard-link binding; a report link has none. */
+  allowFlow?: boolean;
 }
 
 type Readiness = { ready: boolean; provider: string | null; model: string | null;
@@ -43,7 +48,7 @@ function asPositive(raw: string): number | null {
 }
 
 export function PublicLinkAiBotEditor({
-  value, onChange, dashboardId, linkId, registerBindingFlush,
+  value, onChange, dashboardId, linkId, registerBindingFlush, aiStatusOf, aiCatalogOf, allowFlow = true,
 }: PublicLinkAiBotEditorProps) {
   const enabled = value.ai_bot_enabled === true;
   const [readiness, setReadiness] = useState<Readiness | null>(null);
@@ -61,7 +66,7 @@ export function PublicLinkAiBotEditor({
   useEffect(() => {
     if (!enabled || !linkId) return undefined;
     let stale = false;
-    dashboardApi.getPublicLinkAiStatus(dashboardId, linkId)
+    (aiStatusOf ? aiStatusOf(linkId) : dashboardApi.getPublicLinkAiStatus(dashboardId, linkId))
       .then((r) => { if (!stale) setReadiness(r); })
       .catch(() => { if (!stale) setReadiness(null); });
     return () => { stale = true; };
@@ -162,6 +167,7 @@ export function PublicLinkAiBotEditor({
                 onChange={(guide) => patch('ai_bot_guide', guide)}
                 dashboardId={dashboardId}
                 linkId={linkId}
+                catalogOf={aiCatalogOf}
               />
             </div>
 
@@ -209,7 +215,7 @@ export function PublicLinkAiBotEditor({
               </label>
             </div>
 
-            <div>
+            {allowFlow && <div>
               <label className="mb-1 flex items-center gap-1.5 text-tiny font-strong text-text-secondary">
                 <Workflow className="h-3.5 w-3.5 text-brand" />
                 Agent Flow hỗ trợ (tuỳ chọn)
@@ -219,7 +225,7 @@ export function PublicLinkAiBotEditor({
                 câu hỏi cần; luồng không trả lời thay trợ lý và không đọc số liệu.
               </p>
               <FlowBindingEditor linkId={linkId} registerFlush={registerBindingFlush} />
-            </div>
+            </div>}
           </div>
         )}
       </div>

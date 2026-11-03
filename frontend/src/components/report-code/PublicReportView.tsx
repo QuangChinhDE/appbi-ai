@@ -14,8 +14,9 @@ import { useParams } from 'next/navigation';
 import { Lock } from 'lucide-react';
 
 import { PasswordGate } from '@/components/common/PublicPasswordGate';
+import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
 import { ReportFrame } from '@/components/report-code/ReportFrame';
-import { clearPublicSession, publicReportApi, savePublicSession, type PublicReportMeta } from '@/lib/api/public';
+import { clearPublicSession, getPublicSession, publicReportApi, savePublicSession, type PublicReportMeta } from '@/lib/api/public';
 import type { FilterState } from '@/lib/report-code/protocol';
 
 type Gate = { kind: 'password'; reauth: boolean } | { kind: 'error'; message: string } | null;
@@ -28,6 +29,8 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
   const [authError, setAuthError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The viewer's filter choices in the report: the AI Bot reads the same filtered report.
+  const [viewerState, setViewerState] = useState<FilterState>({});
 
   useEffect(() => {
     let alive = true;
@@ -92,8 +95,18 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
   }
   const sep = meta.document_url.includes('?') ? '&' : '?';
   const locked = meta.locked_filters || [];
+  // The link's Appearance: a slim header with its title and logo, when the publisher set one.
+  const headline = typeof meta.appearance?.headline === 'string' ? meta.appearance.headline.trim() : '';
+  const logo = typeof meta.appearance?.logo_url === 'string' && /^(data:image\/|https:\/\/)/.test(meta.appearance.logo_url)
+    ? meta.appearance.logo_url : '';
   return (
     <div className="flex h-screen flex-col bg-white" data-testid="public-report" data-report-version={meta.version}>
+      {(headline || logo) && (
+        <div className="flex items-center gap-2.5 border-b border-slate-200 bg-white px-4 py-2" data-testid="public-report-header">
+          {logo && <img src={logo} alt="" className="h-7 w-auto max-w-[140px] object-contain" />}
+          {headline && <h1 className="truncate text-sm font-semibold text-slate-900">{headline}</h1>}
+        </div>
+      )}
       {locked.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-slate-50 px-4 py-1.5 text-[11px] text-slate-600" data-testid="public-report-locked">
           <Lock className="h-3 w-3 text-slate-400" />
@@ -113,8 +126,19 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
         fetchValues={fetchValues}
         mode="view"
         title={meta.name}
+        onStateChange={(st) => setViewerState({ ...st })}
         className="min-h-0 flex-1"
       />
+      {meta.appearance?.ai_bot_enabled === true && (
+        <DashboardAiBot
+          surface="reports"
+          token={token}
+          sessionToken={getPublicSession(token)}
+          dashboardName={headline || meta.name}
+          viewerState={viewerState as Record<string, unknown>}
+          chartTitles={meta.bindings.map((b) => b.title).filter(Boolean)}
+        />
+      )}
       {variant === 'public' && (
         <div className="flex items-center justify-between border-t border-slate-200 bg-white px-4 py-1.5 text-[11px] text-slate-400">
           <span>{meta.preview ? 'Xem trước liên kết · ' : ''}Phiên bản {meta.version}{meta.published_at ? ` · xuất bản ${new Date(meta.published_at).toLocaleString('vi-VN')}` : ''}</span>

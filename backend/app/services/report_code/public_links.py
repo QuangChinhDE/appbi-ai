@@ -85,9 +85,17 @@ def normalize_config(decl: List[Dict[str, Any]], config: Any) -> List[Dict[str, 
     return out
 
 
-def scope(decl: List[Dict[str, Any]], config: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
+def viewer_filters_allowed(appearance: Any) -> bool:
+    """The link's "Allow viewer filters" switch (on unless the publisher turned it off)."""
+    return not (isinstance(appearance, dict) and appearance.get("allow_viewer_filters") is False)
+
+
+def scope(decl: List[Dict[str, Any]], config: Any, appearance: Any = None
+          ) -> Tuple[List[Dict[str, Any]], Dict[str, Any], List[Dict[str, Any]]]:
     """(filters the viewer may set, locked state, visible locks for the banner).
 
+    With "Allow viewer filters" off the viewer may set none; locks apply either way.
+    With "Show locked-filter banner" off the banner is empty; locks apply either way.
     Raises LinkRefused when the config names a filter the revision does not declare."""
     by_key = {f["key"]: f for f in decl}
     locked: Dict[str, Any] = {}
@@ -115,14 +123,17 @@ def scope(decl: List[Dict[str, Any]], config: Any) -> Tuple[List[Dict[str, Any]]
         locked[key] = clean
         if not entry.get("hidden"):
             banner.append({"key": key, "label": f["label"], "kind": f["kind"], "value": clean})
-    viewer = [f for f in decl if f["key"] not in removed]
+    viewer = [f for f in decl if f["key"] not in removed] if viewer_filters_allowed(appearance) else []
+    if isinstance(appearance, dict) and appearance.get("show_filter_banner") is False:
+        banner = []
     return viewer, locked, banner
 
 
-def effective_state(decl: List[Dict[str, Any]], config: Any, viewer_state: Any) -> Dict[str, Any]:
+def effective_state(decl: List[Dict[str, Any]], config: Any, viewer_state: Any,
+                    appearance: Any = None) -> Dict[str, Any]:
     """The state the engine runs with: the viewer's choice on the filters they may set,
-    then every lock on top. A viewer naming a locked or hidden filter is refused."""
-    viewer, locked, _ = scope(decl, config)
+    then every lock on top. A viewer naming a locked, hidden or switched-off filter is refused."""
+    viewer, locked, _ = scope(decl, config, appearance)
     state = B.clean_state(viewer, viewer_state)  # ValueError for any key outside `viewer`
     state.update(locked)
     return state
@@ -350,3 +361,83 @@ def resolve_any(db: Session, token: str, session_token: Optional[str], *, track:
         scope(rev.filters or [], link.filters_config)
         return art, rev, link
     return resolve(db, token, session_token, track=track)
+
+
+# ── The document grant of a password-protected link ──────────────────────────
+# The report frame cannot send the X-Public-Session header, and the reusable session
+# must never sit in a URL the report's own code can read (location.href). The frame
+# gets a separate grant instead: signed, 5 minutes, bound to ONE link at ONE security
+# generation and ONE published revision, and good for nothing but that revision's
+# document — code the viewer is already running. It does not open /data, /values,
+# /auth or the report meta; those still need the session header.
+DOC_GRANT_TTL_S = 300
+
+
+def _doc_key() -> bytes:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    from app.core.config import settings
+
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
+                info=b"appbi/report-link-document-grant/v1").derive(settings.SECRET_KEY.encode())
+
+
+def make_doc_grant(link: ReportArtifactPublicLink, revision_id: int, now: Optional[float] = None) -> str:
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time as _time
+
+    body = json.dumps({"l": link.id, "av": int(link.auth_version or 0), "r": int(revision_id),
+                       "e": int((now or _time.time()) + DOC_GRANT_TTL_S)}, separators=(",", ":")).encode()
+    b = base64.urlsafe_b64encode(body).decode().rstrip("=")
+    sig = base64.urlsafe_b64encode(hmac.new(_doc_key(), b.encode(), hashlib.sha256).digest()).decode().rstrip("=")
+    return f"{b}.{sig}"
+
+
+def doc_grant_ok(grant: Optional[str], link: ReportArtifactPublicLink, revision_id: int,
+                 now: Optional[float] = None) -> bool:
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time as _time
+
+    try:
+        b, sig = (grant or "").split(".", 1)
+        want = base64.urlsafe_b64encode(hmac.new(_doc_key(), b.encode(), hashlib.sha256).digest()).decode().rstrip("=")
+        if not hmac.compare_digest(want, sig):
+            return False
+        d = json.loads(base64.urlsafe_b64decode(b + "=" * (-len(b) % 4)))
+        return (int(d["e"]) >= (now or _time.time()) and d.get("l") == link.id
+                and d.get("av") == int(link.auth_version or 0) and d.get("r") == int(revision_id))
+    except Exception:  # noqa: BLE001 - any malformed grant is simply refused
+        return False
+
+
+def resolve_document(db: Session, token: str, grant: Optional[str]):
+    """The published document behind a link, for the frame: a password link needs the
+    document grant (never the session); everything else exactly as `resolve_any`."""
+    if token and token.startswith(PREVIEW_PREFIX):
+        return resolve_any(db, token, None, track=False)
+    try:
+        return resolve(db, token, None, track=False)
+    except PasswordRequired:
+        pass
+    # a password link: the same checks, then the grant in place of the session
+    from app.services.report_code import lifecycle as L
+
+    link = db.query(ReportArtifactPublicLink).filter(
+        ReportArtifactPublicLink.token == token, ReportArtifactPublicLink.is_active.is_(True)).first()
+    art = db.query(ReportArtifact).filter(ReportArtifact.id == link.artifact_id).first() if link else None
+    if link is None or art is None or not art.published_revision_id:
+        raise LinkRefused()
+    if not doc_grant_ok(grant, link, art.published_revision_id):
+        raise PasswordRequired()
+    rev = L.get_revision(db, art, art.published_revision_id)
+    if rev is None:
+        raise LinkRefused()
+    scope(rev.filters or [], link.filters_config)
+    return art, rev, link

@@ -100,14 +100,62 @@ def restore(db: Session, artifact: ReportArtifact, *, revision_id: int, user_id)
     return rev
 
 
-def delete(db: Session, artifact: ReportArtifact) -> None:
+def delete(db: Session, artifact: ReportArtifact) -> int:
+    """Delete the report, its revisions and links (FK cascade), and the charts it made.
+
+    Every binding chart was created FOR the report (bindings.bind_candidates is the only
+    way a binding gets a chart), so deleting the report would otherwise orphan them in
+    Explore. A chart is kept when anything else still uses it: a dashboard tile, or a
+    revision of another report. Returns how many charts were removed."""
+    from app.models.models import Chart, DashboardChart
+
+    chart_ids = set()
+    for (bindings,) in db.query(ReportArtifactRevision.bindings).filter(
+            ReportArtifactRevision.artifact_id == artifact.id).all():
+        for b in bindings or []:
+            if isinstance(b, dict) and isinstance(b.get("chart_id"), int):
+                chart_ids.add(b["chart_id"])
     artifact.draft_revision_id = None
     artifact.published_revision_id = None
     db.flush()
     db.delete(artifact)
+    db.flush()  # revisions and links go with it (ON DELETE CASCADE)
+    removed = 0
+    for cid in sorted(chart_ids):
+        if db.query(DashboardChart.id).filter(DashboardChart.chart_id == cid).first():
+            continue
+        if db.query(ReportArtifactRevision.id).filter(
+                ReportArtifactRevision.bindings.contains([{"chart_id": cid}])).first():
+            continue
+        chart = db.get(Chart, cid)
+        if chart is not None:
+            db.delete(chart)
+            removed += 1
+    return removed
 
 
 # ── Serialization ─────────────────────────────────────────────────────────────
+
+def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
+    """`summary` for many reports in three queries (revisions, link counts), not 3 per row."""
+    from sqlalchemy import func as _f
+
+    from app.models.report_artifact import ReportArtifactPublicLink
+
+    if not arts:
+        return []
+    rev_ids = {i for a in arts for i in (a.draft_revision_id, a.published_revision_id) if i}
+    revs = {r.id: r for r in db.query(ReportArtifactRevision.id, ReportArtifactRevision.number,
+                                      ReportArtifactRevision.content_hash,
+                                      _f.jsonb_array_length(ReportArtifactRevision.bindings).label("binding_count"))
+            .filter(ReportArtifactRevision.id.in_(rev_ids)).all()} if rev_ids else {}
+    links = dict(db.query(ReportArtifactPublicLink.artifact_id, _f.count(ReportArtifactPublicLink.id))
+                 .filter(ReportArtifactPublicLink.artifact_id.in_([a.id for a in arts]),
+                         ReportArtifactPublicLink.is_active.is_(True))
+                 .group_by(ReportArtifactPublicLink.artifact_id).all())
+    return [_summary(a, revs.get(a.draft_revision_id), revs.get(a.published_revision_id), int(links.get(a.id, 0)))
+            for a in arts]
+
 
 def _active_links(db: Session, art: ReportArtifact) -> int:
     from app.models.report_artifact import ReportArtifactPublicLink
@@ -117,16 +165,22 @@ def _active_links(db: Session, art: ReportArtifact) -> int:
 
 
 def summary(db: Session, art: ReportArtifact) -> Dict[str, Any]:
-    draft = get_revision(db, art, art.draft_revision_id)
-    pub = get_revision(db, art, art.published_revision_id)
+    return _summary(art, get_revision(db, art, art.draft_revision_id),
+                    get_revision(db, art, art.published_revision_id), _active_links(db, art))
+
+
+def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, Any]:
     return {
         "id": art.id, "name": art.name, "description": art.description, "dataset_id": art.dataset_id,
         "owner_id": str(art.owner_id) if art.owner_id else None,
         "draft_number": draft.number if draft else None, "published_number": pub.number if pub else None,
+        # what the report holds: the data sources (bindings) of its draft
+        "binding_count": (getattr(draft, "binding_count", None) if not hasattr(draft, "bindings")
+                          else len(draft.bindings or [])) if draft else 0,
         "has_unpublished_changes": bool(draft and (not pub or draft.content_hash != pub.content_hash)),
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.
-        "public_enabled": _active_links(db, art) > 0, "public_link_count": _active_links(db, art),
+        "public_enabled": active_links > 0, "public_link_count": active_links,
         "job": job_view(art), "updated_at": art.updated_at.isoformat() if art.updated_at else None,
         "last_published_at": art.last_published_at.isoformat() if art.last_published_at else None,
     }

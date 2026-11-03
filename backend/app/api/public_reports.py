@@ -88,12 +88,16 @@ def public_auth(token: str, body: PublicPasswordBody, request: Request, db: Sess
 def public_report(token: str, request: Request, db: Session = Depends(get_db),
                   x_public_session: Optional[str] = Header(default=None)):
     art, rev, link = _live(db, token, x_public_session, track=True)
-    viewer, _, banner = PL.scope(rev.filters or [], link.filters_config)
+    viewer, _, banner = PL.scope(rev.filters or [], link.filters_config, link.appearance_config)
     path = f"/public/reports/{token}/document"
-    if link.password_hash and x_public_session:
-        path += "?s=" + x_public_session  # the frame cannot send a header; the session is the same grant
+    if link.password_hash:
+        # Never the session: the report's own code can read its URL. A document grant
+        # opens this revision's code only (services/report_code/public_links.py).
+        path += "?g=" + PL.make_doc_grant(link, rev.id)
     doc, isolated = L.document_url(path)
     appearance = {k: v for k, v in (link.appearance_config or {}).items() if not str(k).startswith("ai_bot")}
+    appearance["ai_bot_enabled"] = bool((link.appearance_config or {}).get("ai_bot_enabled")) \
+        and not getattr(link, "is_preview", False)
     return {"name": art.name, "link_name": link.name, "version": rev.number,
             "published_at": art.last_published_at.isoformat() if art.last_published_at else None,
             "bindings": B.public_bindings(rev.bindings or []), "filters": B.public_filters(viewer),
@@ -111,8 +115,15 @@ def _document(art, rev, frame_ancestors: str) -> HTMLResponse:
 
 @router.get("/{token}/document", response_class=HTMLResponse)
 @_limiter.limit("120/minute")
-def public_document(token: str, request: Request, s: Optional[str] = None, db: Session = Depends(get_db)):
-    art, rev, _ = _live(db, token, s)
+def public_document(token: str, request: Request, g: Optional[str] = None, db: Session = Depends(get_db)):
+    try:
+        art, rev, _ = PL.resolve_document(db, token, g)
+    except PL.LinkRefused:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    except PL.LinkExpired:
+        raise HTTPException(status_code=410, detail="Liên kết đã hết hạn.")
+    except PL.PasswordRequired:
+        raise HTTPException(status_code=401, detail="Liên kết này cần mật khẩu.")
     # The document holds code, never data (data only arrives over the host's
     # MessagePort), so it may sit under any page that embeds the /embed host.
     return _document(art, rev, "*")
@@ -169,7 +180,7 @@ def public_data(token: str, body: PublicDataBody, request: Request, db: Session 
     if binding is None:
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     try:
-        state = PL.effective_state(rev.filters or [], link.filters_config, body.state)
+        state = PL.effective_state(rev.filters or [], link.filters_config, body.state, link.appearance_config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return B.mint_dto(db, binding, rev.filters or [], state, public=True)
@@ -181,10 +192,184 @@ def public_values(token: str, body: PublicValuesBody, request: Request, db: Sess
                   x_public_session: Optional[str] = Header(default=None)):
     art, rev, link = _live(db, token, x_public_session)
     try:
-        viewer, _, _ = PL.scope(rev.filters or [], link.filters_config)
+        viewer, _, _ = PL.scope(rev.filters or [], link.filters_config, link.appearance_config)
         if body.key not in {f["key"] for f in viewer}:
             raise ValueError("Bộ lọc không có trong báo cáo.")  # a locked or hidden filter has no value list
-        state = PL.effective_state(rev.filters or [], link.filters_config, body.state)
+        state = PL.effective_state(rev.filters or [], link.filters_config, body.state, link.appearance_config)
         return {"values": B.filter_values(db, rev.filters or [], state, body.key, body.search)}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+# ── AI Bot (viewer-facing): the dashboard bot's Answer Core on a report link ──────
+# Distinct from the Studio's AI (which writes report code for an author): this one
+# answers a VIEWER, only from what the link serves (services/report_code/public_bot.py).
+
+class PublicAnswerBody(BaseModel):
+    question: str = Field(..., max_length=4000)
+    conversation_key: str = Field(..., max_length=64)
+    idempotency_key: str = Field(..., max_length=64)
+    #: the viewer's filter choices on the report, as the frame holds them ({key: value})
+    viewer_state: Dict[str, Any] = Field(default_factory=dict)
+    follow_up: bool = True
+    choice_token: Optional[str] = Field(None, max_length=200)
+
+
+class PublicTurnRef(BaseModel):
+    conversation_key: str = Field(..., max_length=64)
+
+
+class PublicRating(BaseModel):
+    conversation_key: str = Field(..., max_length=64)
+    rating: str = Field(..., max_length=8)
+
+
+def _bot_link(db: Session, token: str, session: Optional[str]):
+    from app.services.report_code import public_bot as PB
+
+    if token.startswith(PL.PREVIEW_PREFIX):
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)  # a preview never opens (or spends) the bot
+    art, rev, link = _live(db, token, session)
+    if not PB.bot_enabled(link.appearance_config):
+        raise HTTPException(status_code=403, detail="Trợ lý AI chưa được bật cho liên kết này.")
+    return art, rev, link
+
+
+@router.get("/{token}/ai/status")
+@_limiter.limit("60/minute")
+def public_ai_status(token: str, request: Request, db: Session = Depends(get_db),
+                     x_public_session: Optional[str] = Header(default=None)):
+    """Is the report's AI Bot ready to answer? No key, no credential id, no budget figure."""
+    from app.services.ai_runtime import gateway
+    from app.services.report_code import public_bot as PB
+
+    if token.startswith(PL.PREVIEW_PREFIX):
+        return {"enabled": False, "ready": False}
+    _, _, link = _live(db, token, x_public_session)
+    enabled = PB.bot_enabled(link.appearance_config)
+    ready = enabled and bool(gateway.readiness(db, link.appearance_config).get("ready"))
+    return {"enabled": enabled, "ready": ready}
+
+
+@router.post("/{token}/ai/answer")
+@_limiter.limit("20/minute")
+async def public_ai_answer(token: str, body: PublicAnswerBody, request: Request, db: Session = Depends(get_db),
+                           x_public_session: Optional[str] = Header(default=None)):
+    """Ask the report's AI Bot. Streams `chat.v1` events (accepted, status, final, done),
+    the same stream the dashboard bot sends; the link's budget decides what is spent."""
+    import asyncio
+    import json as _json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.models.report_artifact import ReportAnswerTurn
+    from app.services.answer_core import public_turn
+    from app.services.report_code import public_bot as PB
+
+    _, rev, link = _bot_link(db, token, x_public_session)
+    try:  # the viewer's choices are checked before anything is admitted or spent
+        PL.effective_state(rev.filters or [], link.filters_config, body.viewer_state, link.appearance_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    req = public_turn.PublicTurnRequest(
+        question=body.question, conversation_key=body.conversation_key, idempotency_key=body.idempotency_key,
+        follow_up=bool(body.follow_up), choice_token=body.choice_token, extension="never")
+    try:
+        turn, replayed = public_turn.begin(db, link_id=link.id, token=token, appearance=link.appearance_config or {},
+                                           req=req, T=ReportAnswerTurn)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+    turn_id, link_id = turn.turn_id, link.id
+    resolve = PB.resolver(token, x_public_session, body.viewer_state)
+
+    def frame(ev: dict) -> str:
+        return "data: " + _json.dumps(ev, ensure_ascii=False, default=str) + "\n\n"
+
+    async def stream():
+        yield frame({"type": "accepted", "turn_id": turn_id, "replayed": replayed})
+        if replayed:
+            from app.core.database import SessionLocal
+
+            for _ in range(240):
+                s = SessionLocal()
+                try:
+                    view = public_turn.view(s, link_id=link_id, turn_id=turn_id,
+                                            conversation_key=req.conversation_key, T=ReportAnswerTurn)
+                finally:
+                    s.close()
+                if view["status"] != "running":
+                    yield frame({"type": "final", "turn_id": turn_id, "envelope": view["envelope"]})
+                    break
+                await asyncio.sleep(1.0)
+            yield frame({"type": "done"})
+            return
+        queue: asyncio.Queue = asyncio.Queue()
+        task = asyncio.ensure_future(public_turn.run(
+            link_id=link_id, token=token, turn_id=turn_id, req=req, resolve=resolve, emit=queue.put_nowait,
+            T=ReportAnswerTurn, ledger_link_id=PB.ledger_link_id(link_id)))
+        while True:
+            getter = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait({getter, task}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield frame(getter.result())
+                continue
+            getter.cancel()
+            while not queue.empty():
+                yield frame(queue.get_nowait())
+            break
+        try:
+            envelope = task.result()
+        except Exception:  # noqa: BLE001 - never an answer
+            envelope = {"v": "chat.v1", "status": "failed", "code": "internal_error",
+                        "message": "Có lỗi khi xử lý câu hỏi; hãy thử lại.", "data": None, "supporting": None,
+                        "notices": []}
+        yield frame({"type": "final", "turn_id": turn_id, "envelope": envelope})
+        yield frame({"type": "done"})
+
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"})
+
+
+@router.post("/{token}/ai/answer/{turn_id}/cancel")
+@_limiter.limit("30/minute")
+def public_ai_cancel(token: str, turn_id: str, body: PublicTurnRef, request: Request, db: Session = Depends(get_db),
+                     x_public_session: Optional[str] = Header(default=None)):
+    from app.models.report_artifact import ReportAnswerTurn
+    from app.services.answer_core import public_turn
+
+    _, _, link = _bot_link(db, token, x_public_session)
+    try:
+        return public_turn.cancel(db, link_id=link.id, turn_id=turn_id, conversation_key=body.conversation_key,
+                                  T=ReportAnswerTurn)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+
+
+@router.post("/{token}/ai/answer/{turn_id}/rating")
+@_limiter.limit("30/minute")
+def public_ai_rating(token: str, turn_id: str, body: PublicRating, request: Request, db: Session = Depends(get_db),
+                     x_public_session: Optional[str] = Header(default=None)):
+    from app.models.report_artifact import ReportAnswerTurn
+    from app.services.answer_core import public_turn
+
+    _, _, link = _bot_link(db, token, x_public_session)
+    try:
+        return public_turn.rate(db, link_id=link.id, turn_id=turn_id, conversation_key=body.conversation_key,
+                                rating=body.rating, T=ReportAnswerTurn)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)
+
+
+@router.get("/{token}/ai/answer/{turn_id}")
+@_limiter.limit("60/minute")
+def public_ai_turn(token: str, turn_id: str, conversation_key: str, request: Request, db: Session = Depends(get_db),
+                   x_public_session: Optional[str] = Header(default=None)):
+    from app.models.report_artifact import ReportAnswerTurn
+    from app.services.answer_core import public_turn
+
+    _, _, link = _bot_link(db, token, x_public_session)
+    try:
+        return public_turn.view(db, link_id=link.id, turn_id=turn_id, conversation_key=conversation_key,
+                                T=ReportAnswerTurn)
+    except public_turn.TurnRejected as rejected:
+        raise HTTPException(status_code=rejected.status_code, detail=rejected.detail)

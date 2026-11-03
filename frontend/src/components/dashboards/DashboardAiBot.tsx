@@ -29,6 +29,7 @@ import {
   PublicAnswerRejected,
   ratePublicAnswer,
   type PublicAnswerEnvelope,
+  type PublicBotSurface,
 } from '@/lib/api/public';
 import { applyReaderRating, revertReaderRating, type ReaderRating } from '@/lib/readerRating';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -46,6 +47,10 @@ interface Props {
   /** Brings a chart of the report into view (its page, its tile): a source chip under an
    *  answer opens the chart it was read from. Absent: the chips are plain labels. */
   onShowChart?: (chartName: string) => void;
+  /** Which public surface answers (default: a dashboard link). */
+  surface?: PublicBotSurface;
+  /** A report link: the viewer's current filter choices on the report. */
+  viewerState?: Record<string, unknown>;
 }
 
 /** The report's "show this chart" action, for the source chips of every answer. */
@@ -99,7 +104,9 @@ function fmt(v: unknown, locale: string): string {
   return String(v);
 }
 
-export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilters, pageId, chartTitles, onShowChart }: Props) {
+export function DashboardAiBot({
+  token, sessionToken, dashboardName, viewerFilters, pageId, chartTitles, onShowChart, surface = 'dashboards', viewerState,
+}: Props) {
   const { t, locale } = useI18n();
   const convStorage = `appbi.aiAnswer.conv.${token}`;
   const msgStorage = `appbi.aiAnswer.msgs.${token}`;
@@ -131,7 +138,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
     if (!open) return undefined;
     inputRef.current?.focus();
     let stale = false;
-    getPublicAiStatus(token, sessionToken)
+    getPublicAiStatus(token, sessionToken, surface)
       .then((s) => { if (!stale) setReady(Boolean(s.enabled && s.ready)); })
       .catch(() => { if (!stale) setReady(false); });
     return () => { stale = true; };
@@ -151,7 +158,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
     const tick = async () => {
       if (stop) return;
       try {
-        const turn = await getPublicAnswerTurn(token, orphan.turnId as string, conversationKey, sessionToken);
+        const turn = await getPublicAnswerTurn(token, orphan.turnId as string, conversationKey, sessionToken, surface);
         if (turn.status !== 'running') {
           patch(orphan.id, (ex) => ({ ...ex, running: false, envelope: turn.envelope }));
           return;
@@ -169,7 +176,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
 
   const stopTurn = useCallback(async (turnId: string, abort: AbortController) => {
     try {
-      const r = await cancelPublicAnswer(token, turnId, conversationKey, sessionToken);
+      const r = await cancelPublicAnswer(token, turnId, conversationKey, sessionToken, surface);
       if (r.cancelled) abort.abort();
     } catch {
       /* the stream ends with whatever the server decided */
@@ -191,9 +198,10 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
         idempotency_key: newKey(),
         page_id: pageId ?? null,
         viewer_filters: Array.isArray(viewerFilters) ? viewerFilters : [],
+        ...(surface === 'reports' ? { viewer_state: viewerState ?? {} } : {}),
         follow_up: true,
         choice_token: choiceToken ?? null,
-      }, sessionToken, abort.signal)) {
+      }, sessionToken, abort.signal, surface)) {
         if (ev.type === 'accepted') {
           const stopRequested = live.current?.stopRequested;
           live.current = { abort, turnId: ev.turn_id };
@@ -221,7 +229,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
     } finally {
       live.current = null;
     }
-  }, [busy, conversationKey, pageId, patch, sessionToken, stopTurn, t, token, viewerFilters]);
+  }, [busy, conversationKey, pageId, patch, sessionToken, stopTurn, t, token, viewerFilters, surface, viewerState]);
 
   const stop = useCallback(() => {
     const cur = live.current;
@@ -238,7 +246,7 @@ export function DashboardAiBot({ token, sessionToken, dashboardName, viewerFilte
     const previous = ex.rating;
     setHistory((h) => applyReaderRating(h, index, clicked));
     try {
-      await ratePublicAnswer(token, ex.turnId, conversationKey, clicked, sessionToken);
+      await ratePublicAnswer(token, ex.turnId, conversationKey, clicked, sessionToken, surface);
     } catch {
       setHistory((h) => revertReaderRating(h, index, clicked, previous));
     }

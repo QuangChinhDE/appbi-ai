@@ -505,6 +505,48 @@ def starter_page(name: str) -> Tuple[str, str, str]:
     return html, css, js
 
 
+def scope_css(css: str, region: str) -> str:
+    """Prefix every selector of `css` with the region, so its rules apply inside it only.
+
+    `:root`, `html` and `body` become the region itself; a selector already scoped to
+    this region is kept; @media/@supports/@container/@layer blocks are scoped inside;
+    @keyframes/@font-face are kept as they are (they style nothing by themselves)."""
+    scope = f'[data-rac-region="{region}"]'
+    out: List[str] = []
+    i, n = 0, len(css)
+    while i < n:
+        j = css.find("{", i)
+        if j < 0:
+            break  # trailing text without a block is not a rule
+        head = css[i:j].strip()
+        depth, k = 1, j + 1
+        while k < n and depth:
+            depth += 1 if css[k] == "{" else -1 if css[k] == "}" else 0
+            k += 1
+        body = css[j + 1:k - 1]
+        low = head.lower()
+        if low.startswith(("@media", "@supports", "@container", "@layer")):
+            out.append(f"{head} {{\n{scope_css(body, region)}\n}}")
+        elif low.startswith("@"):
+            out.append(f"{head} {{{body}}}")
+        elif head:
+            sels = []
+            for sel in head.split(","):
+                sel = sel.strip()
+                if not sel:
+                    continue
+                if scope in sel:
+                    sels.append(sel)
+                elif re.match(r"^(:root|html|body)\b", sel):
+                    sels.append(re.sub(r"^(:root|html|body)", scope, sel))
+                else:
+                    sels.append(f"{scope} {sel}")
+            if sels:
+                out.append(f"{', '.join(sels)} {{{body}}}")
+        i = k
+    return "\n".join(x for x in out if x.strip())
+
+
 def edit(db: Session, *, artifact, revision, instruction: str, region: Optional[str], owner_id,
          progress: Progress, image: Optional[str] = None, allow_data: bool = False) -> Dict[str, Any]:
     bindings = list(revision.bindings or [])
@@ -565,9 +607,14 @@ def edit(db: Session, *, artifact, revision, instruction: str, region: Optional[
         js_add = res.get("js_add") if isinstance(res.get("js_add"), str) else ""
         html_out = D.replace_region(html, region, new_html)
         if css_add.strip():
-            css_out = (css.rstrip() + f"\n\n/* region:{region} */\n" + css_add.strip()).strip()
+            # Scoped by the server, not by trust in the model: a region edit cannot
+            # restyle another region or the page.
+            css_out = (css.rstrip() + f"\n\n/* region:{region} */\n" + scope_css(css_add.strip(), region)).strip()
         if js_add.strip():
-            js_out = (js.rstrip() + f"\n\n/* region:{region} */\n" + js_add.strip()).strip()
+            # Script cannot be confined to one region (it reaches the whole DOM), so a
+            # region edit never adds any; behaviour changes go through a page edit or the code.
+            notes.append("AI đề xuất thêm JavaScript cho vùng này — không áp dụng vì JS không giới hạn được trong "
+                         "một vùng. Sửa JS ở tab Mã nguồn hoặc yêu cầu AI sửa toàn trang.")
     else:
         html_out = new_html
         css_out = res.get("css") if isinstance(res.get("css"), str) else css

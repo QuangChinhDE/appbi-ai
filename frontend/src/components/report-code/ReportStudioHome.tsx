@@ -16,7 +16,7 @@ import { reportCodeApi, type ReportSummary } from '@/lib/api/report-code';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 
-type Mode = 'code' | 'ai' | 'paste' | 'pack';
+type Mode = 'code' | 'ai' | 'paste';
 
 export function ReportStudioHome() {
   const { t } = useI18n();
@@ -62,7 +62,6 @@ export function ReportStudioHome() {
     { key: 'code', icon: Code2, title: t('reportCode.home.newCode'), desc: t('reportCode.home.newCodeHint') },
     { key: 'ai', icon: Wand2, title: t('reportCode.home.modeAi'), desc: t('reportCode.home.modeAiDesc') },
     { key: 'paste', icon: ClipboardPaste, title: t('reportCode.home.modePaste'), desc: t('reportCode.home.modePasteDesc') },
-    { key: 'pack', icon: Download, title: t('reportCode.home.modePack'), desc: t('reportCode.home.modePackDesc') },
   ];
   const ideas = [t('reportCode.home.idea1'), t('reportCode.home.idea2'), t('reportCode.home.idea3')];
   const datasetSelect = (
@@ -94,7 +93,7 @@ export function ReportStudioHome() {
 
         {canEdit && (
           <div className="mb-8 overflow-hidden rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm">
-            <div className="grid border-b border-stroke-line sm:grid-cols-2 lg:grid-cols-4" role="tablist">
+            <div className="grid border-b border-stroke-line sm:grid-cols-3" role="tablist">
               {modes.map(({ key, icon: Icon, title, desc }) => (
                 <button key={key} type="button" role="tab" aria-selected={mode === key} onClick={() => setMode(key)} data-testid={`rc-mode-${key}`}
                   className={`flex items-start gap-3 border-b-2 px-5 py-4 text-left transition md:border-b-2 ${mode === key ? 'border-brand bg-brand-container/40' : 'border-transparent hover:bg-surface-2'}`}>
@@ -163,32 +162,25 @@ export function ReportStudioHome() {
                 </div>
               )}
               {mode === 'paste' && (
-                <div className="flex flex-wrap items-center justify-between gap-4" data-testid="rc-paste-panel">
-                  <div className="max-w-2xl text-sm text-text-secondary">
-                    <p>{t('reportCode.paste.intro')}</p>
-                    <p className="mt-1 text-xs text-text-tertiary">{t('reportCode.paste.preserve')}</p>
-                  </div>
-                  <Button variant="primary" leadingIcon={<ClipboardPaste className="h-4 w-4" />} onClick={() => setShowPaste(true)} data-testid="rc-paste-open">
-                    {t('reportCode.paste.open')}
-                  </Button>
-                </div>
-              )}
-              {mode === 'pack' && (
-                <div className="grid gap-5 lg:grid-cols-[1fr_300px]" data-testid="rc-pack-panel">
+                <div className="grid gap-5 lg:grid-cols-[1fr_300px]" data-testid="rc-paste-panel">
                   <div className="space-y-2 text-sm text-text-secondary">
-                    <p>{t('reportCode.pack.hint')}</p>
-                    <ol className="list-decimal space-y-1 pl-5 text-xs text-text-tertiary">
-                      <li>{t('reportCode.pack.step1')}</li>
-                      <li>{t('reportCode.pack.step2')}</li>
-                      <li>{t('reportCode.pack.step3')}</li>
-                    </ol>
-                    <p className="text-[11px] text-text-quaternary">{t('reportCode.pack.safe')}</p>
+                    <p>{t('reportCode.paste.intro')}</p>
+                    <p className="text-xs text-text-tertiary">{t('reportCode.paste.preserve')}</p>
+                    {/* The Context Pack is a TOOL of this path, not a way to create a report:
+                        it briefs an external AI design tool on the governed data. */}
+                    <div className="rounded-lg border border-stroke-line bg-surface-2 px-3 py-2 text-xs" data-testid="rc-pack-panel">
+                      <div className="font-semibold text-text-primary">{t('reportCode.pack.title')}</div>
+                      <p className="mt-0.5 text-text-tertiary">{t('reportCode.pack.hint')}</p>
+                      <p className="mt-0.5 text-[11px] text-text-quaternary">{t('reportCode.pack.safe')}</p>
+                    </div>
                   </div>
                   <div className="space-y-3">
+                    <Button variant="primary" className="w-full" leadingIcon={<ClipboardPaste className="h-4 w-4" />} onClick={() => setShowPaste(true)} data-testid="rc-paste-open">
+                      {t('reportCode.paste.open')}
+                    </Button>
                     {datasetSelect}
-                    <Button variant="primary" className="w-full" disabled={datasetId === ''} leadingIcon={<Download className="h-4 w-4" />}
+                    <Button variant="secondary" className="w-full" disabled={datasetId === ''} leadingIcon={<Download className="h-4 w-4" />}
                       onClick={() => datasetId !== '' && downloadContextPack(datasetId, t)} data-testid="rc-pack-download">{t('reportCode.pack.download')}</Button>
-                    <Button variant="secondary" className="w-full" leadingIcon={<ClipboardPaste className="h-4 w-4" />} onClick={() => setShowPaste(true)}>{t('reportCode.paste.open')}</Button>
                   </div>
                 </div>
               )}

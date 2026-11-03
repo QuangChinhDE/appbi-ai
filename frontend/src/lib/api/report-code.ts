@@ -34,6 +34,8 @@ export interface ReportSummary {
   /** True when at least one public link is active (links: reportCodeApi.listPublicLinks). */
   public_enabled: boolean;
   public_link_count?: number;
+  /** The data sources (bindings) of the draft. */
+  binding_count?: number;
   /** Set by the list endpoint: the caller's level and the owner, as on a dashboard row. */
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   owner_email?: string | null;
@@ -68,6 +70,8 @@ export interface ReportRevision {
 
 export interface ReportDetail extends ReportSummary {
   draft: ReportRevision | null;
+  /** Filters of the PUBLISHED revision: what a public link of this report meets. */
+  published_filters?: ReportFilter[];
   user_permission: 'none' | 'view' | 'edit' | 'full';
   warnings?: string[];
   dataset_name: string | null;
@@ -153,6 +157,11 @@ export const reportCodeApi = {
     (await apiClient.patch(`${base(id)}/public-links/${linkId}`, body)).data,
   deletePublicLink: async (id: number, linkId: number): Promise<unknown> =>
     (await apiClient.delete(`${base(id)}/public-links/${linkId}`)).data,
+  /** The link's AI Bot: is its model ready, and what can it read (publisher guide pickers). */
+  publicLinkAiStatus: async (id: number, linkId: number): Promise<any> =>
+    (await apiClient.get(`${base(id)}/public-links/${linkId}/ai-status`)).data,
+  publicLinkAiCatalog: async (id: number, linkId: number): Promise<any> =>
+    (await apiClient.get(`${base(id)}/public-links/${linkId}/ai/catalog`)).data,
   previewPublicLink: async (id: number, body: { filters_config: unknown[]; appearance_config: Record<string, unknown> }):
     Promise<{ token: string; expires_at: string }> => (await apiClient.post(`${base(id)}/public-links/preview`, body)).data,
   /** A signed, 10-minute URL for one revision's document on the isolated report origin. */

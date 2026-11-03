@@ -3,18 +3,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRouter } from 'next/navigation';
-import { Plus, LayoutDashboard, Clock, Eye, Trash2, Search, Globe, Share2, Wand2 } from 'lucide-react';
+import { Plus, LayoutDashboard, Search, Globe, Wand2 } from 'lucide-react';
 import { reportCodeApi, type ReportDetail } from '@/lib/api/report-code';
 import { reportLinkTarget } from '@/components/report-code/reportLinkTarget';
-import { ReportKindBadge, ReportStatusChip } from '@/components/dashboards/ReportKindBadge';
-import { isVibe, openHref, rowKey, vibeAsListItem, type ReportListItem, type ReportTypeFilter } from '@/components/dashboards/reportListItems';
+import { ReportCard, ReportTable, type ReportActions } from '@/components/dashboards/ReportList';
+import { manualRow, vibeRow, type ReportRow, type ReportTypeFilter } from '@/components/dashboards/reportRows';
 import { toast } from '@/lib/toast';
 
 import { useDashboards, useCreateDashboard, useDeleteDashboard, useDuplicateDashboard } from '@/hooks/use-dashboards';
 import { dashboardApi } from '@/lib/api/dashboards';
 import { usePermissions, hasPermission } from '@/hooks/use-permissions';
-import { getResourcePermissions, accessTier } from '@/hooks/use-resource-permission';
-import { DashboardList } from '@/components/dashboards/DashboardList';
 import { CrossModuleFilterControls } from '@/components/common/CrossModuleFilterControls';
 import { DeleteConstraintModal } from '@/components/common/DeleteConstraintModal';
 import { ConfirmDialog, ConfirmTargets } from '@/components/common/ConfirmDialog';
@@ -24,11 +22,10 @@ import { PaginatedCollection } from '@/components/common/PaginatedCollection';
 import { PageListLayout } from '@/components/common/PageListLayout';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { BulkActionBar } from '@/components/common/BulkActionBar';
-import { OwnerBadge } from '@/components/common/OwnerBadge';
 import { Modal } from '@/components/common/Modal';
 import { DashboardHtmlImportModal } from '@/components/dashboards/DashboardHtmlImportModal';
 import { ReportStarterModal } from '@/components/dashboards/ReportStarterModal';
-import { Button, IconButton } from '@/components/ui/Button';
+import { Button } from '@/components/ui/Button';
 import { FilterTag } from '@/components/ui/FilterTag';
 import { Input, Textarea, FieldGroup } from '@/components/ui/Input';
 import { useCharts } from '@/hooks/use-charts';
@@ -86,7 +83,7 @@ export default function DashboardsPage() {
       window.history.replaceState(window.history.state, '', url.toString());
     } catch { /* no URL */ }
   };
-  const [vibeToDelete, setVibeToDelete] = useState<ReportListItem | null>(null);
+  const [vibeToDelete, setVibeToDelete] = useState<ReportRow | null>(null);
   const [vibePublic, setVibePublic] = useState<ReportDetail | null>(null);
 
   const { data: dashboards, isLoading } = useDashboards();
@@ -96,15 +93,12 @@ export default function DashboardsPage() {
     queryKey: ['report-artifacts'],
     queryFn: () => reportCodeApi.list(),
   });
-  const vibeItems = useMemo(() => (vibeReports ?? []).map(vibeAsListItem), [vibeReports]);
-  const allItems = useMemo<ReportListItem[]>(() => {
-    const merged: ReportListItem[] = [
-      ...(dashboards ?? []).map((d) => ({ ...d, report_kind: 'manual' as const })),
-      ...vibeItems,
-    ];
-    // One list, newest change first, whichever builder made it.
-    return merged.sort((a, b) => (Date.parse(b.updated_at) || 0) - (Date.parse(a.updated_at) || 0));
-  }, [dashboards, vibeItems]);
+  // ONE list of reports, newest change first, whichever way each was built.
+  const allRows = useMemo<ReportRow[]>(() => [
+    ...(dashboards ?? []).map(manualRow),
+    ...(vibeReports ?? []).map(vibeRow),
+  ].sort((a, b) => (Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)), [dashboards, vibeReports]);
+  const vibeCount = vibeReports?.length ?? 0;
   const { data: charts = [] } = useCharts({ limit: 500, sort: 'updated_desc' });
   const { data: datasets = [] } = useDatasets();
   const { data: dataSources = [] } = useDataSources();
@@ -130,8 +124,8 @@ export default function DashboardsPage() {
     0,
   );
   const activeListFilterCount = Object.values(listFilters).filter(Boolean).length;
-  const reportsUpdatedThisWeek = allItems.filter((dashboard) => {
-    const updatedAt = new Date(dashboard.updated_at).getTime();
+  const reportsUpdatedThisWeek = allRows.filter((row) => {
+    const updatedAt = new Date(row.updatedAt).getTime();
     return Number.isFinite(updatedAt) && Date.now() - updatedAt <= 7 * 24 * 60 * 60 * 1000;
   }).length;
 
@@ -227,7 +221,7 @@ export default function DashboardsPage() {
     }
   };
 
-  const openVibePublic = async (item: ReportListItem) => {
+  const openVibePublic = async (item: ReportRow) => {
     try {
       setVibePublic(await reportCodeApi.get(item.id));
     } catch (error: any) {
@@ -245,6 +239,16 @@ export default function DashboardsPage() {
     } catch (error: any) {
       throw new Error(error?.response?.data?.detail || error?.message || 'error');
     }
+  };
+
+  // What the list may do with a report; the builder decides only where it differs.
+  const actions: ReportActions = {
+    busyKey: exportingId !== undefined ? `manual-${exportingId}` : duplicatingId !== undefined ? `manual-${duplicatingId}` : undefined,
+    onDelete: (row) => (row.kind === 'vibe' ? setVibeToDelete(row) : handleDelete(row.id)),
+    onPublicLinks: (row) => (row.kind === 'vibe' ? openVibePublic(row) : setPublicShareDash(row.dashboard)),
+    onShare: (row) => { if (row.kind === 'manual') setShareDash(row.dashboard); },
+    onDuplicate: canEdit ? (row) => { if (row.kind === 'manual') void handleDuplicate(row.dashboard); } : undefined,
+    onExport: (row) => { if (row.kind === 'manual') void handleExport(row.dashboard); },
   };
 
   const toggleSelect = (id: number) => {
@@ -288,17 +292,17 @@ export default function DashboardsPage() {
   return (
     <>
       <PageListLayout
-        title={t('module.dashboards.title')}
-        description={t('reportList.count', { manual: dashboards?.length ?? 0, vibe: vibeItems.length })}
+        title={t('reportList.title')}
+        description={t('reportList.count', { n: allRows.length })}
         overview={(
           <ModuleOverview
               icon={LayoutDashboard}
-              title={t('overview.dashboards.title')}
-              description={t('overview.dashboards.description')}
+              title={t('reportList.overview.title')}
+              description={t('reportList.overview.description')}
               badges={[t('overview.dashboards.badge1'), t('overview.dashboards.badge2'), t('overview.dashboards.badge3')]}
               stats={[
-                { label: t('overview.dashboards.saved'), value: allItems.length, helper: t('reportList.savedHelper', { manual: dashboardItems.length, vibe: vibeItems.length }) },
-                { label: t('reportList.published'), value: allItems.filter((i) => !isVibe(i) || !!i.vibe?.published_number).length, helper: t('reportList.publishedHelper') },
+                { label: t('reportList.saved'), value: allRows.length, helper: t('reportList.savedHelper', { manual: dashboardItems.length, vibe: vibeCount }) },
+                { label: t('reportList.published'), value: allRows.filter((r) => r.status.label !== 'draft').length, helper: t('reportList.publishedHelper') },
                 { label: t('overview.dashboards.charts'), value: totalChartLinks, helper: t('overview.dashboards.chartsHelper') },
                 { label: t('overview.dashboards.updated'), value: reportsUpdatedThisWeek, helper: t('overview.dashboards.updatedHelper') },
               ]}
@@ -334,9 +338,9 @@ export default function DashboardsPage() {
           <>
           <div className="flex items-center rounded-lg border border-[rgb(var(--border-line))] bg-surface-2 p-0.5" role="tablist" aria-label={t('reportList.type')} data-testid="report-type-filter">
             {([
-              ['all', t('reportList.type.all'), allItems.length],
+              ['all', t('reportList.type.all'), allRows.length],
               ['manual', t('reportList.kind.manual'), dashboardItems.length],
-              ['vibe', t('reportList.kind.vibe'), vibeItems.length],
+              ['vibe', t('reportList.kind.vibe'), vibeCount],
             ] as const).map(([key, label, count]) => (
               <button key={key} type="button" role="tab" aria-selected={typeFilter === key} onClick={() => setTypeFilter(key)}
                 data-testid={`report-type-${key}`}
@@ -412,38 +416,23 @@ export default function DashboardsPage() {
       >
         {({ viewMode, filterText }) => {
           const needle = filterText.trim().toLowerCase();
-          const filtered = allItems.filter((dashboard) => {
-            if (typeFilter !== 'all' && (isVibe(dashboard) ? 'vibe' : 'manual') !== typeFilter) return false;
-            if (isVibe(dashboard)) {
-              // Chart / source relations and the chart-state tag describe dashboards only.
-              const v = dashboard.vibe!;
-              const vibeSearch = needle.length === 0 || dashboard.name.toLowerCase().includes(needle)
-                || (dashboard.description ?? '').toLowerCase().includes(needle) || (dashboard.owner_email ?? '').toLowerCase().includes(needle);
-              return vibeSearch && !listFilters.state && !listFilters.chart && !listFilters.source
-                && (!listFilters.dataset || String(v.dataset_id ?? '') === listFilters.dataset)
-                && (!listFilters.access || accessTier(dashboard.user_permission, dashboard.capabilities) === listFilters.access)
-                && (!listFilters.owner || dashboard.owner_email === listFilters.owner);
+          const filtered = allRows.filter((row) => {
+            if (typeFilter !== 'all' && row.kind !== typeFilter) return false;
+            const matchesSearch = needle.length === 0 || row.name.toLowerCase().includes(needle)
+              || (row.description ?? '').toLowerCase().includes(needle) || (row.ownerEmail ?? '').toLowerCase().includes(needle);
+            if (!matchesSearch) return false;
+            if (listFilters.access && row.access !== listFilters.access) return false;
+            if (listFilters.owner && row.ownerEmail !== listFilters.owner) return false;
+            if (row.kind === 'vibe') {
+              // chart / source relations and the chart-state tag are dashboard-tile facts
+              return !listFilters.state && !listFilters.chart && !listFilters.source
+                && (!listFilters.dataset || row.datasetIds.includes(Number(listFilters.dataset)));
             }
-            const chartState = (dashboard.dashboard_charts?.length || 0) > 0 ? 'linked' : 'empty';
-            const accessState = accessTier(dashboard.user_permission, dashboard.capabilities);
-            const relations = relationIndex.dashboardRelationsById.get(dashboard.id);
-            const matchesSearch =
-              needle.length === 0 ||
-              dashboard.name.toLowerCase().includes(needle) ||
-              dashboard.description?.toLowerCase().includes(needle) ||
-              (dashboard.owner_email ?? '').toLowerCase().includes(needle);
-
-            return (
-              matchesSearch &&
-              (!listFilters.state || chartState === listFilters.state) &&
-              (!listFilters.access || accessState === listFilters.access) &&
-              (!listFilters.owner || dashboard.owner_email === listFilters.owner) &&
-              matchesRelatedFilters(relations, {
-                dataset: listFilters.dataset,
-                chart: listFilters.chart,
-                source: listFilters.source,
-              })
-            );
+            const chartState = row.content.count > 0 ? 'linked' : 'empty';
+            return (!listFilters.state || chartState === listFilters.state)
+              && matchesRelatedFilters(relationIndex.dashboardRelationsById.get(row.id), {
+                dataset: listFilters.dataset, chart: listFilters.chart, source: listFilters.source,
+              });
           });
 
           return (
@@ -454,128 +443,26 @@ export default function DashboardsPage() {
             >
               {({ pageItems, pagination, hasFooter }) => (
                 <div className={viewMode === 'grid' ? 'space-y-3' : undefined}>
-                  {allItems.length === 0 ? (
-                    <DashboardList dashboards={[]} onDelete={handleDelete} />
+                  {allRows.length === 0 ? (
+                    <ReportTable rows={[]} actions={actions} />
                   ) : filtered.length === 0 ? (
                     <div className="flex h-48 flex-col items-center justify-center text-center">
                       <Search className="mb-2 h-7 w-7 text-text-quaternary" />
                       <p className="text-caption text-text-tertiary">
-                        {filterText ? <>No reports matching &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;</> : t('reportList.emptyFiltered')}
+                        {filterText ? <>{t('reportList.noMatch')} &ldquo;<strong className="text-text-primary">{filterText}</strong>&rdquo;</> : t('reportList.emptyFiltered')}
                       </p>
                     </div>
                   ) : viewMode === 'grid' ? (
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
-                      {pageItems.map((dashboard) => {
-                    const chartCount = dashboard.dashboard_charts?.length || 0;
-                    const updatedLabel = new Date(dashboard.updated_at).toLocaleDateString(locale, {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                    });
-
-                    return (
-                      <div
-                        key={rowKey(dashboard)}
-                        data-testid={`report-card-${rowKey(dashboard)}`}
-                        className="group flex flex-col rounded-xl border border-[rgb(var(--border-line))] bg-surface-1 transition-all hover:border-[rgb(var(--border-strong))] hover:shadow-linear"
-                      >
-                        <div className="flex-1 p-4">
-                          <div className="mb-3 flex items-start justify-between">
-                            <div className="flex items-center gap-2">
-                              {canEdit && !isVibe(dashboard) && (
-                                <input
-                                  type="checkbox"
-                                  aria-label={`Select ${dashboard.name}`}
-                                  checked={selectedIds.has(dashboard.id)}
-                                  onChange={() => toggleSelect(dashboard.id)}
-                                  className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]"
-                                />
-                              )}
-                              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand">
-                                {isVibe(dashboard) ? <Wand2 className="h-4 w-4" /> : <LayoutDashboard className="h-4 w-4" />}
-                              </div>
-                            </div>
-                            {getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canDelete && (
-                              <IconButton
-                                aria-label="Delete"
-                                variant="ghost"
-                                size="xs"
-                                onClick={() => (isVibe(dashboard) ? setVibeToDelete(dashboard) : handleDelete(dashboard.id))}
-                                className="opacity-0 transition-opacity group-hover:opacity-100 text-text-tertiary hover:text-danger"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </IconButton>
-                            )}
-                          </div>
-                          <h3 className="mb-1 truncate text-caption font-strong text-text-primary">{dashboard.name}</h3>
-                          <div className="mb-1.5 flex flex-wrap gap-1.5">
-                            <ReportKindBadge kind={isVibe(dashboard) ? 'vibe' : 'manual'} />
-                            <ReportStatusChip item={dashboard} />
-                          </div>
-                          <OwnerBadge email={dashboard.owner_email} />
-                          {dashboard.description && (
-                            <p className="mt-1.5 line-clamp-2 text-caption text-text-tertiary">{dashboard.description}</p>
-                          )}
-                          <div className="mt-3 flex items-center justify-between text-tiny text-text-quaternary">
-                            <span>{isVibe(dashboard) ? (dashboard.vibe?.public_enabled ? `${dashboard.vibe.public_link_count ?? 1} public link` : '—') : `${chartCount} chart${chartCount !== 1 ? 's' : ''}`}</span>
-                            <span className="flex items-center gap-1">
-                              <Clock className="h-3 w-3" />
-                              {updatedLabel}
-                            </span>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between border-t border-[rgb(var(--border-line))] bg-surface-2 px-4 py-2.5 rounded-b-xl">
-                          <div className="flex items-center gap-3">
-                            {!isVibe(dashboard) && getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canShare && (
-                              <button
-                                onClick={() => setShareDash(dashboard)}
-                                className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
-                                title="Share"
-                              >
-                                <Share2 className="h-3 w-3" />
-                                Share
-                              </button>
-                            )}
-                            {(isVibe(dashboard)
-                              ? getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canPublish
-                              : getResourcePermissions(dashboard.user_permission, dashboard.capabilities).canEdit) && (
-                              <button
-                                data-testid={`report-card-${rowKey(dashboard)}-public`}
-                                onClick={() => (isVibe(dashboard) ? openVibePublic(dashboard) : setPublicShareDash(dashboard))}
-                                className="flex items-center gap-1 text-tiny text-text-tertiary transition-colors hover:text-brand"
-                                title="Public links"
-                              >
-                                <Globe className="h-3 w-3" />
-                                Public links
-                              </button>
-                            )}
-                          </div>
-                          <button
-                            onClick={() => router.push(openHref(dashboard))}
-                            data-testid={`report-card-${rowKey(dashboard)}-open`}
-                            className="ml-auto flex items-center gap-1 text-tiny font-emphasis text-brand transition-colors hover:text-brand-hover"
-                          >
-                            <Eye className="h-3 w-3" />
-                            Open
-                          </button>
-                        </div>
-                      </div>
-                    );
-                      })}
+                      {pageItems.map((row) => (
+                        <ReportCard key={row.key} row={row} actions={actions}
+                          selected={selectedIds.has(row.id)} onToggleSelect={canEdit ? toggleSelect : undefined} />
+                      ))}
                     </div>
                   ) : (
-                    <DashboardList
-                      dashboards={pageItems}
-                      onVibeDelete={(item) => setVibeToDelete(item)}
-                      onVibePublicLinks={(item) => openVibePublic(item)}
-                      onDelete={canEdit ? handleDelete : undefined}
-                      onShare={(dashboard) => setShareDash(dashboard)}
-                      onPublicLinks={canEdit ? (dashboard) => setPublicShareDash(dashboard) : undefined}
-                      onDuplicate={canEdit ? handleDuplicate : undefined}
-                      onExport={handleExport}
-                      deletingId={isDeletingDashboard ? dashboardToDelete?.id : undefined}
-                      duplicatingId={duplicatingId}
-                      exportingId={exportingId}
+                    <ReportTable
+                      rows={pageItems}
+                      actions={actions}
                       activeFilters={listFilters}
                       onFilterClick={(key, value) => toggleListFilter(key as keyof DashboardListFilters, value)}
                       selectedIds={canEdit ? selectedIds : undefined}

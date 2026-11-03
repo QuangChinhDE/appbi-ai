@@ -83,9 +83,8 @@ def _session() -> Session:
     return SessionLocal()
 
 
-def _by_key(db: Session, link_id: int, key: str) -> Optional[PublicAnswerTurn]:
-    return db.query(PublicAnswerTurn).filter(PublicAnswerTurn.link_id == link_id,
-                                             PublicAnswerTurn.idempotency_key == key).first()
+def _by_key(db: Session, link_id: int, key: str, T: Any = PublicAnswerTurn) -> Optional[Any]:
+    return db.query(T).filter(T.link_id == link_id, T.idempotency_key == key).first()
 
 
 def _clean_key(value: str, name: str) -> str:
@@ -98,8 +97,9 @@ def _clean_key(value: str, name: str) -> str:
 # ── admission ────────────────────────────────────────────────────────────────
 
 def begin(db: Session, *, link_id: int, token: str, appearance: dict,
-          req: PublicTurnRequest) -> tuple[PublicAnswerTurn, bool]:
-    """(turn, replayed)."""
+          req: PublicTurnRequest, T: Any = PublicAnswerTurn) -> tuple[Any, bool]:
+    """(turn, replayed). `T` is the turn table of the link's kind (dashboard links:
+    public_answer_turns; report links: report_answer_turns)."""
     from app.services.dashboard_ai_bot.budget import check_budget
 
     question = " ".join(str(req.question or "").split())
@@ -109,22 +109,21 @@ def begin(db: Session, *, link_id: int, token: str, appearance: dict,
         raise TurnRejected(422, f"Câu hỏi dài quá {MAX_QUESTION} ký tự.")
     conversation_key = _clean_key(req.conversation_key, "conversation_key")
     idem = _clean_key(req.idempotency_key, "idempotency_key")
-    existing = _by_key(db, link_id, idem)
+    existing = _by_key(db, link_id, idem, T)
     if existing is not None:
         if existing.conversation_key != conversation_key:
             raise TurnRejected(409, "Mã gửi này đã được dùng.")
         return existing, True
 
     if db.get_bind().dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"public_answer:{link_id}"})
-    expire_stale(db, link_id)
-    if db.query(PublicAnswerTurn.id).filter(PublicAnswerTurn.link_id == link_id,
-                                             PublicAnswerTurn.conversation_key == conversation_key,
-                                             PublicAnswerTurn.status == "running").first():
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"{'public_answer' if T is PublicAnswerTurn else T.__tablename__}:{link_id}"})
+    expire_stale(db, link_id, T=T)
+    if db.query(T.id).filter(T.link_id == link_id, T.conversation_key == conversation_key,
+                             T.status == "running").first():
         db.rollback()
         raise TurnRejected(409, "Câu hỏi trước vẫn đang chạy; hãy chờ hoặc bấm Dừng.")
-    running = (db.query(func.count(PublicAnswerTurn.id))
-               .filter(PublicAnswerTurn.link_id == link_id, PublicAnswerTurn.status == "running").scalar() or 0)
+    running = (db.query(func.count(T.id))
+               .filter(T.link_id == link_id, T.status == "running").scalar() or 0)
     if running >= MAX_RUNNING_PER_LINK:
         db.rollback()
         raise TurnRejected(429, "Trợ lý AI của báo cáo này đang bận; bạn thử lại sau ít phút nhé.")
@@ -133,14 +132,14 @@ def begin(db: Session, *, link_id: int, token: str, appearance: dict,
         db.rollback()
         raise TurnRejected(429, verdict.message)
 
-    turn = PublicAnswerTurn(link_id=link_id, conversation_key=conversation_key, turn_id=uuid.uuid4().hex,
+    turn = T(link_id=link_id, conversation_key=conversation_key, turn_id=uuid.uuid4().hex,
                             idempotency_key=idem, question=question[:MAX_QUESTION], status="running")
     db.add(turn)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        existing = _by_key(db, link_id, idem)
+        existing = _by_key(db, link_id, idem, T)
         if existing is None or existing.conversation_key != conversation_key:
             raise TurnRejected(409, "Mã gửi này đã được dùng.")
         return existing, True
@@ -148,51 +147,49 @@ def begin(db: Session, *, link_id: int, token: str, appearance: dict,
     return turn, False
 
 
-def expire_stale(db: Session, link_id: int, minutes: int = 10) -> None:
+def expire_stale(db: Session, link_id: int, minutes: int = 10, T: Any = PublicAnswerTurn) -> None:
     """A turn left `running` by a crashed worker is not running: it failed."""
     try:
-        (db.query(PublicAnswerTurn)
-         .filter(PublicAnswerTurn.link_id == link_id, PublicAnswerTurn.status == "running",
-                 PublicAnswerTurn.created_at < func.now() - text(f"interval '{int(minutes)} minutes'"))
-         .update({PublicAnswerTurn.status: "failed",
-                  PublicAnswerTurn.envelope: env.failed("interrupted", "Câu hỏi bị gián đoạn; hãy hỏi lại."),
-                  PublicAnswerTurn.finished_at: func.now()}, synchronize_session=False))
+        (db.query(T)
+         .filter(T.link_id == link_id, T.status == "running",
+                 T.created_at < func.now() - text(f"interval '{int(minutes)} minutes'"))
+         .update({T.status: "failed",
+                  T.envelope: env.failed("interrupted", "Câu hỏi bị gián đoạn; hãy hỏi lại."),
+                  T.finished_at: func.now()}, synchronize_session=False))
     except Exception:  # noqa: BLE001 - sqlite in unit tests has no interval; nothing to expire there
         db.rollback()
 
 
-def is_running(turn_id: str) -> bool:
+def is_running(turn_id: str, T: Any = PublicAnswerTurn) -> bool:
     db = _session()
     try:
-        return db.query(PublicAnswerTurn.status).filter(PublicAnswerTurn.turn_id == turn_id).scalar() == "running"
+        return db.query(T.status).filter(T.turn_id == turn_id).scalar() == "running"
     finally:
         db.close()
 
 
-def finish(db: Session, turn_id: str, envelope: dict, *, plan: Optional[dict], usd: float) -> bool:
-    n = (db.query(PublicAnswerTurn)
-         .filter(PublicAnswerTurn.turn_id == turn_id, PublicAnswerTurn.status == "running")
-         .update({PublicAnswerTurn.status: envelope.get("status") or "failed", PublicAnswerTurn.envelope: envelope,
-                  PublicAnswerTurn.plan: plan, PublicAnswerTurn.usd: usd,
-                  PublicAnswerTurn.finished_at: func.now()}, synchronize_session=False))
+def finish(db: Session, turn_id: str, envelope: dict, *, plan: Optional[dict], usd: float,
+           T: Any = PublicAnswerTurn) -> bool:
+    n = (db.query(T)
+         .filter(T.turn_id == turn_id, T.status == "running")
+         .update({T.status: envelope.get("status") or "failed", T.envelope: envelope,
+                  T.plan: plan, T.usd: usd, T.finished_at: func.now()}, synchronize_session=False))
     db.commit()
     return bool(n)
 
 
-def cancel(db: Session, *, link_id: int, turn_id: str, conversation_key: str) -> dict:
-    t = db.query(PublicAnswerTurn).filter(PublicAnswerTurn.turn_id == turn_id,
-                                          PublicAnswerTurn.link_id == link_id).first()
+def cancel(db: Session, *, link_id: int, turn_id: str, conversation_key: str, T: Any = PublicAnswerTurn) -> dict:
+    t = db.query(T).filter(T.turn_id == turn_id, T.link_id == link_id).first()
     if t is None or t.conversation_key != str(conversation_key or ""):
         raise TurnRejected(404, "Không tìm thấy câu hỏi.")
     if t.status != "running":
         return {"cancelled": False, "status": t.status}
-    done = finish(db, turn_id, env.cancelled(), plan=None, usd=0.0)
+    done = finish(db, turn_id, env.cancelled(), plan=None, usd=0.0, T=T)
     return {"cancelled": done, "status": "cancelled" if done else t.status}
 
 
-def view(db: Session, *, link_id: int, turn_id: str, conversation_key: str) -> dict:
-    t = db.query(PublicAnswerTurn).filter(PublicAnswerTurn.turn_id == turn_id,
-                                          PublicAnswerTurn.link_id == link_id).first()
+def view(db: Session, *, link_id: int, turn_id: str, conversation_key: str, T: Any = PublicAnswerTurn) -> dict:
+    t = db.query(T).filter(T.turn_id == turn_id, T.link_id == link_id).first()
     if t is None or t.conversation_key != str(conversation_key or ""):
         raise TurnRejected(404, "Không tìm thấy câu hỏi.")
     return {"turn_id": t.turn_id, "status": t.status, "question": t.question, "rating": t.rating,
@@ -202,14 +199,14 @@ def view(db: Session, *, link_id: int, turn_id: str, conversation_key: str) -> d
 RATEABLE = ("answered", "clarification_required")
 
 
-def rate(db: Session, *, link_id: int, turn_id: str, conversation_key: str, rating: str) -> dict:
+def rate(db: Session, *, link_id: int, turn_id: str, conversation_key: str, rating: str,
+         T: Any = PublicAnswerTurn) -> dict:
     """The viewer's verdict on one answer of THEIR conversation: up or down, one
     current verdict, never cleared (frontend lib/readerRating.ts). A turn that
     failed, was cancelled or is still running holds no answer to rate."""
     if rating not in ("up", "down"):
         raise TurnRejected(422, "rating must be up or down")
-    t = db.query(PublicAnswerTurn).filter(PublicAnswerTurn.turn_id == turn_id,
-                                          PublicAnswerTurn.link_id == link_id).first()
+    t = db.query(T).filter(T.turn_id == turn_id, T.link_id == link_id).first()
     if t is None or t.conversation_key != str(conversation_key or ""):
         raise TurnRejected(404, "Không tìm thấy câu hỏi.")
     if t.status not in RATEABLE:
@@ -219,12 +216,12 @@ def rate(db: Session, *, link_id: int, turn_id: str, conversation_key: str, rati
     return {"turn_id": t.turn_id, "rating": t.rating}
 
 
-def _previous_plan(db: Session, link_id: int, conversation_key: str, turn_id: str) -> Optional[dict]:
-    t = (db.query(PublicAnswerTurn)
-         .filter(PublicAnswerTurn.link_id == link_id, PublicAnswerTurn.conversation_key == conversation_key,
-                 PublicAnswerTurn.status == "answered", PublicAnswerTurn.turn_id != turn_id,
-                 PublicAnswerTurn.plan.isnot(None))
-         .order_by(PublicAnswerTurn.created_at.desc()).first())
+def _previous_plan(db: Session, link_id: int, conversation_key: str, turn_id: str,
+                   T: Any = PublicAnswerTurn) -> Optional[dict]:
+    t = (db.query(T)
+         .filter(T.link_id == link_id, T.conversation_key == conversation_key,
+                 T.status == "answered", T.turn_id != turn_id, T.plan.isnot(None))
+         .order_by(T.created_at.desc()).first())
     return t.plan if t is not None and isinstance(t.plan, dict) else None
 
 
@@ -242,9 +239,15 @@ def for_viewer(e: dict) -> dict:
 
 
 def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
-          on_step: Callable[[dict], None]) -> tuple[dict, Optional[dict], Optional[str], dict]:
+          on_step: Callable[[dict], None], T: Any = PublicAnswerTurn,
+          ledger_link_id: Optional[int] = None) -> tuple[dict, Optional[dict], Optional[str], dict]:
     """The Answer Core over the link's published report, in a worker thread with its
-    own session. Returns (envelope, plan, add-on flow key, appearance)."""
+    own session. Returns (envelope, plan, add-on flow key, appearance).
+
+    `ledger_link_id` is the link's id in the shared usage ledger and scope subject
+    (report links use their own namespace there so they never share a dashboard
+    link's daily budget); it defaults to `link_id`."""
+    ledger = link_id if ledger_link_id is None else ledger_link_id
     from app.services.ai_runtime import gateway
     from app.services.answer_core.published_report import PublishedReportScope
     from app.services.chat.orchestrator import SOURCE_UNAVAILABLE, _is_source_error
@@ -258,7 +261,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
         except Exception as ex:  # noqa: BLE001 - the link closed/expired between admission and run
             logger.info("[public_answer] link unavailable for turn %s: %s", turn_id, type(ex).__name__)
             return env.refused("link_unavailable", "Liên kết báo cáo không còn hiệu lực."), None, None, {}
-        scope = PublishedReportScope(db, ctx=link.ctx, link_id=link_id, turn_id=turn_id, page_id=req.page_id)
+        scope = PublishedReportScope(db, ctx=link.ctx, link_id=ledger, turn_id=turn_id, page_id=req.page_id)
         # the publisher's prompt: a glossary for the planner, the guide of the analysis
         instructions = str((link.appearance or {}).get("ai_bot_report_context_note") or "").strip() or None
         scope.notes = instructions
@@ -277,8 +280,8 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
         # the viewer's client sends every message as a possible follow-up; it refines the
         # previous answer only when it says so (`intent.is_followup`), else it is new
         follow_up = req.follow_up and is_followup(req.question)
-        previous = _previous_plan(db, link_id, req.conversation_key, turn_id) if follow_up else None
-        bill = gateway.Billing(purpose="public_core", link_id=link_id,
+        previous = _previous_plan(db, link_id, req.conversation_key, turn_id, T) if follow_up else None
+        bill = gateway.Billing(purpose="public_core", link_id=ledger,
                                link_usd_per_day=resolve_usd_limit(link.appearance), turn_ref=turn_id,
                                credential=gateway.link_credential(db, link.appearance))
         if bill.credential is None:  # the publisher's key and model; never the server's
@@ -288,7 +291,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             with gateway.billing(bill):
                 core = ask(db, None, req.question, None, scope=scope, previous=previous, turn_id=turn_id,
                            choice_token=req.choice_token, on_step=on_step,
-                           should_stop=lambda: not is_running(turn_id))
+                           should_stop=lambda: not is_running(turn_id, T))
         except TurnStopped:
             return env.cancelled(), None, link.flow_key, link.appearance
         except gateway.AiPolicyRefused as refused:
@@ -305,7 +308,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
             e = env.with_target(e, target)
         refused = guided_analysis.eligible(e, req.question, has_notes=knows, has_addon=bool(link.flow_key))
         evaluate = not refused and guided_analysis.wants_evaluation(e, req.question, has_notes=knows)
-        if (refused or evaluate) and is_running(turn_id):
+        if (refused or evaluate) and is_running(turn_id, T):
             # The Core could not plan it - or answered a figure the question asks to
             # evaluate: the AI reads the PUBLISHED charts and the publisher's prompt;
             # labelled, its figures checked against the data and the prompt.
@@ -315,7 +318,7 @@ def _core(link_id: int, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
                     analysis = guided_analysis.analyse(
                         scope, question=req.question, instructions=instructions, guide=guide,
                         target_applies=target is not None,
-                        previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id)
+                        previous_answer=_previous_answer(db, link_id, req.conversation_key, turn_id, T)
                         if follow_up else None,
                         core_answer=_core_answer(req.question, e) if evaluate else None)
             except gateway.AiPolicyRefused as policy:
@@ -349,13 +352,14 @@ def _core_answer(question: str, e: dict) -> dict:
     return {"question": question, "headline": answer.get("headline"), "rows": (data.get("rows") or [])[:30]}
 
 
-def _previous_answer(db: Session, link_id: int, conversation_key: str, turn_id: str) -> Optional[dict]:
+def _previous_answer(db: Session, link_id: int, conversation_key: str, turn_id: str,
+                     T: Any = PublicAnswerTurn) -> Optional[dict]:
     """The last answer of this conversation, as the viewer saw it: question, headline,
     rows (capped) - the context of "phân tích hơn về con số đó"."""
-    t = (db.query(PublicAnswerTurn)
-         .filter(PublicAnswerTurn.link_id == link_id, PublicAnswerTurn.conversation_key == conversation_key,
-                 PublicAnswerTurn.status == "answered", PublicAnswerTurn.turn_id != turn_id)
-         .order_by(PublicAnswerTurn.created_at.desc()).first())
+    t = (db.query(T)
+         .filter(T.link_id == link_id, T.conversation_key == conversation_key,
+                 T.status == "answered", T.turn_id != turn_id)
+         .order_by(T.created_at.desc()).first())
     data = (t.envelope or {}).get("data") if t is not None and isinstance(t.envelope, dict) else None
     if not isinstance(data, dict):
         return None
@@ -366,7 +370,7 @@ def _previous_answer(db: Session, link_id: int, conversation_key: str, turn_id: 
 
 
 async def run(*, link_id: int, token: str, turn_id: str, req: PublicTurnRequest, resolve: Resolver,
-              emit: Callable[[dict], None]) -> dict:
+              emit: Callable[[dict], None], T: Any = PublicAnswerTurn, ledger_link_id: Optional[int] = None) -> dict:
     """Run the turn to its one terminal state; return the envelope the viewer gets."""
     from starlette.concurrency import run_in_threadpool
 
@@ -379,13 +383,14 @@ async def run(*, link_id: int, token: str, turn_id: str, req: PublicTurnRequest,
         loop.call_soon_threadsafe(emit, {"type": "status", "step": step.get("step"), "detail": step.get("detail")})
 
     try:
-        live, plan, flow_key, appearance = await run_in_threadpool(_core, link_id, turn_id, req, resolve, on_step)
+        live, plan, flow_key, appearance = await run_in_threadpool(_core, link_id, turn_id, req, resolve, on_step,
+                                                                   T, ledger_link_id)
     except Exception:  # noqa: BLE001 - recorded as `failed`, never as an answer
         logger.exception("[public_answer] core failed for turn %s", turn_id)
         live, plan, flow_key, appearance = env.failed("internal_error", "Có lỗi khi xử lý câu hỏi; hãy thử lại."), \
             None, None, {}
 
-    reason = extension.decide(req.question, req.extension, flow_key, live) if flow_key and is_running(turn_id) \
+    reason = extension.decide(req.question, req.extension, flow_key, live) if flow_key and is_running(turn_id, T) \
         else None
     if reason:
         from app.services.answer_core.link_extension import invoke_for_link
@@ -393,7 +398,7 @@ async def run(*, link_id: int, token: str, turn_id: str, req: PublicTurnRequest,
         emit({"type": "extension", "state": "started", "reason": reason})
         supporting, notices = await invoke_for_link(
             link_id=link_id, turn_id=turn_id, reason=reason, question=req.question, core_env=live,
-            resolve=resolve, appearance=appearance, is_cancelled=lambda: not is_running(turn_id))
+            resolve=resolve, appearance=appearance, is_cancelled=lambda: not is_running(turn_id, T))
         emit({"type": "extension", "state": supporting["status"]})
         live = env.with_supporting(live, supporting, notices)
 
@@ -402,9 +407,9 @@ async def run(*, link_id: int, token: str, turn_id: str, req: PublicTurnRequest,
     try:
         usd = gateway.turn_usd(turn_id)
         _log_turn(db, token=token, turn_id=turn_id, question=req.question, envelope=live, usd=usd)
-        if finish(db, turn_id, env.stored(live, 500), plan=plan, usd=usd):
+        if finish(db, turn_id, env.stored(live, 500), plan=plan, usd=usd, T=T):
             return live
-        t = db.query(PublicAnswerTurn).filter(PublicAnswerTurn.turn_id == turn_id).one()
+        t = db.query(T).filter(T.turn_id == turn_id).one()
         return env.normalize(t.envelope, t.status)
     finally:
         db.close()

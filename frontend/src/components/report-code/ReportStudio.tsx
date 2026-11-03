@@ -41,6 +41,7 @@ export function ReportStudio({ reportId }: { reportId: number }) {
   const [tab, setTab] = useState<Tab>('code');
   const [device, setDevice] = useState<Device>('desktop');
   const [selectMode, setSelectMode] = useState(false);
+  const [showProvenance, setShowProvenance] = useState(false);
   const [region, setRegion] = useState<string | null>(null);
   const [previewNumber, setPreviewNumber] = useState<number | null>(null);
   const [issues, setIssues] = useState<RuntimeIssue[]>([]);
@@ -363,6 +364,21 @@ export function ReportStudio({ reportId }: { reportId: number }) {
               </span>
             )}
           </div>
+          {docUrl && (
+            <div className="absolute right-3 top-12 z-20 flex flex-col items-end gap-1" data-testid="studio-provenance">
+              <button type="button" onClick={() => setShowProvenance((v) => !v)} data-testid="studio-provenance-toggle"
+                title={t('reportCode.prov.hint')}
+                className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium shadow-sm ring-1 ring-inset ${showProvenance ? 'bg-brand text-white ring-brand' : 'bg-surface-1 text-text-secondary ring-stroke-strong hover:text-text-primary'}`}>
+                <ShieldCheck className="h-3.5 w-3.5" />{t('reportCode.prov.toggle')}
+              </button>
+              {showProvenance && (
+                <div className="rounded-lg bg-surface-1 px-2.5 py-1.5 text-[10px] leading-relaxed text-text-secondary shadow-popover ring-1 ring-inset ring-stroke-strong">
+                  <div><span className="mr-1 inline-block h-2 w-3 rounded-sm border-2 border-emerald-500 align-middle" />{t('reportCode.prov.verified')}</div>
+                  <div><span className="mr-1 inline-block h-2 w-3 rounded-sm border-2 border-dashed border-amber-500 align-middle" />{t('reportCode.prov.static')}</div>
+                </div>
+              )}
+            </div>
+          )}
           {postFields && (
             <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 shadow-sm ring-1 ring-inset ring-amber-200" data-testid="studio-preview-unsaved">
               {t('reportCode.code.previewUnsavedBadge')}
@@ -391,6 +407,7 @@ export function ReportStudio({ reportId }: { reportId: number }) {
                 fetchValues={fetchValues}
                 mode="studio"
                 selectMode={selectMode}
+                provenance={showProvenance}
                 selectedRegion={region}
                 onRegionSelected={(r) => { setRegion(r); setSelectMode(false); setTab('ai'); }}
                 onIssue={onIssue}

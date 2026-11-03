@@ -153,6 +153,11 @@
       case 'selectMode':
         document.body.classList.toggle('rac-select', !!msg.on);
         break;
+      case 'provenance':
+        // Studio overlay: what the BI Core supplies (solid green) vs a number the code
+        // itself writes that matches no bound value (dashed amber, from the audit below).
+        document.body.classList.toggle('rac-prov', !!msg.on);
+        break;
       case 'highlight':
         var prev = document.querySelectorAll('.rac-selected');
         for (var i = 0; i < prev.length; i++) prev[i].classList.remove('rac-selected');
@@ -654,7 +659,14 @@
   }
   function mountFilter(el) {
     var key = el.getAttribute('data-rac-filter'), decl = filterDecl(key);
-    if (!decl) { el.innerHTML = '<span class="rac-note">Bộ lọc "' + esc(key) + '" chưa được khai báo</span>'; return; }
+    if (!decl) {
+      // In the Studio an unknown key is the author's mistake: say so. For a viewer it is
+      // a filter this link keeps to itself (locked, hidden or switched off): show nothing.
+      if (ctx.mode === 'studio') el.innerHTML = '<span class="rac-note">Bộ lọc "' + esc(key) + '" chưa được khai báo</span>';
+      else { el.innerHTML = ''; el.style.display = 'none'; }
+      return;
+    }
+    el.style.display = '';
     var cur = ctx.state[key];
     if (decl.kind === 'date') {
       var from = Array.isArray(cur) ? cur[0] || '' : '', to = Array.isArray(cur) ? cur[1] || '' : '';
@@ -885,9 +897,11 @@
         }
       }
 
-      var bad = [];
+      var bad = [], marked = 0;
+      var stale = document.querySelectorAll('.rac-static');
+      for (var si = 0; si < stale.length; si++) stale[si].classList.remove('rac-static');
       var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      for (var node = walker.nextNode(); node && bad.length < 6; node = walker.nextNode()) {
+      for (var node = walker.nextNode(); node && marked < 120; node = walker.nextNode()) {
         var el = node.parentElement;
         if (!el || el.closest(TRUSTED)) continue;
         var toks = String(node.nodeValue || '').match(/[-+]?\d[\d.,]*\s?(?:Tr|Tỷ|tỷ|N|K|M|B|%|₫)?/g) || [];
@@ -898,7 +912,8 @@
           if (!isFinite(n)) return;
           if (/^\d{4}$/.test(t) && n >= 1900 && n <= 2100) return;   // years in headings
           if (/^\d{1,2}$/.test(t) && n <= 31) return;                // ranks, months, days
-          if (bad.indexOf(t) < 0) bad.push(t);
+          if (!el.classList.contains('rac-static')) { el.classList.add('rac-static'); marked++; }
+          if (bad.indexOf(t) < 0 && bad.length < 6) bad.push(t);
         });
       }
       assoc = assoc.filter(function (x, i) { return assoc.indexOf(x) === i; });
