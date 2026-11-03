@@ -3,7 +3,7 @@
  *
  *   J1  /dashboards is ONE report list (both build methods): filter, search, grid/list, actions
  *   J2  Studio: write code, bind governed data, live preview, provenance, save, publish
- *   J3  AI scoped edit keeps the rest of the report (server-scoped CSS)
+ *   J3  -> e2e/acceptance/report-vibe-ai-edit.spec.ts (real Studio model; not on CI)
  *   J4  Versions: a draft never reaches the public link; rollback does
  *   J5  Public Modal: password, expiry, locked + hidden filters, appearance, embed, revoke
  *   J6  Public AI Bot: offered only when the link enables it; locks hold
@@ -80,9 +80,14 @@ async function kpiValue(request: APIRequestContext, token: string, headers: Reco
 
 test.beforeAll(async ({ request }) => {
   const ds = await (await request.get(`${API}/api/v1/datasets/`)).json();
-  const olist = (Array.isArray(ds) ? ds : ds.items || []).find((d: any) => /Olist Sales Reporting/i.test(d.name));
-  expect(olist, 'the Olist Sales Reporting dataset exists on this stack').toBeTruthy();
-  datasetId = olist.id;
+  // CI: the fixture seed_e2e_presentation.py builds (Revenue measure, region dimension).
+  // Local stack: the Olist dataset when that fixture was never seeded. Neither = FAIL.
+  const all = Array.isArray(ds) ? ds : ds.items || [];
+  const fixture = all.find((d: any) => d.name === 'E2E presentation sales');
+  const local = process.env.CI ? null : all.find((d: any) => /Olist Sales Reporting/i.test(d.name));
+  const dataset = fixture || local;
+  expect(dataset, 'the E2E presentation sales fixture (CI) or the Olist dataset (local) exists').toBeTruthy();
+  datasetId = dataset.id;
 });
 
 test('J2 Studio: write code, bind governed data, live preview, provenance, save, publish', async ({ page }) => {
@@ -104,7 +109,7 @@ test('J2 Studio: write code, bind governed data, live preview, provenance, save,
   await expect(page.getByTestId('binding-b1')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId('binding-b1-uses')).toContainText(/chưa dùng|not used/i);
   // the picker stays open: its dimension chips (+ label) add a declared filter
-  const dim = page.getByRole('button', { name: /^\+ .*(state|bang|tiểu bang)/i }).first();
+  const dim = page.getByRole('button', { name: /^\+ .*(state|bang|tiểu bang|region|vùng)/i }).first();
   await (await dim.count() ? dim : page.getByRole('button', { name: /^\+ / }).first()).click();
   await expect(page.locator('[data-testid^="filter-f1"]').first()).toBeVisible({ timeout: 60_000 });
 
@@ -185,32 +190,7 @@ test('J1 /dashboards: one report list for both build methods', async ({ page }) 
   await page.waitForURL(/\/dashboards\/\d+$/);
 });
 
-test('J3 AI scoped edit changes one region and scopes its CSS', async ({ page }) => {
-  watchConsole(page, 'ai-edit');
-  await page.goto(`/dashboards/code/${reportId}`);
-  const before = await (await page.request.get(`${RA}/${reportId}`)).json();
-  await page.getByTestId('studio-tab-ai').click();
-  await expect(page.getByTestId('studio-ai-allow-data')).not.toBeChecked();
-  await page.getByTestId('studio-select-region').click();
-  await page.frameLocator('[data-testid="report-frame"]').locator('[data-rac-region="kpis"]').click();
-  await expect(page.getByTestId('studio-region-chip')).toBeVisible();
-  await page.getByTestId('studio-ai-input').fill('Đổi nền vùng này sang xanh lá nhạt, giữ nguyên chữ và số');
-  await page.getByTestId('studio-ai-send').click();
-  // one Studio AI call (the deployment's Studio model); wait for its one terminal state
-  await expect(page.getByTestId('studio-job')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId('studio-job')).toBeHidden({ timeout: 180_000 });
-  const after = await (await page.request.get(`${RA}/${reportId}`)).json();
-  // no revision = the edit did not happen: that is a FAIL, never a skip
-  expect(after.draft.number, 'the AI edit produced a new revision').toBeGreaterThan(before.draft.number);
-  expect(after.draft.source).toBe('ai_edit');
-  const added = after.draft.css.slice(before.draft.css.length);
-  const rules = added.split('\n').filter((l: string) => l.includes('{') && !/^\s*(@|\/\*|\})/.test(l));
-  expect(rules.every((r: string) => r.trim().startsWith('[data-rac-region="kpis"]')), added).toBeTruthy();
-  // the regions the request did not name are byte-identical
-  const strip = (h: string) => h.replace(/<section[^>]*data-rac-region="kpis"[\s\S]*?<\/section>/, '');
-  expect(strip(after.draft.html)).toBe(strip(before.draft.html));
-  await shot(page, 'j3-ai-region-edit');
-});
+// J3 (a scoped AI edit) needs the REAL Studio model: e2e/acceptance/report-vibe-ai-edit.spec.ts
 
 test('J4 Versions: a draft never reaches the public link; rollback does', async ({ page, browser }) => {
   watchConsole(page, 'versions');
