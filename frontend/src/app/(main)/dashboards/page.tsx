@@ -63,7 +63,8 @@ export default function DashboardsPage() {
   const [isHtmlImportOpen, setIsHtmlImportOpen] = useState(false);
   const [isStarterOpen, setIsStarterOpen] = useState(false);
   const [isManualChooserOpen, setIsManualChooserOpen] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  // Selected reports by row KEY (`manual-12` / `vibe-48`): the two builders' ids overlap.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [showBulkConfirm, setShowBulkConfirm] = useState(false);
   // Report type filter (Tất cả | Build Manual | AI Vibe Report), kept in ?type= so a
@@ -93,6 +94,18 @@ export default function DashboardsPage() {
     queryKey: ['report-artifacts'],
     queryFn: () => reportCodeApi.list(),
   });
+  const vibeRelations = (row: ReportRow) => {
+    const chartIds = row.kind === 'vibe' ? row.vibe.chart_ids ?? [] : [];
+    const datasetIds = new Set<number>(row.datasetIds);
+    const sourceIds = new Set<number>();
+    for (const id of chartIds) {
+      const bag = relationIndex.chartRelationsById.get(id);
+      bag?.datasetIds.forEach((d) => datasetIds.add(d));
+      bag?.sourceIds.forEach((x) => sourceIds.add(x));
+    }
+    datasetIds.forEach((d) => relationIndex.datasetRelationsById.get(d)?.sourceIds.forEach((x) => sourceIds.add(x)));
+    return { dashboardIds: new Set<number>(), chartIds: new Set<number>(chartIds), datasetIds, sourceIds };
+  };
   // ONE list of reports, newest change first, whichever way each was built.
   const allRows = useMemo<ReportRow[]>(() => [
     ...(dashboards ?? []).map(manualRow),
@@ -285,42 +298,55 @@ export default function DashboardsPage() {
     onExport: (row) => (row.kind === 'manual' ? void handleExport(row.dashboard) : void exportVibe(row)),
   };
 
-  const toggleSelect = (id: number) => {
+  const toggleSelect = (key: string) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
-  const toggleSelectAll = (ids: number[]) => {
+  const toggleSelectAll = (keys: string[]) => {
     setSelectedIds((prev) => {
-      const allSelected = ids.every((id) => prev.has(id));
+      const allSelected = keys.every((k) => prev.has(k));
       if (allSelected) return new Set();
-      return new Set(ids);
+      return new Set(keys);
     });
   };
 
+  // What is selected NOW: rows that still exist and that this caller may delete (a row deleted
+  // elsewhere, or whose access changed, silently leaves the selection).
+  const selectedRows = useMemo(
+    () => allRows.filter((r) => selectedIds.has(r.key) && r.perms.canDelete),
+    [allRows, selectedIds],
+  );
+
+  // One bulk delete for every report, each through its OWN builder's delete (the backend
+  // decides what else may go: a chart or dataset another report uses is kept).
   const handleBulkDelete = async () => {
-    if (selectedIds.size === 0) return;
+    if (selectedRows.length === 0) return;
     setIsBulkDeleting(true);
-    let successCount = 0;
-    let failCount = 0;
-    for (const id of selectedIds) {
+    const failed: { key: string; name: string; reason: string }[] = [];
+    let done = 0;
+    for (const row of selectedRows) {
       try {
-        await deleteMutation.mutateAsync(id);
-        successCount++;
-      } catch {
-        failCount++;
+        if (row.kind === 'manual') await deleteMutation.mutateAsync(row.id);
+        else await reportCodeApi.remove(row.id);
+        done++;
+      } catch (error: any) {
+        const detail = error?.response?.data?.detail;
+        failed.push({ key: row.key, name: row.name, reason: typeof detail === 'string' ? detail : (detail?.message || error?.message || '') });
       }
     }
     setIsBulkDeleting(false);
+    await queryClient.invalidateQueries({ queryKey: ['report-artifacts'] });
     // Nothing deleted: an error the confirm dialog shows (it stays open), not a toast after it closed.
-    if (successCount === 0 && failCount > 0) throw new Error(`Failed to delete ${failCount} dashboard(s)`);
-    setSelectedIds(new Set());
-    if (successCount > 0) toast.success(`Deleted ${successCount} dashboard(s)`);
-    if (failCount > 0) toast.error(`Failed to delete ${failCount} dashboard(s)`);
+    if (done === 0 && failed.length > 0) throw new Error(t('reportList.bulk.none', { reason: failed[0].reason || failed[0].name }));
+    // Keep what failed selected, so it can be looked at or retried; drop what is gone.
+    setSelectedIds(new Set(failed.map((f) => f.key)));
+    if (done > 0) toast.success(t('reportList.bulk.done', { count: done }));
+    if (failed.length > 0) toast.error(t('reportList.bulk.failed', { count: failed.length, names: failed.map((f) => f.name).join(', ') }));
   };
 
   return (
@@ -460,14 +486,12 @@ export default function DashboardsPage() {
             if (!matchesSearch) return false;
             if (listFilters.access && row.access !== listFilters.access) return false;
             if (listFilters.owner && row.ownerEmail !== listFilters.owner) return false;
-            if (row.kind === 'vibe') {
-              // chart / source relations and the chart-state tag are dashboard-tile facts
-              return !listFilters.state && !listFilters.chart && !listFilters.source
-                && (!listFilters.dataset || row.datasetIds.includes(Number(listFilters.dataset)));
-            }
             const chartState = row.content.count > 0 ? 'linked' : 'empty';
+            // A Vibe Report relates to charts / datasets / sources through the saved charts it
+            // binds, exactly as a dashboard relates through its tiles: one matcher for both.
+            const relations = row.kind === 'vibe' ? vibeRelations(row) : relationIndex.dashboardRelationsById.get(row.id);
             return (!listFilters.state || chartState === listFilters.state)
-              && matchesRelatedFilters(relationIndex.dashboardRelationsById.get(row.id), {
+              && matchesRelatedFilters(relations, {
                 dataset: listFilters.dataset, chart: listFilters.chart, source: listFilters.source,
               });
           });
@@ -493,7 +517,7 @@ export default function DashboardsPage() {
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
                       {pageItems.map((row) => (
                         <ReportCard key={row.key} row={row} actions={actions}
-                          selected={selectedIds.has(row.id)} onToggleSelect={canEdit ? toggleSelect : undefined} />
+                          selected={selectedIds.has(row.key)} onToggleSelect={canEdit ? toggleSelect : undefined} />
                       ))}
                     </div>
                   ) : (
@@ -519,7 +543,7 @@ export default function DashboardsPage() {
 
       {canEdit && (
         <BulkActionBar
-          selectedCount={selectedIds.size}
+          selectedCount={selectedRows.length}
           onDelete={() => setShowBulkConfirm(true)}
           onClear={() => setSelectedIds(new Set())}
           isDeleting={isBulkDeleting}
@@ -530,9 +554,9 @@ export default function DashboardsPage() {
         isOpen={showBulkConfirm}
         onClose={() => setShowBulkConfirm(false)}
         onConfirm={handleBulkDelete}
-        title={t('common.bulkDelete.dashboards', { count: selectedIds.size })}
-        description={t('common.cannotUndo')}
-        details={<ConfirmTargets names={(dashboards ?? []).filter((d) => selectedIds.has(d.id)).map((d) => d.name)} />}
+        title={t('reportList.bulk.title', { count: selectedRows.length })}
+        description={t('reportList.bulk.desc')}
+        details={<ConfirmTargets names={selectedRows.map((r) => `${r.name} · ${t(r.kind === 'vibe' ? 'reportList.kind.vibe' : 'reportList.kind.manual')}`)} />}
         confirmLabel="Delete"
         variant="danger"
       />

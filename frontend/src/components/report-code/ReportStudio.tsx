@@ -23,7 +23,7 @@ import { PasteCodeWizard } from '@/components/report-code/PasteCodeWizard';
 import { PublicLinksManager } from '@/components/common/PublicLinksManager';
 import { reportLinkTarget } from '@/components/report-code/reportLinkTarget';
 import { reportCodeApi, type ReportDetail, type ReportJob, type ReportRevision } from '@/lib/api/report-code';
-import type { FilterState } from '@/lib/report-code/protocol';
+import type { FilterState, ReportFilterDecl } from '@/lib/report-code/protocol';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -137,7 +137,7 @@ export function ReportStudio({ reportId }: { reportId: number }) {
   }, [dirty]);
 
   // Bindings/filters of the revision being previewed (an old version may differ).
-  const [previewMeta, setPreviewMeta] = useState<{ bindings: { id: string; title: string; kind: string }[]; filters: { key: string; label: string; kind: 'category' | 'date' }[] } | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<{ bindings: { id: string; title: string; kind: string }[]; filters: ReportFilterDecl[] } | null>(null);
   useEffect(() => {
     setPreviewMeta(null);
     if (!previewNumber) return;
@@ -148,10 +148,15 @@ export function ReportStudio({ reportId }: { reportId: number }) {
     return () => { alive = false; };
   }, [previewNumber, reportId]);
   const bindings = useMemo(() => (previewMeta?.bindings || draft?.bindings || []).map((b) => ({ id: b.id, title: b.title, kind: b.kind })), [previewMeta, draft]);
-  const filters = useMemo(() => (previewMeta?.filters || draft?.filters || []).map((f) => ({ key: f.key, label: f.label, kind: f.kind })), [previewMeta, draft]);
+  const filters = useMemo(() => (previewMeta?.filters || draft?.filters || []).map((f) => ({ key: f.key, label: f.label, kind: f.kind, grain: f.grain, default: f.default, single: f.single, default_value: f.default_value })), [previewMeta, draft]);
 
-  const fetchData = useCallback((binding: string, state: FilterState) => reportCodeApi.data(reportId, binding, state, previewNumber), [reportId, previewNumber]);
-  const fetchValues = useCallback((key: string, search: string, state: FilterState) => reportCodeApi.values(reportId, key, search, state, previewNumber), [reportId, previewNumber]);
+  // The frame caches data per fetcher: a NEW fetcher for every saved draft revision (a binding
+  // re-added under a freed id may read another chart), the same one across unsaved code edits.
+  const draftNumber = draft?.number ?? null;
+  const fetchData = useCallback((binding: string, state: FilterState) => reportCodeApi.data(reportId, binding, state, previewNumber),
+    [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fetchValues = useCallback((key: string, search: string, state: FilterState) => reportCodeApi.values(reportId, key, search, state, previewNumber),
+    [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
   // An old version is shown only once its own bindings are known, never with the draft's.
   const [doc, setDoc] = useState<{ url: string; isolated: boolean; n: number } | null>(null);
   const [guardState, setGuardState] = useState<{ guard: boolean; authorScript?: 'ran' | 'refused' } | null>(null);
@@ -239,17 +244,30 @@ export function ReportStudio({ reportId }: { reportId: number }) {
     }
   };
 
-  const publish = async (revisionId?: number) => {
+  const publish = async (revisionId?: number, allowSamples = false) => {
     if (!detail) return;
     setPublishing(true);
     try {
-      const s = await reportCodeApi.publish(reportId, revisionId);
+      const s = await reportCodeApi.publish(reportId, revisionId, allowSamples);
       toast.success(t('reportCode.publish.done', { n: s.published_number ?? '' }));
       // links this version makes refuse to serve (a locked filter it does not declare)
       (s.warnings || []).forEach((w) => toast.warning(w));
       await load();
     } catch (e: any) {
-      toast.error(e?.response?.data?.detail || e?.message);
+      const d = e?.response?.data?.detail;
+      if (e?.response?.status === 409 && d?.code === 'SAMPLE_NUMBERS') {
+        // sample numbers from the design: never published silently as if they were data
+        setPublishing(false);
+        if (window.confirm(`${t('reportCode.publish.samplesTitle')}
+
+${d.message}
+
+${t('reportCode.publish.samplesConfirm')}?`)) {
+          await publish(revisionId, true);
+        }
+        return;
+      }
+      toast.error(typeof d === 'string' ? d : d?.message || e?.message);
     } finally {
       setPublishing(false);
     }

@@ -170,6 +170,7 @@ jobs:
             tests/test_source_manual_ingestion.py \
             tests/test_semantic_measure_render.py \
             tests/test_dialect_structural.py \
+            tests/test_duckdb_integer_never_rounds.py \
             tests/test_time_grain_whitelist.py \
             tests/test_chart_config_write_validation.py \
             tests/test_agent_flow_golden.py \

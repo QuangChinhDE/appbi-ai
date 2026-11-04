@@ -36,6 +36,8 @@ export interface ReportSummary {
   public_link_count?: number;
   /** The data sources (bindings) of the draft. */
   binding_count?: number;
+  /** saved charts it reads (draft + published), for the list's Chart/Source/Dataset filters */
+  chart_ids?: number[];
   /** Set by the list endpoint: the caller's level and the owner, as on a dashboard row. */
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   owner_email?: string | null;
@@ -45,7 +47,7 @@ export interface ReportSummary {
 }
 
 export interface ReportBinding { id: string; chart_id: number; title: string; kind: string }
-export interface ReportFilter { key: string; label: string; kind: 'category' | 'date'; fieldKey?: string }
+export interface ReportFilter { key: string; label: string; kind: 'category' | 'date'; fieldKey?: string; grain?: 'month'; default?: 'latest'; single?: boolean; default_value?: string }
 export interface ReportRegion { id: string; tag: string; label: string }
 
 export interface ReportRevision {
@@ -92,9 +94,15 @@ export interface CreateReportInput {
 
 export interface ImportSlot {
   id: string;
-  kind: 'value' | 'chart' | 'table' | 'filter';
+  kind: 'value' | 'chart' | 'table' | 'filter' | 'list' | 'period';
   context: string;
   sample: string;
+  /** a filter slot whose options are months: becomes the report's period (default: latest) */
+  period?: boolean;
+  /** list slot: its rows and the text runs of its first row (the template) */
+  rows?: number;
+  columns?: { index: number; sample: string; numeric: boolean }[];
+  column_fields?: Record<string, string | null>;
   candidate?: string | null;
   candidate_title?: string | null;
   viz?: string | null;
@@ -152,8 +160,8 @@ export const reportCodeApi = {
   /** The report as one standalone HTML file with a data snapshot. */
   exportHtml: async (id: number): Promise<Blob> =>
     (await apiClient.get(`${base(id)}/export-html`, { responseType: 'blob' })).data,
-  publish: async (id: number, revisionId?: number): Promise<ReportSummary & { warnings?: string[] }> =>
-    (await apiClient.post(`${base(id)}/publish`, { revision_id: revisionId ?? null })).data,
+  publish: async (id: number, revisionId?: number, allowSamples = false): Promise<ReportSummary & { warnings?: string[] }> =>
+    (await apiClient.post(`${base(id)}/publish`, { revision_id: revisionId ?? null, allow_samples: allowSamples })).data,
   /** Named public links — the same contract (and PublicLink shape) as a dashboard's. */
   listPublicLinks: async (id: number): Promise<PublicLink[]> => (await apiClient.get(`${base(id)}/public-links`)).data,
   createPublicLink: async (id: number, body: Record<string, unknown>): Promise<PublicLink> =>
@@ -183,6 +191,9 @@ export const reportCodeApi = {
     (await apiClient.delete(`${base(id)}/bindings/${encodeURIComponent(bindingId)}`)).data as { revision: ReportRevision; warnings: string[] },
   addFilter: async (id: number, dimensionId: string) =>
     (await apiClient.post(`${base(id)}/filters`, { dimension_id: dimensionId })).data as { revision: ReportRevision; warnings: string[] },
+  /** A declared filter's grain / default period / single value (a new draft revision). */
+  setFilterOptions: async (id: number, key: string, body: { grain?: 'month' | null; default?: 'latest' | null; single?: boolean; default_value?: string | null }) =>
+    (await apiClient.patch(`${base(id)}/filters/${encodeURIComponent(key)}`, body)).data as { revision: ReportRevision; warnings: string[] },
   removeFilter: async (id: number, key: string) =>
     (await apiClient.delete(`${base(id)}/filters/${encodeURIComponent(key)}`)).data as { revision: ReportRevision; warnings: string[] },
 };

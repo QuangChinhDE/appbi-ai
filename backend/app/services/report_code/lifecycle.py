@@ -85,10 +85,28 @@ def _refs(text: str) -> List[str]:
     return [next(g for g in groups if g) for groups in _REF_RX.findall(text or "")]
 
 
-def publish(db: Session, artifact: ReportArtifact, *, revision_id: Optional[int] = None) -> ReportArtifactRevision:
+_SAMPLE_RX = re.compile(r"<[a-zA-Z][^>]*\sdata-rac-sample(?:[\s=>/])", re.S)
+
+
+def sample_marks(html: str) -> int:
+    """How many places still show the design's SAMPLE numbers (not BI Core data)."""
+    return len(_SAMPLE_RX.findall(html or ""))
+
+
+class SampleNumbersRemain(ValueError):
+    """Publishing would present a design's sample numbers to readers as if they were data."""
+
+
+def publish(db: Session, artifact: ReportArtifact, *, revision_id: Optional[int] = None,
+            allow_samples: bool = False) -> ReportArtifactRevision:
     target = get_revision(db, artifact, revision_id or artifact.draft_revision_id)
     if target is None:
         raise ValueError("Báo cáo chưa có phiên bản nào để xuất bản.")
+    n = sample_marks(target.html)
+    if n and not allow_samples:
+        raise SampleNumbersRemain(
+            f"Còn {n} vị trí hiển thị SỐ MẪU từ thiết kế (đánh dấu data-rac-sample), chưa nối dữ liệu BI Core. "
+            "Nối chúng với dữ liệu, đánh dấu là chữ tĩnh, hoặc xác nhận xuất bản kèm nhãn \"số mẫu\".")
     artifact.published_revision_id = target.id
     artifact.last_published_at = _now()
     return target
@@ -167,7 +185,7 @@ def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
         return []
     rev_ids = {i for a in arts for i in (a.draft_revision_id, a.published_revision_id) if i}
     revs = {r.id: r for r in db.query(ReportArtifactRevision.id, ReportArtifactRevision.number,
-                                      ReportArtifactRevision.content_hash,
+                                      ReportArtifactRevision.content_hash, ReportArtifactRevision.bindings,
                                       _f.jsonb_array_length(ReportArtifactRevision.bindings).label("binding_count"))
             .filter(ReportArtifactRevision.id.in_(rev_ids)).all()} if rev_ids else {}
     links = dict(db.query(ReportArtifactPublicLink.artifact_id, _f.count(ReportArtifactPublicLink.id))
@@ -196,8 +214,11 @@ def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, An
         "owner_id": str(art.owner_id) if art.owner_id else None,
         "draft_number": draft.number if draft else None, "published_number": pub.number if pub else None,
         # what the report holds: the data sources (bindings) of its draft
-        "binding_count": (getattr(draft, "binding_count", None) if not hasattr(draft, "bindings")
-                          else len(draft.bindings or [])) if draft else 0,
+        "binding_count": len(draft.bindings or []) if draft else 0,
+        # the saved charts it reads (draft + published): the list's Chart / Source / Dataset
+        # filters relate a Vibe Report the way they relate a dashboard's tiles
+        "chart_ids": sorted({int(x["chart_id"]) for r in (draft, pub) if r is not None
+                             for x in (r.bindings or []) if isinstance(x, dict) and isinstance(x.get("chart_id"), int)}),
         "has_unpublished_changes": bool(draft and (not pub or draft.content_hash != pub.content_hash)),
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.
@@ -215,7 +236,11 @@ def revision_view(rev: ReportArtifactRevision, *, with_source: bool) -> Dict[str
     if with_source:
         out.update({"html": rev.html, "css": rev.css, "js": rev.js,
                     "bindings": [{k: b.get(k) for k in ("id", "chart_id", "title", "kind")} for b in rev.bindings or []],
-                    "filters": [{k: f.get(k) for k in ("key", "label", "kind", "fieldKey")} for f in rev.filters or []],
+                    # grain/default/single are how the filter behaves (a period picker, a default
+                    # value) - the studio frame needs them as much as a public link does
+                    "filters": [{k: f.get(k) for k in ("key", "label", "kind", "fieldKey", "grain", "default", "single",
+                                                     "default_value") if k in ("key", "label", "kind", "fieldKey")
+                                 or f.get(k) not in (None, "", False)} for f in rev.filters or []],
                     "regions": D.list_regions(rev.html)})
     return out
 

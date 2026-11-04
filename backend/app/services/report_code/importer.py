@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 MAX_SLOTS = 40
 _NUM_RX = re.compile(r"(?<![\w#.,-])[-+]?\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d+)?(?:\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD))?"
                      r"|(?<![\w#.,-])[-+]?\d+(?:[.,]\d+)?\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD)(?![\w])"
-                     r"|(?<![\w#.,:/-])[-+]?\d{3,}(?:[.,]\d+)?(?![\w:/-])")
+                     r"|(?<![\w#.,:/-])[-+]?\d{3,}(?:[.,]\d+)?(?![\w:/-])"
+                     # a short decimal whose unit sits in the next element ("79,65" + <small>tỷ</small>)
+                     r"|(?<![\w#.,:/-])[-+]?\d{1,2}[.,]\d{1,3}(?![\w:/.,-])")
 _CHART_HINT = re.compile(r"chart|graph|plot|canvas|viz|sparkline", re.I)
 _PLACEHOLDER = re.compile(r"@[cf]\d+\b")
 _LIB_STUBS = {
@@ -117,6 +119,9 @@ def _sole_host(html: str, tags: List[D._Tag], pos: int, token: str) -> Optional[
     return best if "<" not in inner and inner.strip() == token else None
 
 
+_UNIT_ONLY = re.compile(r"(tỷ|Tỷ|tr|Tr|triệu|nghìn|K|N|M|B|%|₫|đ|VND|USD|điểm|điểm %)", re.I)
+
+
 def _enclosing_label(html: str, tags: List[D._Tag], pos: int, token: str) -> str:
     """The text a reader sees next to a figure: the innermost element around it that
     says something besides the figure itself (a KPI tile's "Doanh thu")."""
@@ -130,7 +135,7 @@ def _enclosing_label(html: str, tags: List[D._Tag], pos: int, token: str) -> str
     for start, end in sorted(spans, key=lambda s: s[1] - s[0]):
         text = _plain(html[start:end]).replace(token, " ")
         text = re.sub(r"\s+", " ", _NUM_RX.sub(" ", text)).strip(" ·:-")
-        if len(text) >= 2:
+        if len(text) >= 2 and not _UNIT_ONLY.fullmatch(text):  # "2,18 <small>tr</small>": the unit is no label
             return text[:80]
         if end - start > 2000:
             break
@@ -138,6 +143,89 @@ def _enclosing_label(html: str, tags: List[D._Tag], pos: int, token: str) -> str
 
 
 # ── Analyze ───────────────────────────────────────────────────────────────────
+
+_PERIOD_RX = re.compile(r"\b(?:Tháng|Th\.?|T)\s?(0?[1-9]|1[0-2])\s?/\s?((?:19|20)\d{2})\b", re.I)
+_LIST_MIN_ROWS = 2
+#: never rows of a result: document plumbing, and the inside of an SVG drawing (a chart)
+_NOT_LIST_TAGS = {"script", "style", "option", "head", "svg", "g", "text", "tspan", "circle", "rect", "line",
+                  "path", "polyline", "polygon", "ellipse", "defs", "clippath", "lineargradient", "stop"}
+
+
+def _class_sig(attrs: Dict[str, Any]) -> str:
+    return " ".join(sorted(str(attrs.get("class") or "").split()))
+
+
+def _children(tags) -> Dict[int, List[int]]:
+    """parent start-tag index -> its direct child start-tag indexes (-1 = top level)."""
+    out: Dict[int, List[int]] = {}
+    stack: List[int] = []
+    for i, t in enumerate(tags):
+        if t.kind in ("start", "startend"):
+            out.setdefault(stack[-1] if stack else -1, []).append(i)
+            if t.kind == "start" and t.name not in D._VOID:
+                stack.append(i)
+        elif t.kind == "end":
+            while stack and tags[stack[-1]].name != t.name:
+                stack.pop()
+            if stack:
+                stack.pop()
+    return out
+
+
+def detect_lists(html: str, sc=None) -> List[Dict[str, Any]]:
+    """Repeated sibling structures that hold numbers: table rows, list items, alert rows,
+    matrix rows. One list slot = its rows (the FIRST is the template) and the text runs of
+    that first row (its columns), so a mapping can say which run shows which field."""
+    sc = sc or _scan(html)
+    tags = sc.tags
+    kids = _children(tags)
+    found: List[Dict[str, Any]] = []
+    for parent, members in kids.items():
+        groups: Dict[Tuple[str, str], List[int]] = {}
+        for i in members:
+            t = tags[i]
+            if t.kind != "start" or t.name in _NOT_LIST_TAGS:
+                continue
+            groups.setdefault((t.name, _class_sig(dict(t.attrs))), []).append(i)
+        for (name, sig), idxs in groups.items():
+            if len(idxs) < _LIST_MIN_ROWS:
+                continue
+            spans = []
+            for i in idxs:
+                j = D._matching_end(tags, i)
+                if j < 0:
+                    break
+                spans.append((tags[i].start, tags[j].end, i))
+            if len(spans) != len(idxs):
+                continue
+            texts = [[(p, d) for p, d in sc.texts if a <= p < b] for a, b, _ in spans]
+            numeric = [any(_NUM_RX.search(d) for _, d in tx) for tx in texts]
+            if sum(numeric) < _LIST_MIN_ROWS:
+                continue
+            # rows of ONE result share a shape: the same number of text runs, row after row
+            lens = sorted(len(tx) for tx in texts)
+            shape = lens[len(lens) // 2]
+            if not shape or sum(abs(len(tx) - shape) <= 2 for tx in texts) < max(_LIST_MIN_ROWS, round(0.8 * len(texts))):
+                continue
+            first = texts[0]
+            cols = [{"index": n, "sample": d.strip()[:60], "numeric": bool(_NUM_RX.search(d))}
+                    for n, (_, d) in enumerate(first)]
+            if not any(c["numeric"] for c in cols) or len(cols) > 24:
+                continue
+            found.append({"kind": "list", "start": spans[0][0], "end": spans[-1][1], "tag": name,
+                          "rows": len(spans), "row_spans": [(a, b) for a, b, _ in spans], "template_tag": spans[0][2],
+                          "row_tags": [i for _, _, i in spans],
+                          "columns": cols, "context": (_heading_before(html, spans[0][0]) or sig or name)[:120],
+                          "sample": " · ".join(c["sample"] for c in cols[:4])[:120]})
+    # the OUTERMOST uniform structure wins: rows made of cells, not the cells of one row
+    found.sort(key=lambda s: -(s["end"] - s["start"]))
+    chosen: List[Dict[str, Any]] = []
+    for s in found:
+        if any(c["start"] <= s["start"] and s["end"] <= c["end"] for c in chosen):
+            continue
+        chosen.append(s)
+    return sorted(chosen, key=lambda s: s["start"])
+
 
 def detect_slots(html: str) -> List[Dict[str, Any]]:
     sc = _scan(html)
@@ -147,6 +235,12 @@ def detect_slots(html: str) -> List[Dict[str, Any]]:
 
     def inside(a: int, b: int) -> bool:
         return any(x <= a and b <= y for x, y in taken)
+
+    # repeated structures: rows of ONE result. They keep their table from being swapped for a
+    # widget; the single values inside stay mappable too (a mapped list wins over them).
+    lists = detect_lists(html, sc)
+    slots.extend(lists)
+    list_spans = [(ls["start"], ls["end"]) for ls in lists]
 
     for i, t in enumerate(tags):
         if t.kind not in ("start", "startend"):
@@ -159,7 +253,8 @@ def detect_slots(html: str) -> List[Dict[str, Any]]:
         if t.name == "table" or is_canvas or (hint and t.name in ("div", "section", "figure", "svg")):
             j = D._matching_end(tags, i) if t.kind == "start" else -1
             end = tags[j].end if j >= 0 else t.end
-            if inside(t.start, end):
+            if inside(t.start, end) or any(t.start <= x and y <= end for x, y in list_spans) \
+                    or any(x <= t.start and end <= y for x, y in list_spans):
                 continue
             inner = html[t.end:tags[j].start] if j >= 0 else ""
             if t.name in ("div", "section", "figure") and _plain(inner) and "<canvas" not in inner and "<svg" not in inner:
@@ -187,23 +282,48 @@ def detect_slots(html: str) -> List[Dict[str, Any]]:
     for pos, data in sc.texts:
         if inside(pos, pos + len(data)):
             continue
+        periods = list(_PERIOD_RX.finditer(data))
+        for m in periods:
+            slots.append({"kind": "period", "start": pos + m.start(), "end": pos + m.end(), "tag": "text",
+                          "context": (_plain(data[:m.start()]) or _heading_before(html, pos))[:80], "sample": m.group(0)})
+        spans_p = [(m.start(), m.end()) for m in periods]
         for m in _NUM_RX.finditer(data):
+            if any(a <= m.start() < b for a, b in spans_p):
+                continue
             tok = m.group(0).strip()
             if re.fullmatch(r"(19|20)\d{2}", tok):
                 continue  # a year in a heading is not a figure
             a = pos + m.start() + (len(m.group(0)) - len(m.group(0).lstrip()))
-            label = _plain(data[:m.start()]) or _enclosing_label(html, tags, a, tok) or _heading_before(html, pos)
+            label = _plain(data[:m.start()])
+            if not label or _UNIT_ONLY.fullmatch(label):
+                label = _enclosing_label(html, tags, a, tok) or _heading_before(html, pos)
             slots.append({"kind": "value", "start": a, "end": a + len(tok), "tag": "text", "context": label[:80],
                           "sample": tok, "host": _sole_host(html, tags, a, tok)})
     slots.sort(key=lambda s: s["start"])
-    slots = slots[:MAX_SLOTS]
+    # ids over EVERY slot: the review shows a budget of them (shown_slots), but apply still
+    # sees all - a number past the budget is never left looking like governed data
     for n, s in enumerate(slots):
         s["id"] = f"s{n + 1}"
     return slots
 
 
+def shown_slots(slots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The slots the author reviews: every list/period/filter, then single values up to the budget."""
+    keep = [s for s in slots if s["kind"] in ("list", "period", "filter")]
+    rest = [s for s in slots if s["kind"] not in ("list", "period", "filter")][:max(0, MAX_SLOTS - len(keep))]
+    return sorted(keep + rest, key=lambda s: s["start"])
+
+
 def _kinds_for(slot: Dict[str, Any]) -> Tuple[str, ...]:
     return {"value": ("kpi",), "chart": ("time", "category"), "table": ("category",)}.get(slot["kind"], ())
+
+
+def _shares_meaning(slot: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    """At least one word of what the slot SAYS is in the measure's name. Without it a pick
+    is a guess, and a guessed number published looks exactly like a governed one."""
+    sw = _words(slot.get("context", "")) | _words(slot.get("sample", "").rstrip("0123456789.,% "))
+    cw = _words(cand.get("title", "")) | _words(cand.get("measure", "")) | _words(cand.get("dimension_label", "") or "")
+    return bool(sw & cw)
 
 
 def _score(slot: Dict[str, Any], cand: Dict[str, Any]) -> float:
@@ -220,7 +340,7 @@ def _score(slot: Dict[str, Any], cand: Dict[str, Any]) -> float:
         if not timey and cand["kind"] == "category":
             s += 0.1
     if "%" in slot.get("sample", "") and ("%" in cand.get("title", "") or "ty le" in _norm(cand.get("title", ""))):
-        s += 0.3
+        s += 0.6  # a percent figure next to "Doanh thu" is the attainment, not the revenue
     return s
 
 
@@ -262,9 +382,9 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
         best = max(pool, key=lambda c: (_score(s, c), -c.get("rank", 9)), default=None)
         # Rules propose only what shares meaning with the slot's own label; "nothing in
         # common" is left for the author (or the model) — never the first candidate.
-        if best is not None and _score(s, best) > 0:
+        if best is not None and _score(s, best) > 0 and _shares_meaning(s, best):
             out[s["id"]] = {"candidate": best["id"], "confidence": round(min(1.0, _score(s, best)), 2), "source": "rules"}
-    data_slots = [s for s in slots if s["kind"] != "filter"]
+    data_slots = [s for s in slots if s["kind"] in ("value", "chart", "table")]  # lists/periods map by rules
     if data_slots and cands:
         try:
             from app.services.llm_client import LLMClient
@@ -300,6 +420,9 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
                         rule_s = _score(slot, known[rule["candidate"]]) if rule.get("candidate") in known else 0.0
                         if rule_s >= 0.3 and model_s < rule_s * 0.5:
                             out[sid] = {**rule, "source": "rules", "note": "model_disagreed"}
+                        elif not _shares_meaning(slot, known[cid]):
+                            # "Tỷ lệ nghỉ việc 3,2%" is not "% đạt KH Doanh thu": leave it for the author
+                            out[sid] = {"candidate": None, "confidence": 0.0, "source": "model", "note": "no_shared_meaning"}
                         else:
                             out[sid] = {"candidate": cid, "confidence": round(min(1.0, 0.55 + model_s), 2), "source": "model"}
                     elif slot and item and item.get("id") is None:
@@ -320,6 +443,28 @@ def _table_names(db: Session, ids: set) -> Dict[int, str]:
     return {t.id: t.display_name for t in db.query(DatasetTable.id, DatasetTable.display_name).filter(DatasetTable.id.in_(ids))}
 
 
+def _looks_like_months(options: List[str]) -> bool:
+    return len(options) >= 2 and sum(bool(_PERIOD_RX.search(o or "")) for o in options) >= max(2, len(options) - 1)
+
+
+def _first_text(slot: Dict[str, Any]) -> int:
+    return next((n for n, c in enumerate(slot["columns"]) if not c["numeric"]), -1)
+
+
+def _guess_list_dimension(slot: Dict[str, Any], dims: List[Dict[str, Any]]) -> Optional[str]:
+    """The dimension whose name the list's heading or first label column speaks of."""
+    words = _words(slot.get("context") or "")
+    best, score = None, 0.0
+    for d in dims:
+        if d["kind"] == "date":
+            continue
+        dw = _words(d.get("label") or "")
+        sc = len(words & dw) / (len(dw) or 1)
+        if sc > score:
+            best, score = d["id"], sc
+    return best if score >= 0.99 else None  # every word of the dimension in the heading, or no guess
+
+
 def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal: str = "") -> Dict[str, Any]:
     html, css, js, warnings = normalize_sources(html, css, js)
     model = B.load_model(db, dataset_id)
@@ -327,7 +472,7 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
     for c in cands:
         c["title"] = B._localize_title(c["title"])
     compatible = bool(_PLACEHOLDER.search(html + js)) or "data-rac-" in html
-    slots = [] if compatible else detect_slots(html)
+    slots = [] if compatible else shown_slots(detect_slots(html))
     proposals = propose(slots, cands, dims, goal) if slots else {}
     by_id = {c["id"]: c for c in cands}
     table_names = _table_names(db, {c.get("table") for c in cands if c.get("table")})
@@ -337,6 +482,21 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
         row = {k: s[k] for k in ("id", "kind", "context", "sample") if k in s}
         if s["kind"] == "filter":
             row["dimension"] = p.get("dimension")
+            row["period"] = _looks_like_months(s.get("options") or [])
+            kinds = {d["id"]: d["kind"] for d in dims}
+            if row["period"] and kinds.get(row["dimension"]) != "date":
+                # a month picker IS the report period: the date dimension the period text uses,
+                # never a text column that happens to hold "T08/2026"
+                row["dimension"] = next((d["id"] for d in dims if d["kind"] == "date"), None)
+        elif s["kind"] == "period":
+            # the headline period: shown from the report's period filter, never typed in
+            row["dimension"] = next((d["id"] for d in dims if d["kind"] == "date"), None)
+        elif s["kind"] == "list":
+            row["rows"] = s["rows"]
+            row["columns"] = [{"index": c["index"], "sample": c["sample"], "numeric": c["numeric"]} for c in s["columns"]]
+            row["dimension"] = _guess_list_dimension(s, dims)
+            row["column_fields"] = {str(c["index"]): ("dim" if not c["numeric"] and n == _first_text(s) else None)
+                                    for n, c in enumerate(s["columns"])}
         else:
             row["candidate"] = p.get("candidate")
             row["candidate_title"] = by_id[p["candidate"]]["title"] if p.get("candidate") in by_id else None
@@ -414,18 +574,33 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
 
     progress("Đọc các vị trí dữ liệu trong HTML")
     slots = {s["id"]: s for s in detect_slots(html)}
-    chosen = [m for m in mapping if m.get("slot") in slots and slots[m["slot"]]["kind"] != "filter" and m.get("candidate") in by_id]
+    chosen = [m for m in mapping if m.get("slot") in slots and slots[m["slot"]]["kind"] in ("value", "chart", "table")
+              and m.get("candidate") in by_id]
+    static = {m["slot"] for m in mapping if m.get("candidate") == "static"}  # the author: "this is not data"
     progress("Chạy thử truy vấn qua BI Core")
     picks, seen = [], set()
     for m in chosen:
         if m["candidate"] not in seen:
             seen.add(m["candidate"])
             picks.append((by_id[m["candidate"]], ""))
+    lists = _list_plans(mapping, slots, by_id, dims, notes)
+    for plan in lists.values():
+        picks.append((plan["cand"], plan["cand"]["title"]))
+        by_id[plan["cand"]["id"]] = plan["cand"]
     added, cmap, n2 = B.bind_candidates(db, picks, existing=existing, owner_id=owner_id, dataset_id=dataset_id,
                                         prefix=f"[Code] {report_name}", meta=meta)
     notes += n2
     filter_slots = {m["slot"]: m.get("dimension") for m in mapping if m.get("slot") in slots and slots[m["slot"]]["kind"] == "filter" and m.get("dimension")}
-    decl, fmap = _add_filters(decl, dims, list(dict.fromkeys(list(filter_slots.values()) + list(filters or []))))
+    period_dims = {m.get("dimension") for m in mapping if m.get("slot") in slots and m.get("dimension") and (
+        slots[m["slot"]]["kind"] == "period" or (slots[m["slot"]]["kind"] == "filter"
+                                                and _looks_like_months(slots[m["slot"]].get("options") or [])))}
+    period_slots = {m["slot"]: m["dimension"] for m in mapping if m.get("slot") in slots
+                    and slots[m["slot"]]["kind"] == "period" and m.get("dimension")}
+    decl, fmap = _add_filters(decl, dims, list(dict.fromkeys(list(filter_slots.values()) + list(period_slots.values())
+                                                             + list(filters or []))))
+    for f in decl:
+        if any(fmap.get(d) == f["key"] for d in period_dims) and f.get("kind") == "date":
+            f["grain"], f["default"] = "month", "latest"  # one period, shown by default = the newest month
 
     progress("Gắn dữ liệu vào đúng vị trí, giữ nguyên thiết kế")
     edits: List[Tuple[int, int, str]] = []
@@ -437,12 +612,14 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
             continue
         if s["kind"] == "value":
             host = s.get("host")
+            o = num_opts(s["sample"], _text_after(html, tags, host, s["end"]))
             if host is not None:
                 t = tags[host]
-                edits.append((t.start, t.end, D._rebuild_start(t, list(t.attrs) + [("data-rac-value", bid)])))
+                extra = [("data-rac-opts", json.dumps(o, ensure_ascii=False))] if o else []
+                edits.append((t.start, t.end, D._rebuild_start(t, list(t.attrs) + [("data-rac-value", bid)] + extra)))
                 edits.append((s["start"], s["end"], ""))
             else:
-                edits.append((s["start"], s["end"], f'<span data-rac-value="{bid}"></span>'))
+                edits.append((s["start"], s["end"], f'<span data-rac-value="{bid}"{_opts_attr(o)}></span>'))
         else:
             viz = m.get("viz") or default_viz(s, by_id[m["candidate"]], js) or "bar"
             if viz not in _VIZ:
@@ -451,6 +628,39 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
             style = f' style="height:{h}px;width:100%"' if h else ""
             keep_id = f' id="{s["element_id"]}"' if s.get("element_id") else ""
             edits.append((s["start"], s["end"], f'<div{keep_id} data-rac-viz="{viz}" data-rac-bind="{bid}"{style}></div>'))
+    for sid, plan in lists.items():
+        bid = cmap.get(plan["cand"]["id"])
+        if not bid:
+            notes.append(f"Danh sách '{slots[sid]['context']}': dữ liệu không chạy được — giữ nguyên, đánh dấu số mẫu.")
+            continue
+        edits.append((slots[sid]["start"], slots[sid]["end"], _list_template(html, tags, slots[sid], plan, bid)))
+        static.add(sid)
+    for sid, did in period_slots.items():
+        key = fmap.get(did)
+        if key:
+            s = slots[sid]
+            edits.append((s["start"], s["end"], f'<span data-rac-filter-text="{key}"></span>'))
+            static.add(sid)
+    covered = [(slots[sid]["start"], slots[sid]["end"]) for sid in lists if cmap.get(lists[sid]["cand"]["id"])]
+    edits = [e for e in edits if not any(a <= e[0] and e[1] <= b for a, b in covered)
+             or any(e[0] == slots[sid]["start"] and e[1] == slots[sid]["end"] for sid in lists)]
+    done = {m["slot"] for m in chosen} | static | set(filter_slots)
+    for sid, s in slots.items():
+        if sid in done or any(a <= s["start"] and s["end"] <= b for a, b in covered):
+            continue
+        if s["kind"] == "list" and any(m["slot"] in slots and s["start"] <= slots[m["slot"]]["start"] < s["end"]
+                                       for m in chosen):
+            continue  # its values were mapped one by one: the list itself is not a sample
+        if s["kind"] == "value":
+            edits.append((s["start"], s["end"], f'<span data-rac-sample>{html[s["start"]:s["end"]]}</span>'))
+        elif s["kind"] == "list":
+            for ti in s["row_tags"]:
+                t = tags[ti]
+                edits.append((t.start, t.end, D._rebuild_start(t, list(t.attrs) + [("data-rac-sample", None)])))
+        elif s["kind"] in ("table", "chart"):
+            t = next((x for x in tags if x.start == s["start"] and x.kind in ("start", "startend")), None)
+            if t is not None:
+                edits.append((t.start, t.end, D._rebuild_start(t, list(t.attrs) + [("data-rac-sample", None)])))
     for sid, did in filter_slots.items():
         key = fmap.get(did)
         if key:
@@ -469,14 +679,171 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
     html = "".join(out)
     if new_keys:
         bar = "".join(f'<div data-rac-filter="{k}"></div>' for k in new_keys)
+        # floating, never IN the design's flow: a bar prepended to <body> became a flex item of
+        # the author's layout and pushed their sidebar/grid sideways
         html = (f'<div class="rac-import-filters" data-rac-region="filters" data-rac-label="Bộ lọc" '
-                f'style="display:flex;flex-wrap:wrap;gap:8px;padding:10px 16px">{bar}<div data-rac-filter-chips></div></div>') + html
+                f'style="position:fixed;top:8px;right:12px;z-index:2147483000;display:flex;flex-wrap:wrap;gap:8px;'
+                f'align-items:center;max-width:calc(100vw - 24px);padding:6px 10px;background:rgba(255,255,255,.96);'
+                f'border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 4px 16px rgba(15,23,42,.10)">{bar}</div>') + html
     stubs = [code for lib, code in _LIB_STUBS.items() if re.search(r"\b" + lib + r"\b", js or "")]
     if stubs:
         js = "/* AppBI: chart libraries are not loaded — their charts were replaced by governed visuals. */\n" + "\n".join(stubs) + "\n" + js
         notes.append("Các thư viện biểu đồ ngoài (" + ", ".join(l for l in _LIB_STUBS if re.search(r"\b" + l + r"\b", js)) +
                      ") không được tải; biểu đồ của chúng đã được thay bằng biểu đồ gắn dữ liệu BI Core.")
+    html = mark_loose_numbers(html)
     return {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added, "filters": decl, "notes": notes}
+
+
+_UNIT_SCALE = {"tỷ": 1e9, "ty": 1e9, "tr": 1e6, "triệu": 1e6, "nghìn": 1e3, "k": 1e3, "n": 1e3}
+
+
+def num_opts(sample: str, after: str = "") -> Dict[str, Any]:
+    """Format options that keep the design's look for a governed number: its unit (a scale
+    and the unit text when written inside the figure), its decimals, its percent sign."""
+    tok = (sample or "").strip()
+    m = re.match(r"^[▲▼+−-]?\s*([-+]?[\d.,\s]+?)\s*(%|tỷ|Tỷ|tr|Tr|triệu|nghìn|K|N)?\s*$", tok)
+    if not m:
+        return {}
+    digits, unit = m.group(1).strip(), (m.group(2) or "")
+    dec = 0
+    if "," in digits:  # vi-VN: comma = decimal separator
+        dec = len(digits.rsplit(",", 1)[1])
+    out: Dict[str, Any] = {"decimals": dec}
+    if unit == "%":
+        out["kind"] = "percent"
+        return out
+    following = re.match(r"^\s*(tỷ|Tỷ|tr|Tr|triệu|nghìn)\b", after or "")
+    u = (unit or (following.group(1) if following else "")).lower()
+    if u in _UNIT_SCALE:
+        out["scale"] = _UNIT_SCALE[u]
+        if unit:
+            out["suffix"] = " " + unit  # the unit was part of the figure: keep it in the text
+    else:
+        out["compact"] = False
+    return out
+
+
+_GOVERNED_ATTRS = ("data-rac-value", "data-rac-cell", "data-rac-filter-text", "data-rac-sample", "data-rac-filter",
+                   "data-rac-viz", "data-rac-filter-chips")
+_LOOSE_RX = re.compile(r"[-+−]?\d+(?:[.,/:]\d+)*\s?%?")
+
+
+def mark_loose_numbers(html: str) -> str:
+    """The last pass of an import: every figure still on the page that neither the BI Core
+    supplies nor a mark already covers ("88" on an org tree, "T07/26", "13 dòng") is marked as
+    a sample. Detection heuristics may miss a figure; this pass may not."""
+    sc = _scan(html)
+    tags = sc.tags
+    covered: List[Tuple[int, int]] = []
+    for i, t in enumerate(tags):
+        if t.kind != "start" or not any(k in _GOVERNED_ATTRS for k, _ in t.attrs):
+            continue
+        j = D._matching_end(tags, i)
+        covered.append((t.start, tags[j].end if j >= 0 else t.end))
+    edits: List[Tuple[int, int, str]] = []
+    for pos, data in sc.texts:
+        if any(a <= pos < b for a, b in covered):
+            continue
+        for m in _LOOSE_RX.finditer(data):
+            tok = m.group(0).rstrip()
+            if re.fullmatch(r"(19|20)\d{2}", tok):
+                continue  # a year in a heading is not a figure (as in detect_slots)
+            a = pos + m.start()
+            edits.append((a, a + len(tok), f"<span data-rac-sample>{tok}</span>"))
+    out, cur = [], 0
+    for a, b, rep in edits:
+        out.append(html[cur:a])
+        out.append(rep)
+        cur = b
+    out.append(html[cur:])
+    return "".join(out)
+
+
+def _text_after(html: str, tags, host: Optional[int], end: int) -> str:
+    """The words a reader sees right after a figure: after its own element when it is the
+    element's whole text ("<b>79,65</b><small>tỷ</small>"), else after the figure itself."""
+    if host is not None:
+        j = D._matching_end(tags, host)
+        end = tags[j].end if j >= 0 else tags[host].end
+    return re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html[end:end + 200])).strip()[:40]
+
+
+def _opts_attr(o: Dict[str, Any]) -> str:
+    return f" data-rac-opts='{json.dumps(o, ensure_ascii=False)}'" if o else ""
+
+
+def _list_plans(mapping, slots, by_id, dims, notes) -> Dict[str, Dict[str, Any]]:
+    """One governed result per mapped list: the row dimension + the measure of each column."""
+    by_dim = {d["id"]: d for d in dims}
+    out: Dict[str, Dict[str, Any]] = {}
+    for m in mapping:
+        sid = m.get("slot")
+        s = slots.get(sid)
+        if not s or s["kind"] != "list":
+            continue
+        d = by_dim.get(m.get("dimension"))
+        cols = {str(k): v for k, v in (m.get("columns") or {}).items() if v}
+        measures = [v for v in cols.values() if v in by_id and by_id[v]["kind"] == "kpi"]
+        if not d or not measures:
+            if cols:
+                notes.append(f"Danh sách '{s['context']}': cần một chiều dữ liệu cho dòng và ít nhất một chỉ số.")
+            continue
+        metrics, key_of = [], {}
+        for cid in measures:
+            met = by_id[cid]["role"]["metrics"][0]
+            if met not in metrics:
+                metrics.append(met)
+            key_of[cid] = f"m{metrics.index(met)}"
+        first = by_id[measures[0]]
+        cand = {"id": f"L{sid}", "kind": "category", "type": "BAR", "table": first["table"],
+                "role": {"metrics": metrics, "dimension": d["fieldKey"]},
+                "title": (s.get("context") or "Danh sách")[:80]}
+        fields = {}
+        for k, v in cols.items():
+            fields[k] = "d0" if v == "dim" else "#" if v == "#" else key_of.get(v) if v in key_of else None
+        out[sid] = {"cand": cand, "fields": fields}
+    return out
+
+
+def _list_template(html: str, tags, slot: Dict[str, Any], plan: Dict[str, Any], bid: str) -> str:
+    """The FIRST row, kept as the author wrote it, as the repeat template: each mapped text
+    run becomes a cell, an empty bar (inline width %) becomes a data bar; the other rows go."""
+    a, b = slot["row_spans"][0]
+    sc = _scan(html[a:b])
+    edits = []
+    for n, (pos, data) in enumerate(sc.texts):
+        f = plan["fields"].get(str(n))
+        lead = len(data) - len(data.lstrip())
+        if f:
+            o = num_opts(data.strip()) if f.startswith("m") else {}
+            edits.append((pos + lead, pos + len(data.rstrip()), f'<span data-rac-cell="{f}"{_opts_attr(o)}></span>'))
+        elif re.search(r"\d", data):
+            # a figure no column was mapped to would repeat on EVERY row: it stays a labelled sample
+            edits.append((pos + lead, pos + len(data.rstrip()), f'<span data-rac-sample>{data.strip()}</span>'))
+    first_measure = next((f for f in plan["fields"].values() if f and f.startswith("m")), None)
+    for i, t in enumerate(sc.tags):
+        style = str(dict(t.attrs).get("style") or "")
+        if first_measure and t.kind == "start" and re.search(r"(^|;)\s*width\s*:\s*[\d.]+%", style):
+            j = D._matching_end(sc.tags, i)
+            if j >= 0 and not _plain(html[a + t.end:a + sc.tags[j].start]):
+                attrs = [(k, v) for k, v in t.attrs if k != "style"]
+                rest = re.sub(r"(^|;)\s*width\s*:\s*[\d.]+%\s*;?", r"\1", style).strip("; ")
+                if rest:
+                    attrs.append(("style", rest))
+                edits.append((t.start, t.end, D._rebuild_start(t, attrs + [("data-rac-bar", first_measure)])))
+    seg = html[a:b]
+    out, cur = [], 0
+    for s0, e0, rep in sorted(edits):
+        if s0 < cur:
+            continue
+        out.append(seg[cur:s0])
+        out.append(rep)
+        cur = e0
+    out.append(seg[cur:])
+    seg = "".join(out)
+    first_tag = _scan(seg).tags[0]
+    seg = D._rebuild_start(first_tag, list(first_tag.attrs) + [("data-rac-repeat", bid)]) + seg[first_tag.end:]
+    return seg
 
 
 _VIZ = {"kpi", "bar", "column", "hbar", "line", "area", "donut", "pie", "table", "heatmap", "gauge", "waterfall", "progress", "sparkline"}

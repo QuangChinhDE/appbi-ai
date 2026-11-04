@@ -55,10 +55,9 @@ def field_meta(model: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         vname = v.get("name")
         for m in v.get("measures") or []:
             if isinstance(m, dict) and m.get("name"):
+                # The semantic model's own format, never guessed from a label: a percent
+                # measure holds a ratio (the platform convention), as Manual renders it.
                 fmt = m.get("format") if isinstance(m.get("format"), dict) else None
-                if not fmt and ("%" in str(m.get("label") or "") or str(m["name"]).lower().startswith(("pct_", "percent_"))):
-                    # The model says "this is a percentage" only in its label/name.
-                    fmt = {"kind": "percent"}
                 out[f"{vname}.{m['name']}"] = {
                     "label": _label(m), "role": "measure", "kind": "number",
                     "aggregation": str(m.get("type") or "").lower() or None, "format": _public_format(fmt),
@@ -175,8 +174,11 @@ def describe_fields(config: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> 
 def make_binding(bid: str, chart, title: str, meta: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     cfg = chart.config if isinstance(chart.config, dict) else {}
     ctype = str(getattr(chart.chart_type, "value", chart.chart_type) or cfg.get("chartType") or "")
+    fields = describe_fields(cfg, meta)
+    # `fields` is stored as JSONB, and Postgres REORDERS an object's keys (shorter first): the
+    # chart's metric order (m0, m1, ...) must be kept explicitly or two measures swap places.
     return {"id": bid, "chart_id": chart.id, "title": (title or chart.name or "")[:160],
-            "kind": _KIND_BY_TYPE.get(ctype.upper(), "category"), "fields": describe_fields(cfg, meta)}
+            "kind": _KIND_BY_TYPE.get(ctype.upper(), "category"), "fields": fields, "order": list(fields)}
 
 
 def run_candidate(db: Session, cand: Dict[str, Any]) -> bool:
@@ -323,24 +325,42 @@ def clean_state(decl: List[Dict[str, Any]], state: Any) -> Dict[str, Any]:
             if not isinstance(value, list) or len(value) != 2:
                 raise ValueError("Bộ lọc ngày cần [từ, đến].")
             lo, hi = _iso_date(value[0]), _iso_date(value[1])
+            if is_period(f):
+                if not lo:
+                    raise ValueError("Bộ lọc kỳ cần một tháng.")
+                out[key] = _month_bounds(lo)  # a period is a whole month, whatever was sent
+                continue
             if lo or hi:
                 out[key] = [lo, hi]
             continue
         if not isinstance(value, list) or len(value) > MAX_FILTER_VALUES or not all(_atom_ok(v) for v in value):
             raise ValueError("Giá trị lọc không hợp lệ.")
+        if f.get("single") and len(value) > 1:
+            raise ValueError(f"Bộ lọc '{f['label']}' chỉ chọn một giá trị.")
         out[key] = [str(v) for v in value]
     return out
 
 
-def conditions(decl: List[Dict[str, Any]], state: Dict[str, Any], *, skip: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Engine filter conditions, built ONLY from the report's declared filters."""
+def conditions(decl: List[Dict[str, Any]], state: Dict[str, Any], *, skip: Optional[str] = None,
+               enforced: Any = ()) -> List[Dict[str, Any]]:
+    """Engine filter conditions, built ONLY from the report's declared filters.
+
+    A key in `enforced` (a public link's lock / hidden constraint) carries the engine's
+    authoritative marker: it is APPLIED or the query is refused - never skipped softly
+    (unreachable view, no join path), which would return data wider than the link's scope.
+    The same marker a Manual dashboard's locks carry (chart_contracts.AUTHORITATIVE_KEY)."""
+    from app.services.chart_contracts import AUTHORITATIVE_KEY
+
     out = []
     by_key = {f["key"]: f for f in decl}
+    enforced = set(enforced or ())
     for key, value in state.items():
         f = by_key.get(key)
         if f is None or key == skip:
             continue
         base = {"field": f["field"], "fieldKey": f["fieldKey"], "semanticField": f["fieldKey"], "datasetId": f["datasetId"]}
+        if key in enforced:
+            base[AUTHORITATIVE_KEY] = True
         if f["kind"] == "date":
             lo, hi = value
             if lo and hi:
@@ -354,16 +374,106 @@ def conditions(decl: List[Dict[str, Any]], state: Dict[str, Any], *, skip: Optio
     return out
 
 
-def filter_values(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any], key: str, search: str = "") -> List[Any]:
+def _month_bounds(iso: str) -> List[str]:
+    """[first day, last day] of the month of an ISO date."""
+    import calendar
+
+    y, m = int(iso[:4]), int(iso[5:7])
+    return [f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}"]
+
+
+def _months(db: Session, f: Dict[str, Any], decl: List[Dict[str, Any]], state: Dict[str, Any], key: str,
+            enforced: Any = ()) -> List[str]:
+    """The months the filter's field holds (newest first) — BI Core distinct values."""
+    from app.services.dataset_model_service import get_distinct_field_values
+
+    res = get_distinct_field_values(db, f["datasetId"], f["fieldKey"], limit=MAX_FILTER_VALUES,
+                                    filters=conditions(decl, state, skip=key, enforced=enforced) or None)
+    seen = set()
+    for v in res.get("values") or []:
+        iso = _plain(v, "date")
+        if isinstance(iso, str) and len(iso) >= 7 and iso[4] == "-":
+            seen.add(iso[:7] + "-01")
+    return sorted(seen, reverse=True)
+
+
+def is_period(f: Dict[str, Any]) -> bool:
+    return f.get("kind") == "date" and f.get("grain") == "month"
+
+
+# resolve_state is asked once per BINDING of the same page load (13+ concurrent requests, each
+# running the same distinct query on the warehouse). One computation per (filters, state,
+# enforced locks) for a short time; concurrent askers wait for it instead of repeating it.
+# The result depends only on the report's declared filters and the data - never on the caller
+# (every endpoint has checked the caller's rights before asking) - and a lock is part of the key.
+RESOLVE_TTL_S = 30
+_resolve_memo: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_resolve_locks: Dict[str, Any] = {}
+_resolve_guard = __import__("threading").Lock()
+
+
+def resolve_state(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any], enforced: Any = ()) -> Dict[str, Any]:
+    import json as _json
+
+    if not any(f.get("default") == "latest" or f.get("default_value") not in (None, "") for f in decl or []):
+        return dict(state or {})  # nothing to resolve: no query, no memo
+    key = _json.dumps([decl, state or {}, sorted(set(enforced or ()))], sort_keys=True, default=str)
+    hit = _resolve_memo.get(key)
+    if hit and time.time() - hit[0] < RESOLVE_TTL_S:
+        return dict(hit[1])
+    with _resolve_guard:
+        lock = _resolve_locks.setdefault(key, __import__("threading").Lock())
+    with lock:
+        hit = _resolve_memo.get(key)
+        if hit and time.time() - hit[0] < RESOLVE_TTL_S:
+            return dict(hit[1])
+        out = _resolve_state(db, decl, state, enforced)
+        if len(_resolve_memo) > 512:
+            _resolve_memo.clear()
+        _resolve_memo[key] = (time.time(), dict(out))
+    with _resolve_guard:
+        _resolve_locks.pop(key, None)
+    return out
+
+
+def _resolve_state(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any], enforced: Any = ()) -> Dict[str, Any]:
+    """THE state a report's numbers are computed with: the caller's (viewer + locks), then
+    each declared default for a filter nobody set. `default: "latest"` on a month filter =
+    the newest month the data holds. One function for every surface (studio /data, public
+    /data, export, the AI Bot), so a headline and the numbers under it cannot disagree."""
+    out = dict(state or {})
+    for f in decl:
+        if f["key"] in out:
+            continue
+        if f.get("default_value") not in (None, "") and f.get("kind") != "date":
+            out[f["key"]] = [str(f["default_value"])]  # e.g. Đơn vị = "Tập đoàn" until a viewer picks one
+            continue
+        if f.get("default") != "latest":
+            continue
+        if is_period(f):
+            months = _months(db, f, decl, out, f["key"], enforced)
+            if months:
+                out[f["key"]] = _month_bounds(months[0])
+        elif f.get("kind") != "date":
+            vals = filter_values(db, decl, out, f["key"], enforced=enforced)
+            if vals:
+                out[f["key"]] = [str(sorted(vals, key=lambda v: str(v))[-1])]
+    return out
+
+
+def filter_values(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any], key: str, search: str = "",
+                  enforced: Any = ()) -> List[Any]:
     from app.services.dataset_model_service import get_distinct_field_values
 
     f = next((x for x in decl if x["key"] == key), None)
     if f is None:
         raise ValueError("Bộ lọc không có trong báo cáo.")
+    if is_period(f):
+        return _months(db, f, decl, state, key, enforced)  # the month list a period picker offers
     if f["kind"] == "date":
         return []
     res = get_distinct_field_values(db, f["datasetId"], f["fieldKey"], limit=MAX_FILTER_VALUES,
-                                    filters=conditions(decl, state, skip=key) or None, search=(search or "")[:80] or None)
+                                    filters=conditions(decl, state, skip=key, enforced=enforced) or None, search=(search or "")[:80] or None)
     return [v for v in (res.get("values") or []) if v is not None][:MAX_FILTER_VALUES]
 
 
@@ -388,16 +498,31 @@ def _debug_get(debug: Any, key: str) -> Any:
 
 
 def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], state: Dict[str, Any],
-             *, source_label: Optional[str] = None, public: bool = False) -> Dict[str, Any]:
-    """Run one binding through the chart engine and reduce the result to the DTO."""
+             *, source_label: Optional[str] = None, public: bool = False,
+             disclose: Optional[Any] = None, enforced: Any = ()) -> Dict[str, Any]:
+    """Run one binding through the chart engine and reduce the result to the DTO.
+
+    The DTO carries `state`: the filter values these numbers were computed with (declared
+    defaults resolved), so text bound to a filter shows the period the numbers cover.
+    `disclose` limits it to the keys the reader may know (a public link's hidden lock is
+    never named); None = every declared key. `enforced` = the keys that are security
+    constraints (fail closed: a lock the engine cannot apply refuses the binding)."""
+    from app.services.chart_contracts import AuthoritativeFilterNotApplied
     from app.services.chart_service import ChartService
 
     bid = binding["id"]
-    base = {"bindingId": bid, "title": binding.get("title") or "", "kind": binding.get("kind") or ""}
-    conds = conditions(decl, state)
+    state = resolve_state(db, decl, state, enforced)
+    allowed = {f["key"] for f in decl} if disclose is None else set(disclose)
+    base = {"bindingId": bid, "title": binding.get("title") or "", "kind": binding.get("kind") or "",
+            "state": {k: v for k, v in state.items() if k in allowed}}
+    conds = conditions(decl, state, enforced=enforced)
     try:
         result = ChartService.get_chart_data(db, int(binding["chart_id"]), extra_filters=conds or None,
                                              filter_context="dashboard")
+    except AuthoritativeFilterNotApplied as exc:
+        db.rollback()
+        # names no field and no value: the constraint may be a hidden one
+        return {**base, "status": "refused", "error": str(exc), "rows": [], "fields": []}
     except ValueError as exc:
         db.rollback()
         msg = "Không tải được dữ liệu cho phần này." if public else _humanize(db, str(exc))
@@ -410,10 +535,20 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
     data = result.get("data") if isinstance(result, dict) else getattr(result, "data", None)
     rows = list(data or [])
     debug = result.get("debug") if isinstance(result, dict) else getattr(result, "debug", None)
+    if enforced:
+        # Defence in depth: whatever path served the result (a cache hit included), a
+        # security constraint the engine reports as dropped refuses the binding.
+        locked_refs = {f["fieldKey"] for f in decl if f["key"] in set(enforced)} |                       {f["field"] for f in decl if f["key"] in set(enforced)}
+        for drop in _debug_get(debug, "dropped_filters") or []:
+            if isinstance(drop, dict) and (drop.get("semantic_field") or drop.get("fieldKey") or drop.get("field")) in locked_refs:
+                return {**base, "status": "refused", "rows": [], "fields": [],
+                        "error": AuthoritativeFilterNotApplied("dropped").args[0]}
     described: Dict[str, Dict[str, Any]] = binding.get("fields") or {}
 
-    order: List[str] = [r for r, d in described.items() if d.get("role") != "measure"] + \
-                       [r for r, d in described.items() if d.get("role") == "measure"]
+    keyed = [r for r in (binding.get("order") or []) if r in described] + \
+            [r for r in described if r not in (binding.get("order") or [])]
+    order: List[str] = [r for r in keyed if described[r].get("role") != "measure"] + \
+                       [r for r in keyed if described[r].get("role") == "measure"]
     for row in rows[:5]:
         if isinstance(row, dict):
             for k, v in row.items():
@@ -457,7 +592,7 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
                 partial.append(str(_plain(item.get("bucket"), "date")))
 
     not_applied = []
-    labels = {f["fieldKey"]: f["label"] for f in decl}
+    labels = {f["fieldKey"]: f["label"] for f in decl if f["key"] in allowed}  # a hidden filter is never named
     for drop in _debug_get(debug, "dropped_filters") or []:
         if isinstance(drop, dict):
             ref = drop.get("semantic_field") or drop.get("fieldKey") or drop.get("field")
@@ -468,8 +603,31 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
     prov: Dict[str, Any] = {"asOf": str(as_of) if as_of else _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"}
     if source_label and not public:
         prov["source"] = source_label
-    return {**base, "status": "ready" if out_rows else "empty", "rows": out_rows, "fields": fields,
-            "truncated": len(rows) > MAX_ROWS, "partial": partial, "notApplied": not_applied, "provenance": prov}
+    out = {**base, "status": "ready" if out_rows else "empty", "rows": out_rows, "fields": fields,
+           "truncated": len(rows) > MAX_ROWS, "partial": partial, "notApplied": not_applied, "provenance": prov}
+    top = _top_n(db, binding)
+    if top:
+        out["topN"] = top  # the chart keeps only its N first rows: never a whole population
+    return out
+
+
+def _top_n(db: Session, binding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The chart's own row limit (Chart Configuration `dataLimit`), as a reader must know it."""
+    from app.models.models import Chart
+
+    try:
+        chart = db.get(Chart, int(binding["chart_id"]))
+        cfg = chart.config if chart is not None and isinstance(chart.config, dict) else {}
+    except Exception:  # noqa: BLE001 - a missing chart already failed above; no limit to tell
+        return None
+    style = cfg.get("styleConfig") if isinstance(cfg, dict) and isinstance(cfg.get("styleConfig"), dict) else {}
+    try:
+        n = int(style.get("dataLimit") or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n <= 0:
+        return None
+    return {"n": n, "direction": "bottom" if str(style.get("dataLimitDirection") or "").lower() == "bottom" else "top"}
 
 
 def _humanize(db: Session, text: str) -> str:
@@ -487,4 +645,11 @@ def public_bindings(bindings: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
 
 def public_filters(decl: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    return [{"key": f["key"], "label": f["label"], "kind": f["kind"]} for f in decl]
+    out = []
+    for f in decl:
+        item = {"key": f["key"], "label": f["label"], "kind": f["kind"]}
+        for extra in ("grain", "default", "single", "default_value"):
+            if f.get(extra) not in (None, "", False):
+                item[extra] = f[extra]
+        out.append(item)
+    return out

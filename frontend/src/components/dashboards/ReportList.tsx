@@ -105,10 +105,10 @@ function RowActions({ row, actions }: { row: ReportRow; actions: ReportActions }
 export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onToggleSelectAll, activeFilters, onFilterClick, hasFooter }: {
   rows: ReportRow[];
   actions: ReportActions;
-  /** Bulk selection covers Build Manual reports (bulk delete is a dashboard action). */
-  selectedIds?: Set<number>;
-  onToggleSelect?: (id: number) => void;
-  onToggleSelectAll?: (ids: number[]) => void;
+  /** Bulk selection by row KEY (`manual-12`, `vibe-48`): a dashboard and a Vibe Report can share an id. */
+  selectedIds?: Set<string>;
+  onToggleSelect?: (key: string) => void;
+  onToggleSelectAll?: (keys: string[]) => void;
   activeFilters?: Record<string, string | undefined>;
   onFilterClick?: (key: string, value: string) => void;
   hasFooter?: boolean;
@@ -119,9 +119,10 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
     return <EmptyState icon={<LayoutDashboard />} title={t('reportList.empty.title')} description={t('reportList.empty.desc')} />;
   }
   const selectable = Boolean(onToggleSelect);
-  const selectableRows = rows.filter((r) => r.kind === 'manual');
-  const allSelected = selectable && selectableRows.length > 0 && selectableRows.every((r) => selectedIds?.has(r.id));
-  const someSelected = selectable && selectableRows.some((r) => selectedIds?.has(r.id));
+  // Only what this caller may delete can be selected, whichever way it was built.
+  const selectableRows = rows.filter((r) => r.perms.canDelete);
+  const allSelected = selectable && selectableRows.length > 0 && selectableRows.every((r) => selectedIds?.has(r.key));
+  const someSelected = selectable && selectableRows.some((r) => selectedIds?.has(r.key));
   return (
     <div className={`border border-[rgb(var(--border-line))] bg-surface-1 ${hasFooter ? 'rounded-t-xl border-b-0' : 'rounded-xl'}`}>
       <div className="app-list-table-wrap">
@@ -132,7 +133,7 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
                 <th className="w-10 px-3 py-3">
                   <input type="checkbox" checked={allSelected} aria-label={t('reportList.selectAll')}
                     ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-                    onChange={() => onToggleSelectAll?.(selectableRows.map((r) => r.id))}
+                    onChange={() => onToggleSelectAll?.(selectableRows.map((r) => r.key))} data-testid="report-select-all"
                     className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]" />
                 </th>
               )}
@@ -154,9 +155,10 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
                 <tr key={row.key} className="hover:bg-surface-2" data-testid={`report-row-${row.key}`}>
                   {selectable && (
                     <td className="w-10 px-3 py-4">
-                      {row.kind === 'manual' && (
-                        <input type="checkbox" checked={selectedIds?.has(row.id) ?? false} aria-label={row.name}
-                          onChange={() => onToggleSelect?.(row.id)} className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]" />
+                      {row.perms.canDelete && (
+                        <input type="checkbox" checked={selectedIds?.has(row.key) ?? false} aria-label={row.name}
+                          onChange={() => onToggleSelect?.(row.key)} data-testid={`report-select-${row.key}`}
+                          className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]" />
                       )}
                     </td>
                   )}
@@ -181,7 +183,7 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
                     <OwnerBadge email={row.ownerEmail ?? undefined} active={activeFilters?.owner === row.ownerEmail}
                       onClick={row.ownerEmail ? () => onFilterClick?.('owner', row.ownerEmail!) : undefined} />
                   </td>
-                  <td className="app-list-cell whitespace-nowrap text-caption text-text-tertiary"><ContentLabel row={row} /></td>
+                  <td className="app-list-cell min-w-[96px] text-caption text-text-tertiary"><ContentLabel row={row} /></td>
                   <td className="app-list-cell whitespace-nowrap text-caption text-text-tertiary">{row.updatedAt ? new Date(row.updatedAt).toLocaleDateString(locale) : ''}</td>
                   <td className="app-list-cell-tight text-right"><RowActions row={row} actions={actions} /></td>
                 </tr>
@@ -195,7 +197,7 @@ export function ReportTable({ rows, actions, selectedIds, onToggleSelect, onTogg
 }
 
 export function ReportCard({ row, actions, selected, onToggleSelect }: {
-  row: ReportRow; actions: ReportActions; selected?: boolean; onToggleSelect?: (id: number) => void;
+  row: ReportRow; actions: ReportActions; selected?: boolean; onToggleSelect?: (key: string) => void;
 }) {
   const { t, locale } = useI18n();
   const router = useRouter();
@@ -205,8 +207,9 @@ export function ReportCard({ row, actions, selected, onToggleSelect }: {
       <div className="flex-1 p-4">
         <div className="mb-3 flex items-start justify-between">
           <div className="flex items-center gap-2">
-            {onToggleSelect && row.kind === 'manual' && (
-              <input type="checkbox" aria-label={row.name} checked={!!selected} onChange={() => onToggleSelect(row.id)}
+            {onToggleSelect && row.perms.canDelete && (
+              <input type="checkbox" aria-label={row.name} checked={!!selected} onChange={() => onToggleSelect(row.key)}
+                data-testid={`report-card-select-${row.key}`}
                 className="h-3.5 w-3.5 cursor-pointer rounded accent-[rgb(var(--brand))]" />
             )}
             {/* Every report has the same mark: the product is the report, not its builder. */}

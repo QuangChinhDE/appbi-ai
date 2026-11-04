@@ -138,6 +138,10 @@ export function snippetFor(kind: string, id: string, title: string): string {
 export function DataPanel({ detail, onChanged, html = '', onInsert, onPaste }: { detail: ReportDetail; onChanged: () => void; html?: string; onInsert?: (snippet: string) => void; onPaste?: () => void }) {
   const { t } = useI18n();
   const [catalog, setCatalog] = useState<ReportCatalog | null>(null);
+  // A filter option shows the click at once; the saved draft revision then decides (a refused
+  // save falls back to what the server holds).
+  const [optimistic, setOptimistic] = useState<Record<string, boolean>>({});
+  useEffect(() => { setOptimistic({}); }, [detail.draft]);
   const [adding, setAdding] = useState(false);
   const [q, setQ] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -250,6 +254,32 @@ export function DataPanel({ detail, onChanged, html = '', onInsert, onPaste }: {
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-medium">{f.label}</div>
                 <div className="text-[10px] text-text-tertiary"><code>{f.key}</code> · {refCount(html, 'data-rac-filter', f.key) ? t('reportCode.data.uses', { n: refCount(html, 'data-rac-filter', f.key) }) : <span className="font-medium text-amber-700">{t('reportCode.data.unused')}</span>}</div>
+                {editable && (
+                  // The filter's semantics (BI Core resolves them for every surface): a month
+                  // period with the newest month as default, or one value with a default.
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-text-secondary" data-testid={`filter-${f.key}-options`}>
+                    {f.kind === 'date' ? (
+                      <label className="inline-flex items-center gap-1">
+                        <input type="checkbox" disabled={!!busyId} checked={optimistic[`${f.key}:period`] ?? (f.grain === 'month' && f.default === 'latest')} data-testid={`filter-${f.key}-period`}
+                          onChange={(e) => { setOptimistic((o) => ({ ...o, [`${f.key}:period`]: e.target.checked })); void run(f.key, () => reportCodeApi.setFilterOptions(detail.id, f.key, e.target.checked ? { grain: 'month', default: 'latest' } : {}), t('reportCode.data.saved')).finally(() => setOptimistic({})); }} />
+                        {t('reportCode.data.periodLatest')}
+                      </label>
+                    ) : (
+                      <>
+                        <label className="inline-flex items-center gap-1">
+                          <input type="checkbox" disabled={!!busyId} checked={optimistic[`${f.key}:single`] ?? !!f.single} data-testid={`filter-${f.key}-single`}
+                            onChange={(e) => { setOptimistic((o) => ({ ...o, [`${f.key}:single`]: e.target.checked })); void run(f.key, () => reportCodeApi.setFilterOptions(detail.id, f.key, { single: e.target.checked, default_value: e.target.checked ? f.default_value ?? null : null }), t('reportCode.data.saved')).finally(() => setOptimistic({})); }} />
+                          {t('reportCode.data.single')}
+                        </label>
+                        {(optimistic[`${f.key}:single`] ?? f.single) && (
+                          <input key={`${f.key}:${f.default_value ?? ''}`} defaultValue={f.default_value ?? ''} placeholder={t('reportCode.data.defaultValue')} disabled={!!busyId}
+                            data-testid={`filter-${f.key}-default`} className="h-5 w-32 rounded border border-stroke-strong bg-surface-0 px-1"
+                            onBlur={(e) => { const v = e.target.value.trim(); if (v !== (f.default_value ?? '')) run(f.key, () => reportCodeApi.setFilterOptions(detail.id, f.key, { single: true, default_value: v || null }), t('reportCode.data.saved')); }} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
               {onInsert && editable && (
                 <button type="button" title={t('reportCode.data.insertBlock')} onClick={() => onInsert(snippetFor('filter', f.key, f.label))} data-testid={`filter-${f.key}-insert`}

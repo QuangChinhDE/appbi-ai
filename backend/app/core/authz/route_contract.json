@@ -569,5 +569,6 @@
  "PUT /api/v1/shares/{resource_type}/{resource_id}/entries/{share_id}": "resource",
  "PUT /api/v1/shares/{resource_type}/{resource_id}/{user_id}": "resource",
  "PUT /api/v1/users/{user_id}": "global",
- "PUT /api/v1/workboards/{workboard_id}/tables/{table_id}/miniapp-share": "resource"
+ "PUT /api/v1/workboards/{workboard_id}/tables/{table_id}/miniapp-share": "resource",
+ "PATCH /api/v1/report-artifacts/{artifact_id}/filters/{key}": "resource"
 }

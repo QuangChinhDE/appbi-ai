@@ -302,8 +302,220 @@ def test_export_html_is_a_standalone_page_with_a_data_snapshot_and_no_internals(
     r = client.get(f"/api/v1/report-artifacts/{report.id}/export-html", headers=owner.headers)
     assert r.status_code == 200 and "attachment" in r.headers.get("content-disposition", "")
     page = r.text
-    assert "DRAFT-SECRET" in page and "rac:init" in page and "MessageChannel" in page
+    # what a link serves: the PUBLISHED revision, never the unpublished draft
+    assert "PUBLISHED-ONLY" in page and "DRAFT-SECRET" not in page
+    assert "rac:init" in page and "MessageChannel" in page
     import re as _re
 
     assert '"chart_id"' not in page, "no chart id in the snapshot"
     assert not _re.search(r"select[^<]{0,200}from", page, _re.I), "no SQL in the file"
+
+
+# ── Data rights on every report -> data path (export, duplicate, publish, public link) ──
+# A share on a REPORT is not a grant on its DATA: /data already checks each bound chart
+# and its dataset lineage; every other path that turns the report into numbers must too,
+# or a report share is a way around the data's own rights.
+
+@pytest.fixture()
+def bound(db):  # noqa: F811
+    """A report whose revisions bind one chart the owner can read (explore_charts)."""
+    from app.models.models import Chart, ChartType
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    own = make_user(db, "rpl-data-owner", dashboards="edit", explore_charts="edit")
+    chart = Chart(name=f"RPL bound {uuid.uuid4().hex[:8]}", chart_type=ChartType.KPI, config={}, owner_id=own.id)
+    db.add(chart)
+    db.flush()
+    art = ReportArtifact(name="RPL bound report", owner_id=own.id)
+    db.add(art)
+    db.flush()
+    binding = [{"id": "b1", "chart_id": chart.id, "title": "Revenue", "kind": "kpi"}]
+    rev = ReportArtifactRevision(artifact_id=art.id, number=1, html='<p data-rac-value="b1"></p>', css="", js="",
+                                 bindings=binding, filters=[], source="manual", content_hash="d" * 64, created_by=own.id)
+    db.add(rev)
+    db.flush()
+    art.draft_revision_id = rev.id
+    db.commit()
+    return own, art
+
+
+def _share(client, own, art, who, permission):  # noqa: F811
+    r = client.post(f"/api/v1/shares/report_artifact/{art.id}", json={"user_id": str(who.id), "permission": permission},
+                    headers=own.headers)
+    assert r.status_code in (200, 201), r.text
+
+
+def test_a_report_share_without_data_rights_cannot_read_export_or_copy_the_data(client, db, bound):  # noqa: F811
+    own, art = bound
+    viewer = make_user(db, "rpl-no-data", dashboards="edit")  # the module, a view share, NO chart rights
+    _share(client, own, art, viewer, "view")
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.get(url, headers=viewer.headers).status_code == 200, "the share opens the report"
+    assert client.post(f"{url}/data", json={"binding": "b1", "state": {}}, headers=viewer.headers).status_code == 403
+    exp = client.get(f"{url}/export-html", headers=viewer.headers)
+    assert exp.status_code == 403, "export must not mint data /data refuses"
+    dup = client.post(f"{url}/duplicate", headers=viewer.headers)
+    assert dup.status_code == 403, "a copy the caller owns would let them publish data they cannot read"
+    # the owner, who can read the chart, still can
+    assert client.get(f"{url}/export-html", headers=own.headers).status_code == 200
+    assert client.post(f"{url}/duplicate", headers=own.headers).status_code == 201
+
+
+def test_full_access_to_a_report_without_data_rights_cannot_publish_or_open_a_public_link(client, db, bound):  # noqa: F811
+    own, art = bound
+    # full on the report = the module's admin level; still no right on the bound data
+    manager = make_user(db, "rpl-full-no-data", dashboards="full")
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.get(url, headers=manager.headers).json()["user_permission"] == "full"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=manager.headers).status_code == 403
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=manager.headers).status_code == 403
+    # the person who can read the data publishes; the manager still cannot open a link on it
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=manager.headers).status_code == 403
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=own.headers).status_code == 201
+
+
+def test_publish_refuses_sample_numbers_until_the_author_says_so(client, db, owner):  # noqa: F811
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    art = ReportArtifact(name="RPL samples", owner_id=owner.id)
+    db.add(art)
+    db.flush()
+    rev = ReportArtifactRevision(artifact_id=art.id, number=1, html='<p>GOP <span data-rac-sample>20,91 tỷ</span></p>',
+                                 css="", js="", bindings=[], filters=[], source="import", content_hash="e" * 64,
+                                 created_by=owner.id)
+    db.add(rev)
+    db.flush()
+    art.draft_revision_id = rev.id
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}/publish"
+    r = client.post(url, json={"revision_id": None}, headers=owner.headers)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "SAMPLE_NUMBERS" and r.json()["detail"]["count"] == 1
+    db.refresh(art)
+    assert art.published_revision_id is None, "nothing was published"
+    ok = client.post(url, json={"revision_id": None, "allow_samples": True}, headers=owner.headers)
+    assert ok.status_code == 200, ok.text
+
+
+# ── P0: a link token is the data; a lock is applied or the binding is refused ──────
+
+def test_a_links_token_is_never_listed_to_full_access_without_data_rights(client, db, bound):  # noqa: F811
+    own, art = bound
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    link = client.post(f"{url}/public-links", json={"name": "x"}, headers=own.headers).json()
+    assert link["token"], "the data owner sees the token they created"
+    manager = make_user(db, "rpl-full-no-data-list", dashboards="full")
+    listed = client.get(f"{url}/public-links", headers=manager.headers)
+    assert listed.status_code == 200
+    assert all(item["token"] is None for item in listed.json()), "full on the report is not a right on its data"
+    assert all(not item["capabilities"]["reveal_token"] for item in listed.json())
+    assert client.get(f"{url}/public-links/{link['id']}/ai/catalog", headers=manager.headers).status_code == 403
+    mine = client.get(f"{url}/public-links", headers=own.headers).json()
+    assert mine and mine[0]["token"] == link["token"]
+
+
+LOCK_DECL = [{"key": "f1", "label": "Vung-An", "kind": "category", "fieldKey": "t2.region", "field": "region", "datasetId": 1},
+             {"key": "f2", "label": "Bang", "kind": "category", "fieldKey": "t1.state", "field": "state", "datasetId": 1}]
+
+
+@pytest.fixture()
+def locked_link(client, db, bound):  # noqa: F811
+    """`bound`'s report, published with two filters and a link HIDING a lock on f1."""
+    own, art = bound
+    from app.models.report_artifact import ReportArtifactRevision
+
+    rev = db.get(ReportArtifactRevision, art.draft_revision_id)
+    rev.filters = LOCK_DECL
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    r = client.post(f"{url}/public-links", json={"name": "lock", "filters_config": [
+        {"field": "f1", "value": ["North"], "hidden": True}]}, headers=own.headers)
+    assert r.status_code == 201, r.text
+    return r.json()["token"]
+
+
+def _engine(monkeypatch, *, unreachable: str = "", dropped: list | None = None, seen: list | None = None):
+    """The chart engine, as seen by the report: a filter on `unreachable` cannot be applied
+    (no relationship path). It refuses an AUTHORITATIVE one, like ChartService does."""
+    from app.services import chart_service as cs
+    from app.services.chart_contracts import refuse_unapplied_authoritative
+
+    def fake(db, chart_id, extra_filters=None, **kw):
+        drops = list(dropped or [])
+        for f in extra_filters or []:
+            if seen is not None:
+                seen.append(dict(f))
+            if f.get("fieldKey") == unreachable:
+                refuse_unapplied_authoritative(f, "unreachable_view")
+                drops.append({"semantic_field": f["fieldKey"], "field": f["field"], "reason": "unreachable_view"})
+        return {"data": [{"m": 1250}], "debug": {"dropped_filters": drops}}
+
+    monkeypatch.setattr(cs.ChartService, "get_chart_data", staticmethod(fake))
+
+
+def test_a_lock_the_engine_cannot_apply_refuses_the_binding_instead_of_widening_it(client, locked_link, monkeypatch):  # noqa: F811
+    seen: list = []
+    _engine(monkeypatch, unreachable="t2.region", seen=seen)
+    r = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {}})
+    assert r.status_code == 200, r.text
+    dto = r.json()
+    assert dto["status"] == "refused" and dto["rows"] == [], "no number wider than the link's scope"
+    assert any(f.get("_authoritative") for f in seen if f.get("fieldKey") == "t2.region"), "the lock is marked authoritative"
+    assert "Vung-An" not in r.text and "North" not in r.text and "t2.region" not in r.text, "a hidden lock is never named"
+
+
+def test_a_lock_reported_dropped_on_any_path_refuses_and_a_hidden_lock_is_never_named(client, locked_link, monkeypatch):  # noqa: F811
+    # e.g. a result-cache hit that only REPORTS the engine's drop
+    _engine(monkeypatch, dropped=[{"semantic_field": "t2.region", "field": "region", "reason": "unreachable_view"}])
+    dto = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {}}).json()
+    assert dto["status"] == "refused" and dto["rows"] == []
+    # an interactive filter the engine ignores is told by name; a hidden lock never is
+    _engine(monkeypatch, dropped=[{"semantic_field": "t1.state", "field": "state", "reason": "unreachable_view"}])
+    r = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {"f2": ["SP"]}})
+    dto = r.json()
+    assert dto["status"] == "ready" and dto["notApplied"] == ["Bang"]
+    assert "Vung-An" not in r.text and "f1" not in dto["state"]
+
+
+def test_the_filter_value_list_runs_under_the_links_lock_as_authoritative(client, locked_link, monkeypatch):  # noqa: F811
+    from app.services import dataset_model_service as dms
+
+    seen: list = []
+
+    def fake(db, dataset_id, field, limit=200, filters=None, search=None, **kw):
+        seen.extend(filters or [])
+        return {"values": ["SP", "RJ"]}
+
+    monkeypatch.setattr(dms, "get_distinct_field_values", fake)
+    r = client.post(f"/api/v1/public/reports/{locked_link}/values", json={"key": "f2", "state": {}})
+    assert r.status_code == 200, r.text
+    assert any(f.get("fieldKey") == "t2.region" and f.get("_authoritative") for f in seen)
+    # the hidden lock itself has no value list
+    assert client.post(f"/api/v1/public/reports/{locked_link}/values", json={"key": "f1", "state": {}}).status_code == 400
+
+
+def test_creating_a_link_whose_lock_a_binding_cannot_apply_says_so(client, db, bound, monkeypatch):  # noqa: F811
+    own, art = bound
+    from app.models.report_artifact import ReportArtifactRevision
+
+    rev = db.get(ReportArtifactRevision, art.draft_revision_id)
+    rev.filters = LOCK_DECL
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    _engine(monkeypatch, unreachable="t2.region")
+    bad = client.post(f"{url}/public-links", json={"name": "lock", "filters_config": [
+        {"field": "f1", "value": ["North"], "hidden": True}]}, headers=own.headers)
+    assert bad.status_code == 201, bad.text
+    assert bad.json()["lock_warnings"] == [{"binding": "b1", "title": "Revenue", "reason": "lock_not_applicable"}]
+    ok = client.post(f"{url}/public-links", json={"name": "ok", "filters_config": [
+        {"field": "f2", "value": ["SP"]}]}, headers=own.headers)
+    assert ok.status_code == 201 and ok.json()["lock_warnings"] == []
+    # switching a link back on re-checks it
+    lid = bad.json()["id"]
+    client.patch(f"{url}/public-links/{lid}", json={"is_active": False}, headers=own.headers)
+    on = client.patch(f"{url}/public-links/{lid}", json={"is_active": True}, headers=own.headers)
+    assert on.json()["lock_warnings"][0]["binding"] == "b1"

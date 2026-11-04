@@ -139,6 +139,13 @@ def effective_state(decl: List[Dict[str, Any]], config: Any, viewer_state: Any,
     return state
 
 
+def enforced_keys(decl: List[Dict[str, Any]], config: Any, appearance: Any = None) -> List[str]:
+    """The declared filters a link ENFORCES (locked or hidden with a value): security
+    constraints, applied or refused (fail closed), never skipped."""
+    _, locked, _ = scope(decl, config, appearance)
+    return list(locked)
+
+
 # ── Resolution (public side) ─────────────────────────────────────────────────
 
 def links_refused_by(db: Session, art: ReportArtifact, rev: ReportArtifactRevision) -> List[str]:

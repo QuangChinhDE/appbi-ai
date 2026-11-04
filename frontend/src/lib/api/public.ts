@@ -1,3 +1,4 @@
+import type { ReportFilterDecl } from '@/lib/report-code/protocol';
 /**
  * Public (unauthenticated) API calls for shared dashboard links.
  * Uses a plain fetch so no auth cookies are sent.
@@ -245,7 +246,7 @@ export interface PublicReportMeta {
   version: number;
   published_at: string | null;
   bindings: { id: string; title: string; kind: string }[];
-  filters: { key: string; label: string; kind: 'category' | 'date' }[];
+  filters: ReportFilterDecl[];
   document_url: string;
   isolated: boolean;
   link_name?: string;

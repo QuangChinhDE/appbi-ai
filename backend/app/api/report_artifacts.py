@@ -8,7 +8,7 @@ administrator). Data reads additionally pass the same chart checks as
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
@@ -95,6 +95,8 @@ class ValuesBody(BaseModel):
 
 class PublishBody(BaseModel):
     revision_id: Optional[int] = None
+    #: publish although sample numbers remain - readers then see them labelled "số mẫu"
+    allow_samples: bool = False
 
 
 class AddBindingBody(BaseModel):
@@ -105,6 +107,35 @@ class AddBindingBody(BaseModel):
 
 class AddFilterBody(BaseModel):
     dimension_id: str = Field(..., max_length=20)
+    #: a date filter picked per month ("Kỳ"), and the period shown when nobody picked one
+    grain: Optional[Literal["month"]] = None
+    default: Optional[Literal["latest"]] = None
+
+
+class FilterOptionsBody(BaseModel):
+    grain: Optional[Literal["month"]] = None
+    default: Optional[Literal["latest"]] = None
+    #: one value at a time (an org picker), and the value shown until a viewer picks one
+    single: bool = False
+    default_value: Optional[str] = Field(None, max_length=200)
+
+
+def _filter_options(kind: str, grain: Optional[str], default: Optional[str], single: bool = False,
+                    default_value: Optional[str] = None) -> Dict[str, Any]:
+    if grain and kind != "date":
+        raise HTTPException(status_code=400, detail="Chỉ bộ lọc ngày mới chọn theo tháng.")
+    if default == "latest" and kind == "date" and grain != "month":
+        raise HTTPException(status_code=400, detail="Kỳ mặc định 'mới nhất' cần bộ lọc theo tháng.")
+    if (single or default_value) and kind == "date":
+        raise HTTPException(status_code=400, detail="Bộ lọc ngày dùng 'theo tháng' thay cho một giá trị.")
+    if default and default_value:
+        raise HTTPException(status_code=400, detail="Chọn một kiểu mặc định: mới nhất hoặc một giá trị.")
+    out: Dict[str, Any] = {k: v for k, v in (("grain", grain), ("default", default)) if v}
+    if single:
+        out["single"] = True
+    if default_value:
+        out["default_value"] = default_value
+    return out
 
 
 def _image(value: Optional[str]) -> Optional[str]:
@@ -356,6 +387,7 @@ def duplicate_report(artifact_id: int, request: Request, db: Session = Depends(g
                      current_user: User = Depends(require_permission(MODULE, "edit"))):
     """A copy the caller owns - the same bar as duplicating a dashboard: read the source, edit the module."""
     art = _load(db, artifact_id, current_user, "view")
+    _require_bindings_access(db, current_user, _draft(db, art))
     try:
         copy = L.duplicate(db, art, user_id=current_user.id)
     except ValueError as exc:
@@ -372,11 +404,23 @@ def export_report_html(artifact_id: int, db: Session = Depends(get_db),
     import datetime as _dt
 
     art = _load(db, artifact_id, current_user, "view")
-    rev = _draft(db, art)
+    rev = _served_revision(db, art)
+    _require_bindings_access(db, current_user, rev)
     snapshot = {b["id"]: B.mint_dto(db, b, rev.filters or [], {}, public=True) for b in rev.bindings or []}
     stamp = _dt.datetime.now().strftime("%H:%M %d/%m/%Y")
+    which = (f"phiên bản {rev.number} đã xuất bản" if rev.id == art.published_revision_id
+             else f"bản nháp phiên bản {rev.number} (chưa xuất bản)")
+    period = []
+    resolved = next((d.get("state") for d in snapshot.values() if isinstance(d, dict) and d.get("state")), {}) or {}
+    for f in rev.filters or []:
+        v = resolved.get(f["key"])
+        if v and B.is_period(f):
+            period.append(f"{f['label']}: tháng {str(v[0])[5:7]}/{str(v[0])[:4]}")
+        elif v:
+            period.append(f"{f['label']}: " + (" – ".join(str(x) for x in v if x) if f["kind"] == "date" else ", ".join(map(str, v))))
     body = D.build_export(html=rev.html, css=rev.css, js=rev.js, title=art.name,
-                          bindings=B.public_bindings(rev.bindings or []), snapshot=snapshot, stamp=stamp)
+                          bindings=B.public_bindings(rev.bindings or []), snapshot=snapshot, stamp=stamp,
+                          scope=" · ".join([which] + period), filters=B.public_filters(rev.filters or []))
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", art.name).strip("-") or "report"
     return HTMLResponse(body, headers={"Content-Disposition": f'attachment; filename="{safe}.html"',
                                        "Cache-Control": "no-store"})
@@ -458,8 +502,15 @@ def publish_report(artifact_id: int, body: PublishBody, request: Request, db: Se
                    current_user: User = Depends(require_permission(MODULE, "edit"))):
     art = _load(db, artifact_id, current_user, "full")
     previous = L.get_revision(db, art, art.published_revision_id)
+    candidate = (db.get(ReportArtifactRevision, body.revision_id) if body.revision_id is not None else None) \
+        or L.get_revision(db, art, art.draft_revision_id)
+    if candidate is not None and candidate.artifact_id == art.id:
+        _require_bindings_access(db, current_user, candidate)
     try:
-        target = L.publish(db, art, revision_id=body.revision_id)
+        target = L.publish(db, art, revision_id=body.revision_id, allow_samples=body.allow_samples)
+    except L.SampleNumbersRemain as exc:
+        raise HTTPException(status_code=409, detail={"code": "SAMPLE_NUMBERS", "message": str(exc),
+                                                     "count": L.sample_marks(candidate.html if candidate else "")})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     rollback = body.revision_id is not None and body.revision_id != art.draft_revision_id
@@ -478,6 +529,26 @@ def publish_report(artifact_id: int, body: PublishBody, request: Request, db: Se
 # ── Public links (the dashboard model: many named links per report) ─────────────
 # Listing is a view-level read; the token (the anonymous bearer capability) and every
 # change need FULL access — the same bar as publishing, as for dashboards.
+
+def _lock_warnings(db: Session, rev: ReportArtifactRevision, link) -> List[Dict[str, Any]]:
+    """The bindings a link's locks REFUSE (a lock the engine cannot apply to that binding's
+    chart): told to the publisher when the link is created, changed or switched on, never
+    silently skipped. The viewer still gets a refusal (fail closed) - this only says so first.
+    Runs each binding through the same path a viewer's /data does."""
+    try:
+        enforced = PL.enforced_keys(rev.filters or [], link.filters_config, link.appearance_config)
+        if not enforced or not getattr(link, "is_active", True):
+            return []
+        state = PL.effective_state(rev.filters or [], link.filters_config, {}, link.appearance_config)
+    except Exception:  # noqa: BLE001 - a link that cannot even resolve is refused on serve
+        return [{"binding": None, "title": "", "reason": "refused"}]
+    out = []
+    for b in rev.bindings or []:
+        dto = B.mint_dto(db, b, rev.filters or [], state, public=True, enforced=enforced, disclose=[])
+        if dto.get("status") == "refused":
+            out.append({"binding": b.get("id"), "title": b.get("title") or "", "reason": "lock_not_applicable"})
+    return out
+
 
 def _link_out(db: Session, link, *, with_token: bool) -> Dict[str, Any]:
     """A link as the publisher's client receives it: never a secret. The link's own AI
@@ -532,7 +603,9 @@ def _can_publish(db: Session, user: User, art: ReportArtifact) -> bool:
 def list_public_links(artifact_id: int, db: Session = Depends(get_db),
                       current_user: User = Depends(require_permission(MODULE, "view"))):
     art = _load(db, artifact_id, current_user)
-    publisher = _can_publish(db, current_user, art)
+    # A link's token IS the data it serves, to anyone: revealed only to whom could create
+    # that link now - full on the report AND read rights on every bound chart + dataset.
+    publisher = _can_publish(db, current_user, art) and _can_read_bindings(db, current_user, _served_revision(db, art))
     return [_link_out(db, link, with_token=publisher) for link in PL.list_links(db, art)]
 
 
@@ -540,6 +613,7 @@ def list_public_links(artifact_id: int, db: Session = Depends(get_db),
 def create_public_link(artifact_id: int, body: PublicLinkCreate, request: Request, db: Session = Depends(get_db),
                        current_user: User = Depends(require_permission(MODULE, "edit"))):
     art = _load(db, artifact_id, current_user, "full")
+    _require_bindings_access(db, current_user, _served_revision(db, art))
     try:
         link = PL.create(db, art, name=body.name, filters_config=body.filters_config,
                          appearance_config=_stored_appearance(db, current_user, art, body.appearance_config),
@@ -551,13 +625,14 @@ def create_public_link(artifact_id: int, body: PublicLinkCreate, request: Reques
           resource_type="report_artifact", resource_id=str(art.id), details={"link": link.id, "name": link.name})
     db.commit()
     db.refresh(link)
-    return _link_out(db, link, with_token=True)
+    return {**_link_out(db, link, with_token=True), "lock_warnings": _lock_warnings(db, _served_revision(db, art), link)}
 
 
 @router.post("/{artifact_id}/public-links/preview")
 def preview_public_link(artifact_id: int, body: PublicLinkPreviewRequest, db: Session = Depends(get_db),
                         current_user: User = Depends(require_permission(MODULE, "edit"))):
     art = _load(db, artifact_id, current_user, "edit")
+    _require_bindings_access(db, current_user, _served_revision(db, art))
     try:
         # a preview shows the report; it never opens (or spends) the AI bot nor carries a key
         appearance = {k: v for k, v in dict(body.appearance_config or {}).items() if not str(k).startswith("ai_bot")}
@@ -574,6 +649,7 @@ def update_public_link(artifact_id: int, link_id: int, body: PublicLinkUpdate, r
     link = PL.get_link(db, art, link_id)
     if link is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
+    _require_bindings_access(db, current_user, _served_revision(db, art))
     fields = {k: getattr(body, k) for k in body.model_fields_set}
     if fields.get("appearance_config") is not None:
         fields["appearance_config"] = _stored_appearance(db, current_user, art, fields["appearance_config"], link)
@@ -587,7 +663,7 @@ def update_public_link(artifact_id: int, link_id: int, body: PublicLinkUpdate, r
                    "password_changed": "password" in fields})
     db.commit()
     db.refresh(link)
-    return _link_out(db, link, with_token=True)
+    return {**_link_out(db, link, with_token=True), "lock_warnings": _lock_warnings(db, _served_revision(db, art), link)}
 
 
 @router.get("/{artifact_id}/public-links/{link_id}/ai-status")
@@ -611,6 +687,7 @@ def public_link_ai_catalog(artifact_id: int, link_id: int, db: Session = Depends
     link = PL.get_link(db, art, link_id)
     if link is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
+    _require_bindings_access(db, current_user, _served_revision(db, art))  # the catalog names the data's fields
     return _link_catalog(db, art, link)
 
 
@@ -655,6 +732,30 @@ def _check_chart_access(db: Session, user: User, chart_id: int) -> None:
         dt = DatasetCRUDService.get_table_by_id(db, chart.dataset_table_id)
         if dt is not None and getattr(dt, "dataset_id", None) is not None:
             dataset_grants_service.require_view_lineage(db, user, dt.dataset_id)
+
+
+def _require_bindings_access(db: Session, user: User, rev: ReportArtifactRevision) -> None:
+    """Every bound chart and its dataset lineage readable by `user` — the bar /data sets.
+
+    A share on a REPORT is not a grant on its DATA. Every path that turns a report into
+    numbers someone else can read (export, a copy the caller owns, publish, a public
+    link, its preview) must clear it, or the report is a way around the data's rights."""
+    for b in rev.bindings or []:
+        if isinstance(b, dict) and b.get("chart_id") is not None:
+            _check_chart_access(db, user, int(b["chart_id"]))
+
+
+def _can_read_bindings(db: Session, user: User, rev: ReportArtifactRevision) -> bool:
+    try:
+        _require_bindings_access(db, user, rev)
+        return True
+    except HTTPException:
+        return False
+
+
+def _served_revision(db: Session, art: ReportArtifact) -> ReportArtifactRevision:
+    """What a public link (or an export) shows: the published revision, else the draft."""
+    return L.get_revision(db, art, art.published_revision_id) or _draft(db, art)
 
 
 @router.post("/{artifact_id}/data")
@@ -782,11 +883,33 @@ def add_filter(artifact_id: int, body: AddFilterBody, db: Session = Depends(get_
         raise HTTPException(status_code=400, detail="Bộ lọc này đã có.")
     key = f"f{max([int(f['key'][1:]) for f in decl if f['key'][1:].isdigit()] + [0]) + 1}"
     decl.append({"key": key, "label": d["label"], "kind": d["kind"], "fieldKey": d["fieldKey"], "field": d["field"],
-                 "datasetId": d["datasetId"]})
+                 "datasetId": d["datasetId"], **_filter_options(d["kind"], body.grain, body.default)})
     out = _new_data_revision(db, art, draft, current_user, bindings=list(draft.bindings or []), filters=decl,
                              note=f"Thêm bộ lọc {key}: {d['label']}")
     out["filter"] = {"key": key, "label": d["label"], "kind": d["kind"]}
     return out
+
+
+@router.patch("/{artifact_id}/filters/{key}")
+def set_filter_options(artifact_id: int, key: str, body: FilterOptionsBody, db: Session = Depends(get_db),
+                       current_user: User = Depends(require_permission(MODULE, "edit"))):
+    """A declared filter's grain / default period — a new draft revision, like any change."""
+    art = _load(db, artifact_id, current_user, "edit")
+    draft = _draft(db, art)
+    decl, found = [], None
+    for f in draft.filters or []:
+        if f.get("key") == key:
+            found = {k: v for k, v in f.items() if k not in ("grain", "default", "single", "default_value")}
+            found.update(_filter_options(found["kind"], body.grain, body.default, body.single, body.default_value))
+            decl.append(found)
+        else:
+            decl.append(f)
+    if found is None:
+        raise HTTPException(status_code=404, detail="Bộ lọc không có trong báo cáo.")
+    return _new_data_revision(db, art, draft, current_user, bindings=list(draft.bindings or []), filters=decl,
+                              note=f"Bộ lọc {key}: " + (", ".join(f"{k}={v}" for k, v in found.items()
+                                                                  if k in ("grain", "default", "single", "default_value"))
+                                                  or "mặc định"))
 
 
 @router.delete("/{artifact_id}/filters/{key}")
