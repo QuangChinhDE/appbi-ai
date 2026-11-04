@@ -413,6 +413,8 @@ main{min-width:0}
 .rac-table tr[data-rac-v]:hover td{background:#f8fafc}
 .rac-more{margin-top:8px;border:1px solid var(--rac-border);background:var(--rac-surface);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
 .rac-note{font-size:12px;color:var(--rac-muted)}
+.rac-cut{margin-top:4px}
+.rac-derived{text-decoration:underline dotted;text-underline-offset:3px;cursor:help}
 .rac-heat{display:grid;gap:3px;font-size:11px;align-items:center}
 .rac-heat-h{color:var(--rac-muted);text-align:center}.rac-heat-r{color:var(--rac-muted);white-space:nowrap;padding-right:6px}
 .rac-heat-c{height:26px;border-radius:4px}

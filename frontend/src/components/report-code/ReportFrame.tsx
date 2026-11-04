@@ -54,7 +54,11 @@ export interface ReportFrameProps {
   title?: string;
 }
 
-const PARALLEL = 4;
+// The same bound as a Manual dashboard's tiles (PublicDashboardView CHART_FETCH_CONCURRENCY).
+const PARALLEL = 8;
+/** A DTO is reused for this long by the SAME frame owner (same fetcher = same report, revision
+ *  and caller): an unsaved-code preview re-renders the document, not the data. */
+const DTO_TTL_MS = 60_000;
 
 export function ReportFrame({
   src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
@@ -69,6 +73,10 @@ export function ReportFrame({
   const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance });
   propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance };
   const [blocked, setBlocked] = useState(false);
+  // binding|state -> {at, dto | in-flight promise}; dropped when the fetcher, the bindings or
+  // the filters change (a different revision, caller or data contract is never served from it).
+  const valuesCacheRef = useRef<{ owner: unknown; map: Map<string, { at: number; p: Promise<unknown[]> }> }>({ owner: null, map: new Map() });
+  const dtoCacheRef = useRef<{ owner: unknown; key: string; map: Map<string, { at: number; p: Promise<unknown> }> }>({ owner: null, key: '', map: new Map() });
   const [frameName] = useState(() => Math.random().toString(36).slice(2));
 
   const postMsg = useCallback((msg: unknown) => { portRef.current?.postMessage(msg); }, []);
@@ -79,19 +87,29 @@ export function ReportFrame({
   }, [postMsg]);
 
   const loadAll = useCallback(async () => {
-    const { bindings: list, fetchData: fetcher } = propsRef.current;
+    const { bindings: list, fetchData: fetcher, filters: decl } = propsRef.current;
     const state = stateRef.current;
+    const cache = dtoCacheRef.current;
+    const contract = list.map((b) => `${b.id}:${b.kind}`).join(',') + '|' + decl.map((f) => `${f.key}:${f.kind}:${f.grain || ''}:${f.default || ''}:${f.default_value || ''}`).join(',');
+    if (cache.owner !== fetcher || cache.key !== contract) { cache.owner = fetcher; cache.key = contract; cache.map = new Map(); }
+    const stateKey = JSON.stringify(Object.keys(state).sort().map((k) => [k, state[k]]));
+    const fetchOnce = (id: string): Promise<unknown> => {
+      const k = `${id}|${stateKey}`;
+      const hit = cache.map.get(k);
+      if (hit && Date.now() - hit.at < DTO_TTL_MS) return hit.p;
+      const p = fetcher(id, state).catch((e: any) => {
+        cache.map.delete(k); // an error is never cached
+        return { bindingId: id, status: 'error', error: e?.response?.data?.detail || 'Không tải được dữ liệu', rows: [], fields: [] };
+      });
+      cache.map.set(k, { at: Date.now(), p });
+      return p;
+    };
     const queue = [...list];
     const worker = async () => {
       for (let b = queue.shift(); b; b = queue.shift()) {
         const id = b.id;
         const seq = (seqRef.current[id] = (seqRef.current[id] || 0) + 1);
-        let dto: unknown;
-        try {
-          dto = await fetcher(id, state);
-        } catch (e: any) {
-          dto = { bindingId: id, status: 'error', error: e?.response?.data?.detail || 'Không tải được dữ liệu', rows: [], fields: [] };
-        }
+        const dto = await fetchOnce(id);
         if (seqRef.current[id] === seq) postMsg({ type: 'data', id, dto });
       }
     };
@@ -122,8 +140,19 @@ export function ReportFrame({
         void loadAll();
         break;
       case 'values': {
-        let values: unknown[] = [];
-        try { values = await p.fetchValues(msg.key, msg.search, stateRef.current); } catch { values = []; }
+        // A picker re-mounts when the state its numbers carry arrives; the same list is asked
+        // again. Same owner + filters + state + search = the same answer (shared, short-lived).
+        const vc = valuesCacheRef.current;
+        if (vc.owner !== p.fetchValues) { vc.owner = p.fetchValues; vc.map = new Map(); }
+        const st = stateRef.current;
+        const vk = `${msg.key}|${msg.search}|${JSON.stringify(Object.keys(st).sort().map((k) => [k, st[k]]))}|${p.filters.map((f) => `${f.key}:${f.grain || ''}:${f.default || ''}`).join(',')}`;
+        let hit = vc.map.get(vk);
+        if (!hit || Date.now() - hit.at >= DTO_TTL_MS) {
+          const pr = p.fetchValues(msg.key, msg.search, st).catch(() => { vc.map.delete(vk); return [] as unknown[]; });
+          hit = { at: Date.now(), p: pr };
+          vc.map.set(vk, hit);
+        }
+        const values = await hit.p;
         postMsg({ type: 'values', reqId: msg.reqId, values: values.slice(0, 200) });
         break;
       }

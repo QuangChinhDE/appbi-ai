@@ -36,3 +36,21 @@ dataset 221 is re-inferred and re-reconciled against the source file.
 - S1 turns rounded-wrong values into NULL on tables already mis-typed until re-inferred;
   intentional (a visible gap beats a wrong number) and named in the report.
 - S2 makes a shared editor without data rights unable to publish; that is the point.
+
+## Phase 2 — finalize (architecture decisions D1–D5, approved 2026-11-04)
+
+BI Core decides WHAT, the report decides HOW. No second engine; Freeform HTML/JS is kept.
+
+| # | Change | Where | Locked by |
+|---|---|---|---|
+| P0-A | a link token is listed only to whom could create the link (full on the report AND read rights on every bound chart/dataset); the link AI catalog likewise | api/report_artifacts.py | HTTP PG `test_a_links_token_is_never_listed_to_full_access_without_data_rights` |
+| P0-B | a public link's lock/hidden constraint carries the engine's `AUTHORITATIVE_KEY` (the marker Manual locks carry): applied or the binding is `refused`; a reported drop of a lock refuses too (cache hits); value lists and the default period run under the locks; the AI Bot's filters carry the marker | bindings.py, public_reports.py, public_bot.py, public_links.py | HTTP PG `…cannot_apply…`, `…dropped_on_any_path…`, `…value_list…`; real engine + real bot (local acceptance) |
+| P0-C | `notApplied` never names a filter the reader may not know | bindings.py | HTTP PG |
+| P1-1 | the runtime never adds rows up or picks "the" value of a many-row result (needs a KPI binding or a row address); a period change is labelled a report calculation and skipped for an incomplete period; no donut centre total; the audit no longer accepts JS-added totals | runtime.js, generation.py prompt | e2e `report-runtime-contract.spec.ts` |
+| P1-2 | percent = the semantic model's format (ratio x100, the platform convention); a "%" only the design writes is a sign; no label guess, no value-size heuristic | bindings.field_meta, runtime fmt | contract + e2e runtime contract (160% vs 1,6%) |
+| P1-3 | Top-N (`topN`) and cut results are told on lists and charts | bindings.mint_dto, runtime | contract + e2e runtime contract |
+| UI | one selection + bulk delete for Manual and Vibe, keyed by row key, only deletable rows, named confirm | dashboards page, ReportList | e2e `report-list-bulk.spec.ts` |
+| Perf | host DTO + value-list cache per frame owner (60 s, in-flight dedupe; dropped on a new fetcher/bindings/filters); 8 concurrent like Manual; `resolve_state` single-flight memo (30 s, key = filters + state + locks) | ReportFrame.tsx, bindings.py | before/after benchmark (local) |
+
+Not in this phase: official MoM/YoY in the BI Core (no time-intelligence capability exists;
+the runtime's change stays a labelled report calculation), Native Chart Slot, multi-dataset.

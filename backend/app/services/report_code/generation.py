@@ -77,19 +77,21 @@ DECLARATIVE (preferred — needs no JS):
      KIND: kpi | bar | hbar | line | area | donut | table | heatmap | gauge | waterfall | progress | sparkline
      Charts (bar, line, area, waterfall) need a height on the element; kpi, table, donut, progress, heatmap size themselves.
      heatmap of a monthly series = year × month matrix. waterfall of a time series = period-over-period change.
-  <span data-rac-value="b1"></span>      the formatted HEADLINE number of b1 (single value / latest period / total) — ONE number per binding
+  <span data-rac-value="b1"></span>      the formatted HEADLINE number of b1 (a KPI binding's value, or a TIME binding's latest period) — ONE number per binding.
+     A TOTAL is never added up by the report: bind a KPI candidate (the BI Core computes it). A many-row binding needs data-rac-row/-rank.
   <span data-rac-value="b6" data-rac-row="SP"></span>              one row's measure (row chosen by its dimension value)
   <span data-rac-value="b6" data-rac-rank="0" data-rac-field="d0"></span>  the 1st row's dimension label (rank is 0-based; field d0/m0)
      → a hand-built per-row table MUST use data-rac-row / data-rac-rank; never repeat a bare data-rac-value in rows.
      → values are already formatted WITH their unit (%, Tr, N, ₫): never write a unit or symbol next to them.
-  Period-over-period change: use data-rac-viz="kpi" on a TIME binding (it computes ▲/▼ % from the data). NEVER type a %, delta or target.
+  Period-over-period change: data-rac-viz="kpi" on a TIME binding shows ▲/▼ % between the two latest periods the BI Core returned —
+     it is labelled "tính trong báo cáo" (a report calculation, not an official metric) and is skipped for an incomplete period. NEVER type a %, delta or target.
   <span data-rac-title="b1"></span>      the binding's title        <span data-rac-asof="b1"></span> data timestamp
   <div data-rac-filter="f1"></div>       the control for declared filter f1 (multi-select dropdown, or date range)
   <div data-rac-filter-chips></div>      active-filter chips with clear buttons
   <span data-rac-icon="NAME"></span>     NAME: home chart trend users cart money truck star box layers filter calendar map target table pie menu up down alert
 IMPERATIVE (JS tab, for custom visuals and interactions):
   rac.bind('b1', function (dto) { ... })   // called when data arrives and after EVERY filter change
-  dto = {status:'loading'|'ready'|'empty'|'error', title, rows:[{d0:..., m0:...}],
+  dto = {status:'loading'|'ready'|'empty'|'error'|'refused', title, rows:[{d0:..., m0:...}], topN:{n,direction}|absent, truncated,
          fields:[{key:'d0', label, role:'dimension'|'measure', kind:'date'|'string'|'number', grain, aggregation, format, filterKey}],
          partial:[buckets not yet complete], notApplied:[filters this data could not apply], provenance:{asOf}}
   rac.viz.KIND(element, 'b1', opts)      // same kinds as above; re-renders by itself on new data

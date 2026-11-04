@@ -839,3 +839,36 @@ def test_the_last_pass_marks_every_figure_no_one_governs():
     assert "<h1>Báo cáo 2024</h1>" in out, "a year in a heading is not a figure"
     assert '<p data-rac-value="b1">79,65</p>' in out and '<td data-rac-cell="m0">12</td>' in out, "governed stays as is"
     assert out.count("data-rac-sample") == 3, "an existing mark is not wrapped twice"
+
+
+# ── Calculation / data contract (BI Core decides WHAT) ────────────────────────────
+
+def test_a_percent_is_the_semantic_models_format_never_guessed_from_a_label():
+    model = {"views": [{"name": "v", "measures": [
+        {"name": "dat", "type": "formula", "label": "% đạt KH", "format": {"kind": "percent"}},
+        {"name": "occ_pct", "type": "avg", "label": "OCC %"},  # a label with % is not a format
+    ], "dimensions": []}]}
+    meta = B.field_meta(model)
+    assert meta["v.dat"]["format"] == {"kind": "percent"}
+    assert meta["v.occ_pct"]["format"] is None, "the runtime would multiply a whole percent by 100"
+
+
+def test_the_dto_says_when_its_rows_are_a_top_n_of_the_chart(monkeypatch):
+    from app.services import chart_service
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(chart_service.ChartService, "get_chart_data", staticmethod(
+        lambda db, cid, **k: {"data": [{"v.s": "SP", "v.r": 3}], "debug": {}}))
+
+    class _Db:
+        def get(self, model, pk):
+            return SimpleNamespace(config={"styleConfig": {"dataLimit": 10, "dataLimitDirection": "top"}})
+
+        def rollback(self):
+            pass
+
+    binding = {"id": "b1", "chart_id": 7, "title": "T", "kind": "category",
+               "fields": {"v.s": {"label": "S", "role": "dimension", "kind": "string"},
+                          "v.r": {"label": "R", "role": "measure", "kind": "number"}}}
+    dto = B.mint_dto(_Db(), binding, [], {})
+    assert dto["topN"] == {"n": 10, "direction": "top"}

@@ -396,3 +396,102 @@ def test_publish_refuses_sample_numbers_until_the_author_says_so(client, db, own
     assert art.published_revision_id is None, "nothing was published"
     ok = client.post(url, json={"revision_id": None, "allow_samples": True}, headers=owner.headers)
     assert ok.status_code == 200, ok.text
+
+
+# ── P0: a link token is the data; a lock is applied or the binding is refused ──────
+
+def test_a_links_token_is_never_listed_to_full_access_without_data_rights(client, db, bound):  # noqa: F811
+    own, art = bound
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    link = client.post(f"{url}/public-links", json={"name": "x"}, headers=own.headers).json()
+    assert link["token"], "the data owner sees the token they created"
+    manager = make_user(db, "rpl-full-no-data-list", dashboards="full")
+    listed = client.get(f"{url}/public-links", headers=manager.headers)
+    assert listed.status_code == 200
+    assert all(item["token"] is None for item in listed.json()), "full on the report is not a right on its data"
+    assert all(not item["capabilities"]["reveal_token"] for item in listed.json())
+    assert client.get(f"{url}/public-links/{link['id']}/ai/catalog", headers=manager.headers).status_code == 403
+    mine = client.get(f"{url}/public-links", headers=own.headers).json()
+    assert mine and mine[0]["token"] == link["token"]
+
+
+LOCK_DECL = [{"key": "f1", "label": "Vung-An", "kind": "category", "fieldKey": "t2.region", "field": "region", "datasetId": 1},
+             {"key": "f2", "label": "Bang", "kind": "category", "fieldKey": "t1.state", "field": "state", "datasetId": 1}]
+
+
+@pytest.fixture()
+def locked_link(client, db, bound):  # noqa: F811
+    """`bound`'s report, published with two filters and a link HIDING a lock on f1."""
+    own, art = bound
+    from app.models.report_artifact import ReportArtifactRevision
+
+    rev = db.get(ReportArtifactRevision, art.draft_revision_id)
+    rev.filters = LOCK_DECL
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    r = client.post(f"{url}/public-links", json={"name": "lock", "filters_config": [
+        {"field": "f1", "value": ["North"], "hidden": True}]}, headers=own.headers)
+    assert r.status_code == 201, r.text
+    return r.json()["token"]
+
+
+def _engine(monkeypatch, *, unreachable: str = "", dropped: list | None = None, seen: list | None = None):
+    """The chart engine, as seen by the report: a filter on `unreachable` cannot be applied
+    (no relationship path). It refuses an AUTHORITATIVE one, like ChartService does."""
+    from app.services import chart_service as cs
+    from app.services.chart_contracts import refuse_unapplied_authoritative
+
+    def fake(db, chart_id, extra_filters=None, **kw):
+        drops = list(dropped or [])
+        for f in extra_filters or []:
+            if seen is not None:
+                seen.append(dict(f))
+            if f.get("fieldKey") == unreachable:
+                refuse_unapplied_authoritative(f, "unreachable_view")
+                drops.append({"semantic_field": f["fieldKey"], "field": f["field"], "reason": "unreachable_view"})
+        return {"data": [{"m": 1250}], "debug": {"dropped_filters": drops}}
+
+    monkeypatch.setattr(cs.ChartService, "get_chart_data", staticmethod(fake))
+
+
+def test_a_lock_the_engine_cannot_apply_refuses_the_binding_instead_of_widening_it(client, locked_link, monkeypatch):  # noqa: F811
+    seen: list = []
+    _engine(monkeypatch, unreachable="t2.region", seen=seen)
+    r = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {}})
+    assert r.status_code == 200, r.text
+    dto = r.json()
+    assert dto["status"] == "refused" and dto["rows"] == [], "no number wider than the link's scope"
+    assert any(f.get("_authoritative") for f in seen if f.get("fieldKey") == "t2.region"), "the lock is marked authoritative"
+    assert "Vung-An" not in r.text and "North" not in r.text and "t2.region" not in r.text, "a hidden lock is never named"
+
+
+def test_a_lock_reported_dropped_on_any_path_refuses_and_a_hidden_lock_is_never_named(client, locked_link, monkeypatch):  # noqa: F811
+    # e.g. a result-cache hit that only REPORTS the engine's drop
+    _engine(monkeypatch, dropped=[{"semantic_field": "t2.region", "field": "region", "reason": "unreachable_view"}])
+    dto = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {}}).json()
+    assert dto["status"] == "refused" and dto["rows"] == []
+    # an interactive filter the engine ignores is told by name; a hidden lock never is
+    _engine(monkeypatch, dropped=[{"semantic_field": "t1.state", "field": "state", "reason": "unreachable_view"}])
+    r = client.post(f"/api/v1/public/reports/{locked_link}/data", json={"binding": "b1", "state": {"f2": ["SP"]}})
+    dto = r.json()
+    assert dto["status"] == "ready" and dto["notApplied"] == ["Bang"]
+    assert "Vung-An" not in r.text and "f1" not in dto["state"]
+
+
+def test_the_filter_value_list_runs_under_the_links_lock_as_authoritative(client, locked_link, monkeypatch):  # noqa: F811
+    from app.services import dataset_model_service as dms
+
+    seen: list = []
+
+    def fake(db, dataset_id, field, limit=200, filters=None, search=None, **kw):
+        seen.extend(filters or [])
+        return {"values": ["SP", "RJ"]}
+
+    monkeypatch.setattr(dms, "get_distinct_field_values", fake)
+    r = client.post(f"/api/v1/public/reports/{locked_link}/values", json={"key": "f2", "state": {}})
+    assert r.status_code == 200, r.text
+    assert any(f.get("fieldKey") == "t2.region" and f.get("_authoritative") for f in seen)
+    # the hidden lock itself has no value list
+    assert client.post(f"/api/v1/public/reports/{locked_link}/values", json={"key": "f1", "state": {}}).status_code == 400

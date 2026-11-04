@@ -42,14 +42,15 @@ def build_context(db: Session, rev, link, viewer_state: Any):
 
     decl = list(rev.filters or [])
     state = PL.effective_state(decl, link.filters_config, viewer_state or {}, link.appearance_config)
-    state = B.resolve_state(db, decl, state)  # the report's default period, as the page shows it
+    enforced = PL.enforced_keys(decl, link.filters_config, link.appearance_config)
+    state = B.resolve_state(db, decl, state, enforced)  # the report's default period, as the page shows it
     hidden_keys = {str(e.get("field")) for e in (link.filters_config or [])
                    if isinstance(e, dict) and e.get("hidden")}
     public_filters: List[Dict[str, Any]] = []
     from app.services.filter_layered_merge import DISCLOSE_KEY
 
     for key, value in state.items():
-        for cond in B.conditions(decl, {key: value}):
+        for cond in B.conditions(decl, {key: value}, enforced=enforced):
             # a hidden lock is enforced and counted, never named to the model or the
             # viewer - the marker every public surface's disclosure reads
             public_filters.append({**cond, DISCLOSE_KEY: False} if key in hidden_keys else cond)

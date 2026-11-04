@@ -204,11 +204,16 @@
     var n = num(v);
     if (n === null) return v === null || v === undefined || v === '' ? '—' : String(v);
     var f = (field && field.format) || {};
-    var kind = opts.kind || f.kind || (field && field.kind === 'percent' ? 'percent' : 'number');
+    // The platform's percent convention (ExploreChart / report-findings): a measure whose
+    // SEMANTIC format is percent holds a RATIO and is shown x100. A "%" that only the design
+    // writes (opts.kind) is a sign: the number is shown as the BI Core returned it. Decided
+    // by the model, never by the size of the value.
+    var semPct = f.kind === 'percent';
+    var kind = semPct ? 'percent' : (opts.kind === 'percent' ? 'sign' : (opts.kind || f.kind || 'number'));
     var compact = opts.compact !== undefined ? opts.compact : Math.abs(n) >= 10000;
-    var decimals = opts.decimals !== undefined ? opts.decimals : (f.decimals !== undefined ? f.decimals : null);
-    if (kind === 'percent') {
-      var p = Math.abs(n) <= 1.5 && !f.isWholePercent ? n * 100 : n;
+    var decimals = opts.decimals !== undefined ? opts.decimals : (f.decimals !== undefined && f.decimals !== null ? f.decimals : null);
+    if (kind === 'percent' || kind === 'sign') {
+      var p = kind === 'percent' ? n * 100 : n;
       var pd = decimals === null ? 1 : decimals;
       return p.toLocaleString(ctx.locale, { minimumFractionDigits: opts.decimals !== undefined ? pd : 0, maximumFractionDigits: pd }) + '%' + (opts.suffix || '');
     }
@@ -262,16 +267,43 @@
     var dim = dims(d)[0];
     var rows = (d && d.rows) || [];
     if (!m || !rows.length) return { value: null, field: m, prev: null, note: '' };
+    // One value = the BI Core's result for the whole filter context (a KPI binding).
     if (rows.length === 1 || !dim) return { value: rows[0][m.key], field: m, prev: null, note: '' };
     if (dim.kind === 'date') {
+      // The latest period's value, as the BI Core aggregated it (a selection, not a sum).
+      // `prev` is the BI Core's value of the period before; a change computed from the
+      // two is a REPORT calculation (derived), never shown for an incomplete period.
       var last = rows[rows.length - 1], before = rows.length > 1 ? rows[rows.length - 2] : null;
-      return { value: last[m.key], prev: before ? before[m.key] : null, field: m, note: fmtDate(last[dim.key], dim.grain) };
+      var part = (d.partial || []).indexOf(String(last[dim.key])) >= 0;
+      return { value: last[m.key], prev: before && !part ? before[m.key] : null, field: m, partial: part,
+        note: fmtDate(last[dim.key], dim.grain) + (part ? ' (chưa trọn kỳ)' : '') };
     }
-    if (additive(m)) {
-      var t = 0; rows.forEach(function (r) { var n = num(r[m.key]); if (n !== null) t += n; });
-      return { value: t, field: m, prev: null, note: '' };
+    // Many rows and no time axis: a total or "the" value is NOT something the report adds up
+    // or picks. Bind a KPI (the BI Core computes it) or address a row (data-rac-row/-rank).
+    return { value: null, field: m, prev: null, note: '', needsKpi: true };
+  }
+  var kpiNoted = {};
+  function needsKpi(el, d, m) {
+    var k = (d && d.bindingId) + ':' + (m ? m.key : '');
+    if (!kpiNoted[k]) {
+      kpiNoted[k] = 1;
+      report('provenance', 'Nguồn "' + ((d && d.title) || '') + '" có nhiều dòng: một con số tổng phải do BI Core tính — gắn một binding KPI, '
+        + 'hoặc chọn một dòng bằng data-rac-row / data-rac-rank. Báo cáo không tự cộng.');
     }
-    return { value: rows[0][m.key], field: m, prev: null, note: label(rows[0][dim.key], dim) };
+    el.setAttribute('data-rac-prov', 'needs-kpi');
+  }
+  // What a reader must know about the rows: a Top-N chart or a cut result is not the whole.
+  function cutNote(d) {
+    if (!d) return '';
+    if (d.topN && d.topN.n) return (d.topN.direction === 'bottom' ? 'Chỉ ' : 'Top ') + d.topN.n + (d.topN.direction === 'bottom' ? ' dòng thấp nhất' : ' theo biểu đồ nguồn');
+    if (d.truncated) return 'Hiển thị ' + (d.rows || []).length + ' dòng đầu';
+    return '';
+  }
+  function cutBadge(el, d) {
+    var t = cutNote(d);
+    if (!t || !el || !el.parentNode) return;
+    var b = document.createElement('div'); b.className = 'rac-note rac-cut'; b.setAttribute('data-rac-prov', 'cut'); b.textContent = t;
+    el.appendChild(b);
   }
   function provTitle(d, m) {
     if (!d) return '';
@@ -281,6 +313,7 @@
     if (p.source) parts.push(p.source);
     if (p.asOf) parts.push('Dữ liệu lúc ' + String(p.asOf).replace('T', ' ').slice(0, 16));
     if (d.notApplied && d.notApplied.length) parts.push('Bộ lọc không áp dụng: ' + d.notApplied.join(', '));
+    var cut = cutNote(d); if (cut) parts.push(cut);
     return parts.join('\n');
   }
 
@@ -317,7 +350,7 @@
   }
   function stateBox(el, d) {
     if (!d || d.status === 'loading') { el.innerHTML = '<div class="rac-skel"></div>'; return true; }
-    if (d.status === 'error') { el.innerHTML = '<div class="rac-state rac-error">' + esc(d.error || 'Không tải được dữ liệu') + '</div>'; return true; }
+    if (d.status === 'error' || d.status === 'refused') { el.innerHTML = '<div class="rac-state rac-error">' + esc(d.error || 'Không tải được dữ liệu') + '</div>'; return true; }
     if (!d.rows || !d.rows.length) { el.innerHTML = '<div class="rac-state">Không có dữ liệu cho bộ lọc hiện tại</div>'; return true; }
     return false;
   }
@@ -347,6 +380,7 @@
     if (stateBox(el, d)) return;
     var p = primary(d, opts);
     var m = p.field;
+    if (p.needsKpi) needsKpi(el, d, m);
     var lbl = opts.label || (m && m.label) || d.title || '';
     var deltaHtml = '';
     var cur = num(p.value), prev = num(p.prev);
@@ -354,8 +388,8 @@
       var pct = (cur - prev) / Math.abs(prev) * 100;
       var up = pct >= 0;
       var good = opts.goal === 'down' ? !up : up;
-      deltaHtml = '<span class="rac-kpi-delta ' + (opts.goal ? (good ? 'pos' : 'neg') : 'neu') + '">' + (up ? '▲' : '▼') + ' ' +
-        Math.abs(pct).toLocaleString(ctx.locale, { maximumFractionDigits: 1 }) + '%</span><span class="rac-kpi-cmp">so với kỳ trước</span>';
+      deltaHtml = '<span class="rac-kpi-delta rac-derived ' + (opts.goal ? (good ? 'pos' : 'neg') : 'neu') + '" data-rac-prov="derived" title="Tính trong báo cáo từ hai kỳ BI Core trả về — không phải metric chính thức">' + (up ? '▲' : '▼') + ' ' +
+        Math.abs(pct).toLocaleString(ctx.locale, { maximumFractionDigits: 1 }) + '%</span><span class="rac-kpi-cmp">so với kỳ trước · tính trong báo cáo</span>';
     }
     var spark = '';
     var dim = dims(d)[0];
@@ -428,6 +462,7 @@
     }
     hoverRows(el, d, dim, ms);
     bindDrill(el, d);
+    cutBadge(el, d);
   }
   function hoverRows(el, d, dim, ms) {
     var pal = palette();
@@ -509,7 +544,8 @@
       arcs.push('<path ' + (r.k !== null ? 'data-rac-v="' + esc(r.k) + '" ' : '') + 'data-rac-di="' + i + '" opacity="' + (on ? 1 : 0.3) + '" d="M' + p(R, a) + ' A' + R + ' ' + R + ' 0 ' + large + ' 1 ' + p(R, a2 - 0.0001) + ' L' + p(r0, a2 - 0.0001) + ' A' + r0 + ' ' + r0 + ' 0 ' + large + ' 0 ' + p(r0, a) + ' Z" fill="' + (r.k === null ? '#cbd5e1' : pal[i % 8]) + '"/>');
       a = a2;
     });
-    var center = additive(m) ? '<text x="' + cx + '" y="' + (cy - 2) + '" text-anchor="middle" class="rac-donut-v">' + esc(fmt(total, m)) + '</text><text x="' + cx + '" y="' + (cy + 16) + '" text-anchor="middle" class="rac-axis">Tổng</text>' : '';
+    // no centre total: a sum of the shown rows is not the BI Core's total (Top-N, cut rows)
+    var center = '';
     var legend = rows.map(function (r, i) {
       return '<div class="rac-leg"><span class="rac-tip-dot" style="background:' + (r.k === null ? '#cbd5e1' : pal[i % 8]) + '"></span><span class="rac-leg-l">' + esc(trunc(r.l, 28)) + '</span><b>' + esc((r.v / total * 100).toFixed(1)) + '%</b></div>';
     }).join('');
@@ -520,6 +556,7 @@
       ps[i].addEventListener('mouseleave', hideTip);
     }
     bindDrill(el, d);
+    cutBadge(el, d);
   };
   viz.pie = viz.donut;
 
@@ -550,6 +587,7 @@
     for (var i = 0; i < ths.length; i++) ths[i].addEventListener('click', function () { var k = this.getAttribute('data-k'); el.__racDir = el.__racSort === k ? -(el.__racDir || -1) : -1; el.__racSort = k; viz.table(el, d, opts); });
     var mb = el.querySelector('.rac-more'); if (mb) mb.addEventListener('click', function () { el.__racAll = true; viz.table(el, d, opts); });
     bindDrill(el, d);
+    cutBadge(el, d);
   };
 
   viz.heatmap = function (el, d, opts) {
@@ -592,8 +630,9 @@
     opts = opts || {};
     if (stateBox(el, d)) return;
     var p = primary(d, opts), v = num(p.value) || 0, m = p.field;
+    if (p.needsKpi) { needsKpi(el, d, m); el.innerHTML = '<div class="rac-state">—</div>'; return; }
     var target = num(opts.target), max = num(opts.max) || (target ? target * 1.25 : niceMax(v * 1.2));
-    var isPct = m && ((m.format && m.format.kind === 'percent') || /%/.test(m.label || ''));
+    var isPct = m && m.format && m.format.kind === 'percent';
     var scaleOnly = target === null && isPct && (num(opts.max) === 100 || num(opts.max) === 1);
     if ((target !== null || num(opts.max) !== null) && !scaleOnly && ctx.mode === 'studio' && !el.__racTargetNoted) {
       el.__racTargetNoted = true;
@@ -648,6 +687,7 @@
       gs[i].addEventListener('mouseleave', hideTip);
     }
     bindDrill(el, d);
+    cutBadge(el, d);
   };
 
   viz.progress = function (el, d, opts) {
@@ -661,6 +701,7 @@
       return '<div class="rac-prog-row" data-rac-v="' + esc(key) + '" style="opacity:' + (on ? 1 : 0.35) + '"><div class="rac-prog-top"><span>' + esc(trunc(label(r[dim.key], dim), 32)) + '</span><b>' + esc(fmt(v, m)) + '</b></div><div class="rac-prog-track"><div class="rac-prog-fill" style="width:' + (v / mx * 100).toFixed(1) + '%"></div></div></div>';
     }).join('') + '</div>';
     bindDrill(el, d);
+    cutBadge(el, d);
   };
 
   // ── 6. Filters ─────────────────────────────────────────────────────────────────
@@ -721,7 +762,8 @@
     if (!rows.length) {
       var none = tpl.__racTpl.cloneNode(false);
       none.setAttribute('data-rac-clone', id);
-      none.innerHTML = '<span class="rac-note">' + esc(o.empty || 'Không có dữ liệu cho bộ lọc đang chọn') + '</span>';
+      var msg = '<span class="rac-note">' + esc(d.error || o.empty || 'Không có dữ liệu cho bộ lọc đang chọn') + '</span>';
+      none.innerHTML = none.tagName === 'TR' ? '<td colspan="99">' + msg + '</td>' : msg;
       parent.insertBefore(none, after.nextSibling);
       return;
     }
@@ -756,6 +798,14 @@
       parent.insertBefore(el, after.nextSibling);
       after = el;
     });
+    var cut = cutNote(d);
+    if (cut && o.cutNote !== false) {
+      // the list is not the whole population: say so after the rows (same element type)
+      var note = tpl.__racTpl.cloneNode(false);
+      note.removeAttribute('data-rac-tone'); note.setAttribute('data-rac-clone', id); note.setAttribute('data-rac-prov', 'cut');
+      note.innerHTML = note.tagName === 'TR' ? '<td colspan="99"><span class="rac-note">' + esc(cut) + '</span></td>' : '<span class="rac-note">' + esc(cut) + '</span>';
+      parent.insertBefore(note, after.nextSibling);
+    }
   }
   function renderSamples() {
     var ss = document.querySelectorAll('[data-rac-sample]');
@@ -885,7 +935,7 @@
   }
   function renderValue(el) {
     var d = cache[el.getAttribute('data-rac-value')];
-    if (!d || d.status !== 'ready') { el.textContent = d && d.status === 'error' ? '—' : '…'; return; }
+    if (!d || d.status !== 'ready') { el.textContent = d && (d.status === 'error' || d.status === 'refused' || d.status === 'empty') ? '—' : '…'; if (d && d.error) el.title = d.error; return; }
     var o = opts(el), fkey = el.getAttribute('data-rac-field') || o.field;
     var rowKey = el.getAttribute('data-rac-row'), rank = el.getAttribute('data-rac-rank');
     if (rowKey !== null || rank !== null) {
@@ -901,6 +951,7 @@
       return;
     }
     var p = primary(d, { field: fkey });
+    if (p.needsKpi) { el.textContent = '—'; needsKpi(el, d, p.field); return; }
     el.textContent = fmt(p.value, p.field, o);
     el.title = provTitle(d, p.field);
     el.setAttribute('data-rac-prov', d.bindingId || '');
@@ -993,11 +1044,8 @@
             else add(label(v, f));
           });
         });
-        if (d.rows && d.rows.length) (d.fields || []).forEach(function (f) {
-          if (f.role !== 'measure' || !additive(f)) return;
-          var t = 0; d.rows.forEach(function (r) { var n = num(r[f.key]); if (n !== null) t += n; });
-          add(fmt(t, f, { compact: true })); add(fmt(t, f, { compact: false }));
-        });
+        // A total the report's code adds up is NOT a BI Core value: it is not allowed here, so
+        // the audit flags it (bind a KPI for an official total).
       });
       // Association audit: a number may equal a real value and still sit in the wrong
       // row ("RJ" showing SP's figure) or under the wrong metric. Index every row value

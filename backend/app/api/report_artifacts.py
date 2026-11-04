@@ -583,7 +583,9 @@ def _can_publish(db: Session, user: User, art: ReportArtifact) -> bool:
 def list_public_links(artifact_id: int, db: Session = Depends(get_db),
                       current_user: User = Depends(require_permission(MODULE, "view"))):
     art = _load(db, artifact_id, current_user)
-    publisher = _can_publish(db, current_user, art)
+    # A link's token IS the data it serves, to anyone: revealed only to whom could create
+    # that link now - full on the report AND read rights on every bound chart + dataset.
+    publisher = _can_publish(db, current_user, art) and _can_read_bindings(db, current_user, _served_revision(db, art))
     return [_link_out(db, link, with_token=publisher) for link in PL.list_links(db, art)]
 
 
@@ -665,6 +667,7 @@ def public_link_ai_catalog(artifact_id: int, link_id: int, db: Session = Depends
     link = PL.get_link(db, art, link_id)
     if link is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy liên kết.")
+    _require_bindings_access(db, current_user, _served_revision(db, art))  # the catalog names the data's fields
     return _link_catalog(db, art, link)
 
 
@@ -720,6 +723,14 @@ def _require_bindings_access(db: Session, user: User, rev: ReportArtifactRevisio
     for b in rev.bindings or []:
         if isinstance(b, dict) and b.get("chart_id") is not None:
             _check_chart_access(db, user, int(b["chart_id"]))
+
+
+def _can_read_bindings(db: Session, user: User, rev: ReportArtifactRevision) -> bool:
+    try:
+        _require_bindings_access(db, user, rev)
+        return True
+    except HTTPException:
+        return False
 
 
 def _served_revision(db: Session, art: ReportArtifact) -> ReportArtifactRevision:
