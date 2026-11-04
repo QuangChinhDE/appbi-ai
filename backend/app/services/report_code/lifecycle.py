@@ -185,7 +185,7 @@ def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
         return []
     rev_ids = {i for a in arts for i in (a.draft_revision_id, a.published_revision_id) if i}
     revs = {r.id: r for r in db.query(ReportArtifactRevision.id, ReportArtifactRevision.number,
-                                      ReportArtifactRevision.content_hash,
+                                      ReportArtifactRevision.content_hash, ReportArtifactRevision.bindings,
                                       _f.jsonb_array_length(ReportArtifactRevision.bindings).label("binding_count"))
             .filter(ReportArtifactRevision.id.in_(rev_ids)).all()} if rev_ids else {}
     links = dict(db.query(ReportArtifactPublicLink.artifact_id, _f.count(ReportArtifactPublicLink.id))
@@ -214,8 +214,11 @@ def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, An
         "owner_id": str(art.owner_id) if art.owner_id else None,
         "draft_number": draft.number if draft else None, "published_number": pub.number if pub else None,
         # what the report holds: the data sources (bindings) of its draft
-        "binding_count": (getattr(draft, "binding_count", None) if not hasattr(draft, "bindings")
-                          else len(draft.bindings or [])) if draft else 0,
+        "binding_count": len(draft.bindings or []) if draft else 0,
+        # the saved charts it reads (draft + published): the list's Chart / Source / Dataset
+        # filters relate a Vibe Report the way they relate a dashboard's tiles
+        "chart_ids": sorted({int(x["chart_id"]) for r in (draft, pub) if r is not None
+                             for x in (r.bindings or []) if isinstance(x, dict) and isinstance(x.get("chart_id"), int)}),
         "has_unpublished_changes": bool(draft and (not pub or draft.content_hash != pub.content_hash)),
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.

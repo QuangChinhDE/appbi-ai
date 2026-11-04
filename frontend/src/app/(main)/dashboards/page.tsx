@@ -94,6 +94,18 @@ export default function DashboardsPage() {
     queryKey: ['report-artifacts'],
     queryFn: () => reportCodeApi.list(),
   });
+  const vibeRelations = (row: ReportRow) => {
+    const chartIds = row.kind === 'vibe' ? row.vibe.chart_ids ?? [] : [];
+    const datasetIds = new Set<number>(row.datasetIds);
+    const sourceIds = new Set<number>();
+    for (const id of chartIds) {
+      const bag = relationIndex.chartRelationsById.get(id);
+      bag?.datasetIds.forEach((d) => datasetIds.add(d));
+      bag?.sourceIds.forEach((x) => sourceIds.add(x));
+    }
+    datasetIds.forEach((d) => relationIndex.datasetRelationsById.get(d)?.sourceIds.forEach((x) => sourceIds.add(x)));
+    return { dashboardIds: new Set<number>(), chartIds: new Set<number>(chartIds), datasetIds, sourceIds };
+  };
   // ONE list of reports, newest change first, whichever way each was built.
   const allRows = useMemo<ReportRow[]>(() => [
     ...(dashboards ?? []).map(manualRow),
@@ -474,14 +486,12 @@ export default function DashboardsPage() {
             if (!matchesSearch) return false;
             if (listFilters.access && row.access !== listFilters.access) return false;
             if (listFilters.owner && row.ownerEmail !== listFilters.owner) return false;
-            if (row.kind === 'vibe') {
-              // chart / source relations and the chart-state tag are dashboard-tile facts
-              return !listFilters.state && !listFilters.chart && !listFilters.source
-                && (!listFilters.dataset || row.datasetIds.includes(Number(listFilters.dataset)));
-            }
             const chartState = row.content.count > 0 ? 'linked' : 'empty';
+            // A Vibe Report relates to charts / datasets / sources through the saved charts it
+            // binds, exactly as a dashboard relates through its tiles: one matcher for both.
+            const relations = row.kind === 'vibe' ? vibeRelations(row) : relationIndex.dashboardRelationsById.get(row.id);
             return (!listFilters.state || chartState === listFilters.state)
-              && matchesRelatedFilters(relationIndex.dashboardRelationsById.get(row.id), {
+              && matchesRelatedFilters(relations, {
                 dataset: listFilters.dataset, chart: listFilters.chart, source: listFilters.source,
               });
           });

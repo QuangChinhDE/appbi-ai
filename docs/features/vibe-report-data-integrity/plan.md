@@ -54,3 +54,19 @@ BI Core decides WHAT, the report decides HOW. No second engine; Freeform HTML/JS
 
 Not in this phase: official MoM/YoY in the BI Core (no time-intelligence capability exists;
 the runtime's change stays a labelled report calculation), Native Chart Slot, multi-dataset.
+
+## Phase 3 — close remaining gaps (2026-11-04)
+
+| Change | Where | Locked by |
+|---|---|---|
+| live preview re-posts on EVERY source byte (the key read length + first 64 HTML chars, so a same-length CSS/JS edit never re-rendered) | protocol.previewKey, ReportFrame | `npm run qa:report-code` (fails on the old key) |
+| a link's locks are probed against every binding on create / change / switch-on; refused blocks are returned (`lock_warnings`) and shown in the shared Public Links manager; serving stays fail-closed | report_artifacts `_lock_warnings`, PublicLinksManager | HTTP PG `test_creating_a_link_whose_lock_a_binding_cannot_apply_says_so` |
+| studio data cache scoped to the saved draft revision (a binding re-added under a freed id may read another chart) | ReportStudio fetchers | e2e journeys |
+| shared result cache stored rows with `default=str`: a datetime came back "2024-01-01 00:00:00" vs the API's ISO "…T00:00:00", a Decimal as a string - a Manual tile differed between a cache hit and a miss (public-closure date drill) | query_cache `_payload_json_dumps` (FastAPI encoder for payloads; keys unchanged) | contract `test_a_cached_result_keeps_the_response_encoding…`, e2e public-closure-interactions |
+| /dashboards Chart / Source / Dataset filters relate a Vibe Report through its bound charts (`chart_ids`), with the same matcher as dashboards | lifecycle summary, dashboards page | e2e list journeys |
+| studio filter semantics (month period + newest default, one value + default) set in the Data panel | StudioPanels | e2e J2 |
+
+Cache scopes: host DTO/value caches are per fetcher (report + revision + caller + saved draft), 60 s; a
+revoked link / lost right stops at the server on the next request (an open page keeps what it already
+showed). `resolve_state` memo is keyed by filters + state (lock values included) + locks, 30 s; the
+BI Core read under it is caller-independent (rights are checked before it). Shared result cache: 5 min TTL.

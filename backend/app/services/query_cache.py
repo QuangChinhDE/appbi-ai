@@ -92,6 +92,16 @@ def _stable_json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _payload_json_dumps(value: Any) -> str:
+    """A cached RESULT as the API would have sent it fresh. `default=str` turned a datetime
+    into "2024-01-01 00:00:00" where the response encoder gives "2024-01-01T00:00:00" (and a
+    Decimal into a string): the same tile then differed between a cache hit and a miss. The
+    payload goes through FastAPI's own encoder; cache KEYS keep `_stable_json_dumps`."""
+    from fastapi.encoders import jsonable_encoder
+
+    return json.dumps(jsonable_encoder(value), sort_keys=True, separators=(",", ":"))
+
+
 def _canonicalize_json_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -306,7 +316,7 @@ class _SharedSqliteCache:
                 (
                     int(datasource_id),
                     cache_key,
-                    _stable_json_dumps(data),
+                    _payload_json_dumps(data),
                     now + effective_ttl,
                     now,
                 ),

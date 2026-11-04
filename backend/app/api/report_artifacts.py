@@ -530,6 +530,26 @@ def publish_report(artifact_id: int, body: PublishBody, request: Request, db: Se
 # Listing is a view-level read; the token (the anonymous bearer capability) and every
 # change need FULL access — the same bar as publishing, as for dashboards.
 
+def _lock_warnings(db: Session, rev: ReportArtifactRevision, link) -> List[Dict[str, Any]]:
+    """The bindings a link's locks REFUSE (a lock the engine cannot apply to that binding's
+    chart): told to the publisher when the link is created, changed or switched on, never
+    silently skipped. The viewer still gets a refusal (fail closed) - this only says so first.
+    Runs each binding through the same path a viewer's /data does."""
+    try:
+        enforced = PL.enforced_keys(rev.filters or [], link.filters_config, link.appearance_config)
+        if not enforced or not getattr(link, "is_active", True):
+            return []
+        state = PL.effective_state(rev.filters or [], link.filters_config, {}, link.appearance_config)
+    except Exception:  # noqa: BLE001 - a link that cannot even resolve is refused on serve
+        return [{"binding": None, "title": "", "reason": "refused"}]
+    out = []
+    for b in rev.bindings or []:
+        dto = B.mint_dto(db, b, rev.filters or [], state, public=True, enforced=enforced, disclose=[])
+        if dto.get("status") == "refused":
+            out.append({"binding": b.get("id"), "title": b.get("title") or "", "reason": "lock_not_applicable"})
+    return out
+
+
 def _link_out(db: Session, link, *, with_token: bool) -> Dict[str, Any]:
     """A link as the publisher's client receives it: never a secret. The link's own AI
     key lives in the encrypted credential store; the link holds only its id (as on a
@@ -605,7 +625,7 @@ def create_public_link(artifact_id: int, body: PublicLinkCreate, request: Reques
           resource_type="report_artifact", resource_id=str(art.id), details={"link": link.id, "name": link.name})
     db.commit()
     db.refresh(link)
-    return _link_out(db, link, with_token=True)
+    return {**_link_out(db, link, with_token=True), "lock_warnings": _lock_warnings(db, _served_revision(db, art), link)}
 
 
 @router.post("/{artifact_id}/public-links/preview")
@@ -643,7 +663,7 @@ def update_public_link(artifact_id: int, link_id: int, body: PublicLinkUpdate, r
                    "password_changed": "password" in fields})
     db.commit()
     db.refresh(link)
-    return _link_out(db, link, with_token=True)
+    return {**_link_out(db, link, with_token=True), "lock_warnings": _lock_warnings(db, _served_revision(db, art), link)}
 
 
 @router.get("/{artifact_id}/public-links/{link_id}/ai-status")

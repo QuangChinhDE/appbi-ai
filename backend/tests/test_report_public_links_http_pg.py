@@ -495,3 +495,27 @@ def test_the_filter_value_list_runs_under_the_links_lock_as_authoritative(client
     assert any(f.get("fieldKey") == "t2.region" and f.get("_authoritative") for f in seen)
     # the hidden lock itself has no value list
     assert client.post(f"/api/v1/public/reports/{locked_link}/values", json={"key": "f1", "state": {}}).status_code == 400
+
+
+def test_creating_a_link_whose_lock_a_binding_cannot_apply_says_so(client, db, bound, monkeypatch):  # noqa: F811
+    own, art = bound
+    from app.models.report_artifact import ReportArtifactRevision
+
+    rev = db.get(ReportArtifactRevision, art.draft_revision_id)
+    rev.filters = LOCK_DECL
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    _engine(monkeypatch, unreachable="t2.region")
+    bad = client.post(f"{url}/public-links", json={"name": "lock", "filters_config": [
+        {"field": "f1", "value": ["North"], "hidden": True}]}, headers=own.headers)
+    assert bad.status_code == 201, bad.text
+    assert bad.json()["lock_warnings"] == [{"binding": "b1", "title": "Revenue", "reason": "lock_not_applicable"}]
+    ok = client.post(f"{url}/public-links", json={"name": "ok", "filters_config": [
+        {"field": "f2", "value": ["SP"]}]}, headers=own.headers)
+    assert ok.status_code == 201 and ok.json()["lock_warnings"] == []
+    # switching a link back on re-checks it
+    lid = bad.json()["id"]
+    client.patch(f"{url}/public-links/{lid}", json={"is_active": False}, headers=own.headers)
+    on = client.patch(f"{url}/public-links/{lid}", json={"is_active": True}, headers=own.headers)
+    assert on.json()["lock_warnings"][0]["binding"] == "b1"

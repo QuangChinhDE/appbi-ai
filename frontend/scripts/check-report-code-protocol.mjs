@@ -36,6 +36,18 @@ function check(name, cond) {
 const F = [{ key: 'f1', label: 'Bang', kind: 'category' }, { key: 'f2', label: 'Ngày', kind: 'date' }];
 const parse = (m) => P.parseSandboxMessage(m, F);
 
+// Live preview: a same-length edit of CSS or JS is a change (the key once read only the
+// length and the first 64 characters of the HTML, so such an edit never re-rendered).
+{
+  const base = { html: '<h1>x</h1>', css: '.a{color:red}', js: 'var a=1' };
+  const k = P.previewKey(base);
+  check('preview key: same-length CSS edit changes the key', P.previewKey({ ...base, css: '.a{color:blu}' }) !== k);
+  check('preview key: same-length JS edit changes the key', P.previewKey({ ...base, js: 'var a=2' }) !== k);
+  check('preview key: an edit past the first 64 HTML chars changes the key',
+    P.previewKey({ ...base, html: 'x'.repeat(80) + 'a' }) !== P.previewKey({ ...base, html: 'x'.repeat(80) + 'b' }));
+  check('preview key: moving text between fields changes the key', P.previewKey({ html: 'ab', css: '', js: '' }) !== P.previewKey({ html: 'a', css: 'b', js: '' }));
+  check('preview key: identical source = identical key', P.previewKey({ ...base }) === k && P.previewKey(undefined) === '');
+}
 check('unknown message types are dropped', parse({ type: 'fetch', url: 'https://x' }) === null);
 check('non-objects are dropped', parse('ready') === null && parse(null) === null);
 check('ready parses', parse({ type: 'ready' })?.type === 'ready');

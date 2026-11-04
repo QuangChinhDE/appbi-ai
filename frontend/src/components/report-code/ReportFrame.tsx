@@ -22,6 +22,7 @@ import {
   applyFilter,
   frameSandbox,
   parseSandboxMessage,
+  previewKey,
   type FilterState,
   type ReportBindingDecl,
   type ReportFilterDecl,
@@ -204,7 +205,8 @@ export function ReportFrame({
     return () => { portRef.current?.close(); portRef.current = null; };
   }, [src]);
 
-  const postKey = post ? JSON.stringify(post).length + ':' + (post.html || '').slice(0, 64) : '';
+  // Every byte of the unsaved source decides a re-post (a same-length CSS/JS edit included).
+  const postKey = previewKey(post);
   useEffect(() => {
     const frame = frameRef.current;
     if (!post || !frame || !sandbox) return;

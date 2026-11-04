@@ -56,6 +56,14 @@ export interface PublicLinkTarget {
   loadFilterRows?: () => Promise<{ rows: BaseFilter[]; values: Record<string, string[]> }>;
 }
 
+/** A report link whose lock a block cannot apply: that block is REFUSED to viewers (fail
+ *  closed). The server checks it on create / change / switch-on; say so, never hide it. */
+function warnLocks(link: unknown) {
+  const w = (link as { lock_warnings?: { title?: string }[] } | null)?.lock_warnings;
+  if (!w || !w.length) return;
+  toast.error(`Khoá/Ẩn của link không áp được cho ${w.length} phần (${w.map((x) => x.title || '?').slice(0, 4).join(', ')}): người xem sẽ thấy các phần này bị từ chối thay vì số liệu. Đổi bộ lọc khoá hoặc gỡ phần đó.`, { duration: 9000 });
+}
+
 export function dashboardLinkTarget(dashboardId: number): PublicLinkTarget {
   return {
     kind: 'dashboard',
@@ -867,6 +875,7 @@ export function PublicLinksManager({
       resetForm();
       setView('list');
       toast.success('Public link created');
+      warnLocks(link);
     } catch {
       toast.error('Failed to create link');
     } finally {
@@ -933,6 +942,7 @@ export function PublicLinksManager({
       resetForm();
       setView('list');
       toast.success('Link updated');
+      warnLocks(updated);
     } catch {
       toast.error('Failed to update link');
     } finally {
@@ -948,6 +958,7 @@ export function PublicLinksManager({
       });
       setLinks((prev) => prev.map((item) => (item.id === link.id ? updated : item)));
       toast.success(updated.is_active ? 'Link activated' : 'Link deactivated');
+      warnLocks(updated);
     } catch {
       toast.error('Failed to toggle link');
     }

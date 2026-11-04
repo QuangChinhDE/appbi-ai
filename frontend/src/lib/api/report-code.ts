@@ -36,6 +36,8 @@ export interface ReportSummary {
   public_link_count?: number;
   /** The data sources (bindings) of the draft. */
   binding_count?: number;
+  /** saved charts it reads (draft + published), for the list's Chart/Source/Dataset filters */
+  chart_ids?: number[];
   /** Set by the list endpoint: the caller's level and the owner, as on a dashboard row. */
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   owner_email?: string | null;
@@ -189,6 +191,9 @@ export const reportCodeApi = {
     (await apiClient.delete(`${base(id)}/bindings/${encodeURIComponent(bindingId)}`)).data as { revision: ReportRevision; warnings: string[] },
   addFilter: async (id: number, dimensionId: string) =>
     (await apiClient.post(`${base(id)}/filters`, { dimension_id: dimensionId })).data as { revision: ReportRevision; warnings: string[] },
+  /** A declared filter's grain / default period / single value (a new draft revision). */
+  setFilterOptions: async (id: number, key: string, body: { grain?: 'month' | null; default?: 'latest' | null; single?: boolean; default_value?: string | null }) =>
+    (await apiClient.patch(`${base(id)}/filters/${encodeURIComponent(key)}`, body)).data as { revision: ReportRevision; warnings: string[] },
   removeFilter: async (id: number, key: string) =>
     (await apiClient.delete(`${base(id)}/filters/${encodeURIComponent(key)}`)).data as { revision: ReportRevision; warnings: string[] },
 };

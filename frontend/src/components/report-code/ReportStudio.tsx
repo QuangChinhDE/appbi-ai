@@ -150,8 +150,13 @@ export function ReportStudio({ reportId }: { reportId: number }) {
   const bindings = useMemo(() => (previewMeta?.bindings || draft?.bindings || []).map((b) => ({ id: b.id, title: b.title, kind: b.kind })), [previewMeta, draft]);
   const filters = useMemo(() => (previewMeta?.filters || draft?.filters || []).map((f) => ({ key: f.key, label: f.label, kind: f.kind, grain: f.grain, default: f.default, single: f.single, default_value: f.default_value })), [previewMeta, draft]);
 
-  const fetchData = useCallback((binding: string, state: FilterState) => reportCodeApi.data(reportId, binding, state, previewNumber), [reportId, previewNumber]);
-  const fetchValues = useCallback((key: string, search: string, state: FilterState) => reportCodeApi.values(reportId, key, search, state, previewNumber), [reportId, previewNumber]);
+  // The frame caches data per fetcher: a NEW fetcher for every saved draft revision (a binding
+  // re-added under a freed id may read another chart), the same one across unsaved code edits.
+  const draftNumber = draft?.number ?? null;
+  const fetchData = useCallback((binding: string, state: FilterState) => reportCodeApi.data(reportId, binding, state, previewNumber),
+    [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fetchValues = useCallback((key: string, search: string, state: FilterState) => reportCodeApi.values(reportId, key, search, state, previewNumber),
+    [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
   // An old version is shown only once its own bindings are known, never with the draft's.
   const [doc, setDoc] = useState<{ url: string; isolated: boolean; n: number } | null>(null);
   const [guardState, setGuardState] = useState<{ guard: boolean; authorScript?: 'ran' | 'refused' } | null>(null);

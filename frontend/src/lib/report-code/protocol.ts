@@ -113,3 +113,19 @@ export function applyFilter(state: FilterState, key: string, value: FilterValue 
   else next[key] = value;
   return next;
 }
+
+
+/** What decides that an unsaved-code preview must be re-posted: EVERY byte of html, css and
+ *  js (a same-length CSS/JS edit is still a change). FNV-1a over the fields in a fixed order,
+ *  plus the total length; computed once per render, no DOM. */
+export function previewKey(post: Record<string, string> | undefined): string {
+  if (!post) return '';
+  let h = 0x811c9dc5;
+  let n = 0;
+  for (const k of ['html', 'css', 'js', ...Object.keys(post).filter((x) => !['html', 'css', 'js'].includes(x)).sort()]) {
+    const v = k + String.fromCharCode(0) + (post[k] ?? '') + String.fromCharCode(1);
+    n += v.length;
+    for (let i = 0; i < v.length; i++) { h ^= v.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  }
+  return `${n}:${h.toString(36)}`;
+}

@@ -872,3 +872,24 @@ def test_the_dto_says_when_its_rows_are_a_top_n_of_the_chart(monkeypatch):
                           "v.r": {"label": "R", "role": "measure", "kind": "number"}}}
     dto = B.mint_dto(_Db(), binding, [], {})
     assert dto["topN"] == {"n": 10, "direction": "top"}
+
+
+# ── Shared result cache: a hit is the same JSON as a miss (every surface, Manual included) ──
+
+def test_a_cached_result_keeps_the_response_encoding_of_dates_and_decimals(tmp_path):
+    """The shared result cache stored rows with json default=str: a datetime came back as
+    "2024-01-01 00:00:00" where the API sends "2024-01-01T00:00:00", so a Builder tile and the
+    same tile on a public link differed with the cache's state (public-closure date drill)."""
+    import datetime as dt
+    from decimal import Decimal
+
+    from fastapi.encoders import jsonable_encoder
+
+    from app.services import query_cache as Q
+
+    store = Q._SharedSqliteCache(str(tmp_path / "c.db"), 60, 100)
+    row = {"order_month": dt.datetime(2024, 1, 1), "day": dt.date(2024, 1, 2), "revenue": Decimal("136065.50")}
+    store.set(1, "k", {"data": [row]})
+    got = store.get(1, "k")["data"][0]
+    assert got == jsonable_encoder(row), got
+    assert got["order_month"] == "2024-01-01T00:00:00"

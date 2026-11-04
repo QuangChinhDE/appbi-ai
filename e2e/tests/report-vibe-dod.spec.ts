@@ -113,6 +113,21 @@ test('J2 Studio: write code, bind governed data, live preview, provenance, save,
   await (await dim.count() ? dim : page.getByRole('button', { name: /^\+ / }).first()).click();
   await expect(page.locator('[data-testid^="filter-f1"]').first()).toBeVisible({ timeout: 60_000 });
 
+  // filter semantics set in the Studio, not through the API: one value + its default value
+  const filterOf = async (key: string) =>
+    ((await (await page.request.get(`${RA}/${reportId}`)).json()).draft.filters || []).find((f: any) => f.key === key);
+  if (await page.getByTestId('filter-f1-single').count()) {
+    const vals = (await (await page.request.post(`${RA}/${reportId}/values`, { data: { key: 'f1', search: '', state: {} } })).json()).values;
+    await page.getByTestId('filter-f1-single').check();
+    await expect.poll(async () => (await filterOf('f1'))?.single, { timeout: 30_000 }).toBe(true);
+    await page.getByTestId('filter-f1-default').fill(String(vals[0]));
+    await page.getByTestId('filter-f1-default').press('Tab');
+    await expect.poll(async () => (await filterOf('f1'))?.default_value, { timeout: 30_000 }).toBe(String(vals[0]));
+    await shot(page, 'j2-studio-filter-options');
+    await page.getByTestId('filter-f1-single').uncheck(); // back to multi-select for the journeys below
+    await expect.poll(async () => (await filterOf('f1'))?.single ?? false, { timeout: 30_000 }).toBe(false);
+  }
+
   // insert both at the cursor, then write some code by hand
   await page.getByTestId('binding-b1-insert').click();
   await page.getByTestId('studio-tab-data').click();
