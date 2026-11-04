@@ -9,7 +9,11 @@
  */
 
 export type FilterKind = 'category' | 'date';
-export interface ReportFilterDecl { key: string; label: string; kind: FilterKind }
+/** grain "month" = a period picker; default "latest" / default_value = what the numbers use until a viewer picks; single = one value. */
+export interface ReportFilterDecl {
+  key: string; label: string; kind: FilterKind;
+  grain?: 'month'; default?: 'latest'; single?: boolean; default_value?: string;
+}
 export interface ReportBindingDecl { id: string; title: string; kind: string }
 export type FilterValue = string[] | [string | null, string | null];
 export type FilterState = Record<string, FilterValue>;

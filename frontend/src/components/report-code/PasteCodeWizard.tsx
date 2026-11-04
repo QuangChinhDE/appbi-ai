@@ -9,7 +9,7 @@
  * spans that held data change; everything else in the code stays as pasted.
  */
 import React, { useMemo, useState } from 'react';
-import { BarChart3, Check, Code2, Download, FileUp, Filter, Hash, Link2, Loader2, Table2, Wand2 } from 'lucide-react';
+import { BarChart3, Check, Code2, Download, FileUp, Filter, Hash, Link2, Loader2, Table2, Wand2, Rows3, CalendarDays } from 'lucide-react';
 
 import { Modal } from '@/components/common/Modal';
 import { Button } from '@/components/ui/Button';
@@ -20,7 +20,7 @@ import { useI18n } from '@/providers/LanguageProvider';
 
 const VIZ = ['bar', 'hbar', 'line', 'area', 'donut', 'table', 'heatmap', 'waterfall', 'progress'];
 const KIND_FOR: Record<string, string[]> = { value: ['kpi'], chart: ['time', 'category'], table: ['category'] };
-const SLOT_ICON = { value: Hash, chart: BarChart3, table: Table2, filter: Filter } as const;
+const SLOT_ICON = { value: Hash, chart: BarChart3, table: Table2, filter: Filter, list: Rows3, period: CalendarDays } as const;
 
 export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId, onClose, onDone }: {
   datasets?: { id: number; name: string }[];
@@ -37,7 +37,7 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [analysis, setAnalysis] = useState<ImportAnalysis | null>(null);
-  const [map, setMap] = useState<Record<string, { candidate?: string | null; viz?: string | null; dimension?: string | null }>>({});
+  const [map, setMap] = useState<Record<string, { candidate?: string | null; viz?: string | null; dimension?: string | null; columns?: Record<string, string | null> }>>({});
   const [extraFilters, setExtraFilters] = useState<string[]>([]);
 
   const sources = () => (mode === 'file' ? { html: file, css: '', js: '' } : parts);
@@ -49,7 +49,8 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
     try {
       const a = await reportCodeApi.importAnalyze({ dataset_id: datasetId, ...sources() });
       setAnalysis(a);
-      setMap(Object.fromEntries(a.slots.map((s) => [s.id, { candidate: s.candidate ?? null, viz: s.viz ?? null, dimension: s.dimension ?? null }])));
+      setMap(Object.fromEntries(a.slots.map((s) => [s.id, { candidate: s.candidate ?? null, viz: s.viz ?? null, dimension: s.dimension ?? null,
+        columns: s.kind === 'list' ? { ...(s.column_fields || {}) } : undefined }])));
       setExtraFilters([]);
     } catch (e: any) {
       toast.error(e?.response?.data?.detail || e?.message);
@@ -79,7 +80,21 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
     for (const c of analysis?.candidates || []) seen.set(c.title, (seen.get(c.title) || 0) + 1);
     return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
   }, [analysis]);
-  const mapped = useMemo(() => analysis?.slots.filter((s) => (s.kind === 'filter' ? map[s.id]?.dimension : map[s.id]?.candidate)).length ?? 0, [analysis, map]);
+  const mapped = useMemo(() => analysis?.slots.filter((s) => {
+    const m = map[s.id];
+    if (s.kind === 'filter' || s.kind === 'period') return !!m?.dimension;
+    if (s.kind === 'list') return !!m?.dimension && Object.values(m.columns || {}).some((v) => v && v !== 'dim' && v !== 'static' && v !== '#');
+    return !!m?.candidate && m.candidate !== 'static';
+  }).length ?? 0, [analysis, map]);
+  // places that will still show the design's numbers (marked "số mẫu"; publishing asks first)
+  const samples = useMemo(() => analysis?.slots.filter((s) => {
+    const m = map[s.id];
+    if (s.kind === 'value') return !m?.candidate;
+    if (s.kind === 'list') return !(m?.dimension && Object.values(m.columns || {}).some((v) => v && !['dim', 'static', '#'].includes(v)));
+    return false;
+  }).length ?? 0, [analysis, map]);
+  const measureOptions = (analysis?.candidates || []).filter((c) => c.kind === 'kpi');
+  const label = (c: { title: string; source?: string | null }) => (c.source && dupTitles.has(c.title) ? `${c.title} · ${c.source}` : c.title);
 
   return (
     <Modal isOpen onClose={busy ? () => undefined : onClose} size="2xl" title={t('reportCode.paste.title')}
@@ -194,18 +209,49 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
                             <div className="mt-0.5 text-text-tertiary">{s.context || '—'}{s.sample ? <> · <code className="text-text-secondary">{s.sample}</code></> : null}</div>
                           </td>
                           <td className="px-3 py-2">
-                            {s.kind === 'filter' ? (
-                              <select value={m.dimension || ''} onChange={(e) => setMap({ ...map, [s.id]: { ...m, dimension: e.target.value || null } })}
-                                className="w-full max-w-[280px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-1">
-                                <option value="">{t('reportCode.paste.keep')}</option>
-                                {analysis.dimensions.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-                              </select>
+                            {s.kind === 'filter' || s.kind === 'period' ? (
+                              <div className="space-y-1">
+                                <select data-testid={`slot-${s.id}-dimension`} value={m.dimension || ''} onChange={(e) => setMap({ ...map, [s.id]: { ...m, dimension: e.target.value || null } })}
+                                  className="w-full max-w-[280px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-1">
+                                  <option value="">{t('reportCode.paste.keep')}</option>
+                                  {analysis.dimensions.filter((d) => s.kind !== 'period' || d.kind === 'date').map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+                                </select>
+                                {(s.kind === 'period' || s.period) && m.dimension ? (
+                                  <div className="text-[10px] text-emerald-700" data-testid={`slot-${s.id}-period-note`}>{t(s.kind === 'period' ? 'reportCode.paste.periodText' : 'reportCode.paste.periodFilter')}</div>
+                                ) : null}
+                              </div>
+                            ) : s.kind === 'list' ? (
+                              <div className="space-y-1.5" data-testid={`slot-${s.id}-list`}>
+                                <select data-testid={`slot-${s.id}-dimension`} value={m.dimension || ''} onChange={(e) => setMap({ ...map, [s.id]: { ...m, dimension: e.target.value || null } })}
+                                  className="w-full max-w-[320px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-1">
+                                  <option value="">{t('reportCode.paste.listRowsKeep')}</option>
+                                  {analysis.dimensions.filter((d) => d.kind !== 'date').map((d) => <option key={d.id} value={d.id}>{t('reportCode.paste.listRowsBy', { dim: d.label })}</option>)}
+                                </select>
+                                {m.dimension ? (
+                                  <div className="grid gap-1">
+                                    {(s.columns || []).map((c) => (
+                                      <label key={c.index} className="flex items-center gap-1.5">
+                                        <code className="w-28 truncate text-[10px] text-text-tertiary" title={c.sample}>{c.sample}</code>
+                                        <select data-testid={`slot-${s.id}-col-${c.index}`} value={m.columns?.[String(c.index)] || ''}
+                                          onChange={(e) => setMap({ ...map, [s.id]: { ...m, columns: { ...(m.columns || {}), [String(c.index)]: e.target.value || null } } })}
+                                          className="min-w-0 flex-1 rounded-md border border-stroke-strong bg-surface-1 px-1.5 py-0.5 text-[11px]">
+                                          <option value="">{t('reportCode.paste.colKeep')}</option>
+                                          <option value="dim">{t('reportCode.paste.colDim')}</option>
+                                          <option value="#">{t('reportCode.paste.colRank')}</option>
+                                          {measureOptions.map((c2) => <option key={c2.id} value={c2.id}>{label(c2)}</option>)}
+                                        </select>
+                                      </label>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
                             ) : (
                               <select data-testid={`slot-${s.id}-candidate`} value={m.candidate || ''} onChange={(e) => setMap({ ...map, [s.id]: { ...m, candidate: e.target.value || null } })}
                                 className="w-full max-w-[320px] rounded-md border border-stroke-strong bg-surface-1 px-2 py-1">
-                                <option value="">{t('reportCode.paste.keep')}</option>
+                                <option value="">{t('reportCode.paste.keepSample')}</option>
+                                {s.kind === 'value' ? <option value="static">{t('reportCode.paste.static')}</option> : null}
                                 {analysis.candidates.filter((c) => (KIND_FOR[s.kind] || []).includes(c.kind)).map((c) => (
-                                  <option key={c.id} value={c.id}>{c.source && dupTitles.has(c.title) ? `${c.title} · ${c.source}` : c.title}</option>
+                                  <option key={c.id} value={c.id}>{label(c)}</option>
                                 ))}
                               </select>
                             )}
@@ -243,6 +289,9 @@ export function PasteCodeWizard({ datasets, datasetId: fixedDataset, artifactId,
               </div>
             </>
           )}
+          {!analysis.compatible && samples > 0 ? (
+            <p className="rounded-md bg-amber-50 px-3 py-1.5 text-[11px] text-amber-800" data-testid="paste-samples">{t('reportCode.paste.samplesLeft', { n: samples })}</p>
+          ) : null}
           <p className="flex items-center gap-1.5 text-[11px] text-text-quaternary"><Code2 className="h-3.5 w-3.5" />{t('reportCode.paste.preserve')}</p>
           {busy && <div className="flex items-center gap-2 text-xs text-text-tertiary"><Loader2 className="h-3.5 w-3.5 animate-spin" />{t('reportCode.paste.working')}</div>}
         </div>

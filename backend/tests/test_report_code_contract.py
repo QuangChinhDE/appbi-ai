@@ -321,9 +321,13 @@ def test_applying_a_mapping_changes_only_the_data_spans(monkeypatch):
                            {"slot": slots["Bang"], "dimension": state["id"]}],
                   owner_id=None, report_name="R", existing=[], existing_filters=[], progress=lambda s: None)
     html = out["html"]
-    assert '<div class="stat">Doanh thu<b data-rac-value="b1"></b></div>' in html, \
-        "a figure that is its element's whole text is bound ON that element (author CSS keeps styling it)"
-    assert '<div class="stat">Số đơn<b>4.321</b></div>' in html, "an unmapped figure is left exactly as written"
+    assert '<div class="stat">Doanh thu<b data-rac-value="b1" data-rac-opts="{&quot;decimals&quot;: 0, &quot;compact&quot;: false}"></b></div>' in html, \
+        "a figure that is its element's whole text is bound ON that element (author CSS keeps styling it), " \
+        "with the design's number format (12.345.678: no decimals, not abbreviated)"
+    # an unmapped figure keeps its text and design, and is MARKED as a sample: it must never
+    # reach a published report looking like governed data (publish refuses while it remains)
+    assert '<div class="stat">Số đơn<b><span data-rac-sample>4.321</span></b></div>' in html
+    assert '4.321' in html
     assert '<div id="rev" data-rac-viz="line" data-rac-bind="b2" style="height:220px;width:100%"' in html
     assert '<div id="st" data-rac-filter="f1"' in html and "<select" not in html, "the replaced select keeps its id for the author's JS"
     assert '<h1>Báo cáo 2024</h1>' in html and 'class="hero"' in html
@@ -661,3 +665,177 @@ def test_the_ai_analysis_is_told_the_link_is_restricted_without_being_told_how()
     assert "AC" not in json.dumps(note), "the hidden value is never named"
     assert "KHÔNG BAO GIỜ gán con số" in GA.SYSTEM
 
+
+
+# ── Dynamic binding: repeated structures, the period, sample numbers ─────────────────
+
+_LIST_HTML = """<section><h3>Doanh thu theo đơn vị</h3><table class="t"><tbody>
+<tr class="r"><td>Khối HO</td><td><div class="bar"><i style="width:80%;background:red"></i></div></td><td>24,54 tỷ</td><td>▼ 29,7%</td></tr>
+<tr class="r"><td>Cát Bà</td><td><div class="bar"><i style="width:55%;background:red"></i></div></td><td>16,85 tỷ</td><td>▼ 14,2%</td></tr>
+<tr class="r"><td>Đại Lải</td><td><div class="bar"><i style="width:60%;background:red"></i></div></td><td>20,45 tỷ</td><td>▲ 4,3%</td></tr>
+</tbody></table><p class="head">Toàn tập đoàn · Tháng 08/2026</p><p>Tổng 1.234 tỷ</p></section>"""
+
+
+def test_rows_of_one_result_are_one_list_slot_and_the_table_keeps_its_design():
+    from app.services.report_code import importer as I
+
+    slots = I.detect_slots(_LIST_HTML)
+    lists = [s for s in slots if s["kind"] == "list"]
+    assert len(lists) == 1, [(s["kind"], s["sample"]) for s in slots]
+    ls = lists[0]
+    assert ls["rows"] == 3 and ls["tag"] == "tr"
+    assert [c["sample"] for c in ls["columns"]] == ["Khối HO", "24,54 tỷ", "▼ 29,7%"]
+    assert not any(s["kind"] == "table" for s in slots), "a table that holds a list is never swapped for a widget"
+    periods = [s for s in slots if s["kind"] == "period"]
+    assert [p["sample"] for p in periods] == ["Tháng 08/2026"], "the headline period is its own slot"
+    assert not any(s["kind"] == "value" and s["sample"] in ("08/2026", "2026") for s in slots)
+
+
+def test_a_mapped_list_becomes_ONE_repeat_template_cells_and_bar_from_the_first_row():
+    from app.services.report_code import document as Dm
+    from app.services.report_code import importer as I
+
+    ls = next(s for s in I.detect_slots(_LIST_HTML) if s["kind"] == "list")
+    plan = {"fields": {"0": "d0", "1": "m0", "2": "m1"}}
+    out = I._list_template(_LIST_HTML, Dm._scan(_LIST_HTML), ls, plan, "b7")
+    assert out.count("<tr") == 1, "the other rows go: rows come from the BI Core"
+    assert 'data-rac-repeat="b7"' in out and 'class="r"' in out, "the template keeps the authored row"
+    assert out.count('data-rac-cell="d0"') == 1 and 'data-rac-cell="m0"' in out and 'data-rac-cell="m1"' in out
+    assert "Khối HO" not in out and "24,54" not in out, "no sample text left in a bound cell"
+    assert 'data-rac-bar="m0"' in out and "width:80%" not in out and "background:red" in out, \
+        "an empty width-% bar becomes a data bar, its other styling kept"
+
+
+def test_unmapped_numbers_are_marked_as_samples_and_publish_refuses_them():
+    from app.services.report_code import lifecycle as L
+
+    html = '<p>Doanh thu <span data-rac-sample>79,65 tỷ</span></p><tr data-rac-sample class="r">'
+    assert L.sample_marks(html) == 2
+    assert L.sample_marks('<p data-rac-value="b1"></p><p>data-rac-sample as text</p>') == 0
+
+
+def test_a_month_period_filter_is_one_whole_month_and_offered_as_months():
+    decl = [{"key": "f1", "label": "Kỳ", "kind": "date", "grain": "month", "default": "latest",
+             "fieldKey": "v.thang", "field": "thang", "datasetId": 1}]
+    assert B.clean_state(decl, {"f1": ["2026-02-10", None]}) == {"f1": ["2026-02-01", "2026-02-28"]}
+    assert B.clean_state(decl, {"f1": ["2024-02-01", "2024-02-01"]}) == {"f1": ["2024-02-01", "2024-02-29"]}
+    with pytest.raises(ValueError):
+        B.clean_state(decl, {"f1": [None, "2026-02-01"]})
+    conds = B.conditions(decl, {"f1": ["2026-08-01", "2026-08-31"]})
+    assert conds[0]["operator"] == "between" and conds[0]["value"] == ["2026-08-01", "2026-08-31"]
+    pub = B.public_filters(decl)[0]
+    assert pub == {"key": "f1", "label": "Kỳ", "kind": "date", "grain": "month", "default": "latest"}, \
+        "the runtime learns grain/default, never the field"
+
+
+def test_the_default_period_is_resolved_once_from_the_bi_core_months(monkeypatch):
+    decl = [{"key": "f1", "label": "Kỳ", "kind": "date", "grain": "month", "default": "latest",
+             "fieldKey": "v.thang", "field": "thang", "datasetId": 1},
+            {"key": "f2", "label": "Đơn vị", "kind": "category", "fieldKey": "v.dv", "field": "dv", "datasetId": 1}]
+    seen = []
+
+    def fake_distinct(db, ds, field, **kw):
+        seen.append((field, kw.get("filters")))
+        return {"values": ["2026-04-01", "2026-09-01T00:00:00", "2026-06-01", None]}
+
+    import app.services.dataset_model_service as DMS
+    monkeypatch.setattr(DMS, "get_distinct_field_values", fake_distinct)
+    assert B.resolve_state(None, decl, {}) == {"f1": ["2026-09-01", "2026-09-30"]}, "the newest month the data holds"
+    assert B.resolve_state(None, decl, {"f1": ["2026-04-01", "2026-04-30"]})["f1"] == ["2026-04-01", "2026-04-30"], \
+        "a viewer's or a lock's period always wins over the default"
+    assert B.resolve_state(None, decl, {"f2": ["HO"]}) == {"f2": ["HO"], "f1": ["2026-09-01", "2026-09-30"]}
+    assert seen[-1][1] and seen[-1][1][0]["fieldKey"] == "v.dv", "the latest month is the latest IN the other filters"
+
+
+@pytest.mark.parametrize("sample,after,expected", [
+    ("79,65", " tỷ", {"decimals": 2, "scale": 1e9}),             # unit in the next element: scale only
+    ("24,54 tỷ", "", {"decimals": 2, "scale": 1e9, "suffix": " tỷ"}),  # unit inside the figure: kept
+    ("72,7%", "", {"decimals": 1, "kind": "percent"}),
+    ("1,58", " tr", {"decimals": 2, "scale": 1e6}),
+    ("90,5", "", {"decimals": 1, "compact": False}),
+])
+def test_a_bound_number_keeps_the_designs_unit_and_decimals(sample, after, expected):
+    from app.services.report_code.importer import num_opts
+
+    assert num_opts(sample, after) == expected
+
+
+def test_the_model_never_maps_a_figure_to_a_measure_its_label_does_not_name(monkeypatch):
+    """Benchmark #33: 'Tỷ lệ nghỉ việc 3,2%' and 'Chất lượng dịch vụ 101,7%' were proposed as
+    '% đạt KH Doanh thu' - the dataset has no such data, and a published guess looks governed."""
+    from app.services import llm_client
+    from app.services.report_code import importer as I
+
+    cands = [{"id": "c1", "kind": "kpi", "title": "% đạt KH Doanh thu", "measure": "% đạt KH Doanh thu", "rank": 1},
+             {"id": "c2", "kind": "kpi", "title": "Doanh thu", "measure": "Doanh thu", "rank": 1}]
+    slots = [{"id": "s1", "kind": "value", "context": "Tỷ lệ nghỉ việc", "sample": "3,2%"},
+             {"id": "s2", "kind": "value", "context": "Chất lượng dịch vụ (audit)", "sample": "101,7%"},
+             {"id": "s3", "kind": "value", "context": "Doanh thu ▼", "sample": "72,7%"}]
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(
+        lambda **kw: {"map": [{"slot": "s1", "id": "c1"}, {"slot": "s2", "id": "c1"}, {"slot": "s3", "id": "c1"}]}))
+    out = I.propose(slots, cands, [])
+    assert (out.get("s1") or {}).get("candidate") is None, out
+    assert (out.get("s2") or {}).get("candidate") is None, out
+    assert out["s3"]["candidate"] == "c1", "a pick that shares the label's meaning still stands"
+
+
+def test_a_binding_keeps_its_metric_order_although_jsonb_reorders_the_fields(monkeypatch):
+    """Benchmark matrix: % of plan showed in the KPI-score column. `fields` is JSONB and
+    Postgres orders object keys shorter-first, so `tb_diem_kpi` came before `dat_doanh_thu`."""
+    from app.services.chart_service import ChartService
+
+    monkeypatch.setattr(ChartService, "get_chart_data", staticmethod(lambda *a, **k: {"data": [
+        {"v.don_vi": "Cát Bà", "v.dat_doanh_thu": 0.936, "v.tb_diem_kpi": 88.2}]}))
+    jsonb_order = {"v.don_vi": {"label": "Đơn vị", "role": "dimension", "kind": "string"},
+                   "v.tb_diem_kpi": {"label": "Điểm KPI", "role": "measure", "kind": "number"},
+                   "v.dat_doanh_thu": {"label": "% đạt", "role": "measure", "kind": "number"}}
+    b = {"id": "b1", "chart_id": 1, "title": "t", "kind": "category", "fields": jsonb_order,
+         "order": ["v.don_vi", "v.dat_doanh_thu", "v.tb_diem_kpi"]}
+    dto = B.mint_dto(None, b, [], {})
+    by = {f["key"]: f["label"] for f in dto["fields"]}
+    assert by == {"d0": "Đơn vị", "m0": "% đạt", "m1": "Điểm KPI"}, "m0/m1 follow the chart's metric order"
+    assert dto["rows"][0] == {"d0": "Cát Bà", "m0": 0.936, "m1": 88.2}
+
+
+def test_a_figure_with_its_unit_in_the_next_element_keeps_the_unit_scale(monkeypatch):
+    """Benchmark: '<b>79,65</b><small>tỷ</small>' rendered 82.960.000.000 - the unit beside the
+    figure was not read, so the governed value lost the design's scale."""
+    from app.services.report_code import importer as I
+
+    html = '<div class="kc"><div class="lb">Doanh thu</div><b class="v">79,65</b><small>tỷ</small></div>'
+    s = next(x for x in I.detect_slots(html) if x["kind"] == "value")
+    sc = I._scan(html)
+    assert I.num_opts(s["sample"], I._text_after(html, sc.tags, s.get("host"), s["end"])) == {"decimals": 2, "scale": 1e9}
+
+
+def test_a_number_past_the_review_budget_is_still_marked_as_a_sample(monkeypatch):
+    """Benchmark: 'Điểm KPI bình quân 90,5' (past the 40th figure) was neither bound nor marked -
+    the review budget cut it, and apply saw the same truncated list."""
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    monkeypatch.setattr(B, "bind_candidates", lambda db, picks, *, existing, **kw: ([], {}, []))
+    n = I.MAX_SLOTS + 5
+    html = "".join(f"<p>Chỉ số {i}: {i},5 tỷ</p>" for i in range(n))
+    slots = I.detect_slots(html)
+    values = [x for x in slots if x["kind"] == "value"]
+    assert len(values) == n and len(I.shown_slots(slots)) <= I.MAX_SLOTS < len(slots), "the review shows a budget"
+    out = I.apply(None, dataset_id=9, html=html, css="", js="", mapping=[], filters=[], owner_id=None,
+                  report_name="R", existing=[], existing_filters=[], progress=lambda s: None)
+    from app.services.report_code import lifecycle as L
+
+    assert out["html"].count("<span data-rac-sample>") == n, "every figure nobody mapped is marked - past the budget too"
+    assert L.sample_marks(out["html"]) >= n
+
+
+def test_the_last_pass_marks_every_figure_no_one_governs():
+    from app.services.report_code import importer as I
+
+    html = ('<h1>Báo cáo 2024</h1><nav><b>Tập đoàn</b><i>88</i></nav><button>T07/26</button>'
+            '<p data-rac-value="b1">79,65</p><span data-rac-sample>3,2%</span><td data-rac-cell="m0">12</td>')
+    out = I.mark_loose_numbers(html)
+    assert "<i><span data-rac-sample>88</span></i>" in out and "<span data-rac-sample>07/26</span>" in out
+    assert "<h1>Báo cáo 2024</h1>" in out, "a year in a heading is not a figure"
+    assert '<p data-rac-value="b1">79,65</p>' in out and '<td data-rac-cell="m0">12</td>' in out, "governed stays as is"
+    assert out.count("data-rac-sample") == 3, "an existing mark is not wrapped twice"

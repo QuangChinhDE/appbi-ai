@@ -42,6 +42,7 @@ def build_context(db: Session, rev, link, viewer_state: Any):
 
     decl = list(rev.filters or [])
     state = PL.effective_state(decl, link.filters_config, viewer_state or {}, link.appearance_config)
+    state = B.resolve_state(db, decl, state)  # the report's default period, as the page shows it
     hidden_keys = {str(e.get("field")) for e in (link.filters_config or [])
                    if isinstance(e, dict) and e.get("hidden")}
     public_filters: List[Dict[str, Any]] = []

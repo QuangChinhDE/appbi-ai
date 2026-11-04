@@ -224,6 +224,7 @@ backend/scripts/regression_*.py
 !backend/tests/test_non_fanning_reachability.py
 !backend/tests/test_semantic_measure_render.py
 !backend/tests/test_dialect_structural.py
+!backend/tests/test_duckdb_integer_never_rounds.py
 # Agent Flow runtime safety net (branch/loop/retry/budget/memory/binding/
 # trace + the frozen node list). Tracked and CI-run for the same reason as
 # the suites above: a local-only test cannot protect a refactor.

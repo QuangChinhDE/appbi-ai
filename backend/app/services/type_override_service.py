@@ -320,7 +320,14 @@ def build_safe_cast_sql(
             f"REGEXP_REPLACE(REGEXP_REPLACE({trimmed}, '[\\s\\u00A0]', '', 'g'), ',', '', 'g')"
         )
         if dialect == "duckdb":
-            return f"TRY_CAST({cleaned} AS BIGINT)"
+            # A bare TRY_CAST ROUNDS on DuckDB ('71.3' -> 71) where BigQuery SAFE_CAST,
+            # Postgres and MySQL give NULL; the type probe shares this expression, so
+            # decimals were typed integer and silently rounded. Same contract as the
+            # Postgres/MySQL branches: only an integer literal converts.
+            return (
+                f"CASE WHEN regexp_full_match({cleaned}, '-?[0-9]+') "
+                f"THEN TRY_CAST({cleaned} AS BIGINT) ELSE NULL END"
+            )
         # Postgres (+ generic relational): NO `TRY_CAST` and the type is BIGINT;
         # a non-numeric string must yield NULL (not raise), so regex-guard the
         # CAST — mirrors the MySQL branch above and the date `~` branches below.

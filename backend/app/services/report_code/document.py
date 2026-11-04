@@ -439,6 +439,9 @@ main{min-width:0}
 body.rac-select [data-rac-region]{cursor:crosshair}
 body.rac-select [data-rac-region]:hover{outline:2px dashed var(--rac-accent);outline-offset:2px}
 [data-rac-region].rac-selected{outline:2px solid var(--rac-accent)!important;outline-offset:2px}
+.rac-sample{outline:1px dashed #d97706;outline-offset:1px;cursor:help}
+.rac-sample-legend{position:fixed;left:10px;bottom:10px;z-index:2147483000;font:600 11px/1.3 system-ui;color:#92400e;background:#fffbeb;border:1px dashed #d97706;border-radius:6px;padding:4px 8px;pointer-events:none}
+.rac-filter-period select{font:inherit;border:1px solid var(--rac-border,#d1d5db);border-radius:6px;padding:2px 6px;background:transparent;color:inherit}
 .rac-flash{outline:3px solid var(--rac-accent)!important;outline-offset:3px;transition:outline-color .3s}
 body.rac-prov [data-rac-value],body.rac-prov [data-rac-viz]{outline:2px solid rgba(16,185,129,.85)!important;outline-offset:2px}
 body.rac-prov .rac-static{outline:2px dashed rgba(245,158,11,.95)!important;outline-offset:2px;background:rgba(245,158,11,.08)}
@@ -446,7 +449,8 @@ body.rac-prov .rac-static{outline:2px dashed rgba(245,158,11,.95)!important;outl
 
 
 def build_export(*, html: str, css: str, js: str, title: str, bindings: List[Dict[str, Any]],
-                 snapshot: Dict[str, Any], stamp: str) -> str:
+                 snapshot: Dict[str, Any], stamp: str, scope: str = "",
+                 filters: Optional[List[Dict[str, Any]]] = None) -> str:
     """The report as ONE standalone HTML file: its code, the runtime and a data snapshot.
 
     A small host (the last script) plays the AppBI frame host locally: it hands the
@@ -456,20 +460,20 @@ def build_export(*, html: str, css: str, js: str, title: str, bindings: List[Dic
     import json as _json
 
     doc = build_document(html=html, css=css, js=js, title=title, nonce="export")
-    snap = _json.dumps({"bindings": bindings, "data": snapshot}, ensure_ascii=False, default=str)
+    snap = _json.dumps({"bindings": bindings, "data": snapshot, "filters": filters or []}, ensure_ascii=False, default=str)
     host = (
         "(function(){var S=" + snap.replace("</", "<\\/") + ";var ch=new MessageChannel();"
         "function all(){S.bindings.forEach(function(b){ch.port1.postMessage({type:'data',id:b.id,dto:S.data[b.id]});});}"
         "ch.port1.onmessage=function(e){var m=e.data||{};"
         "if(m.type==='ready'||m.type==='setFilter'||m.type==='clearFilters')all();"
         "if(m.type==='values')ch.port1.postMessage({type:'values',reqId:m.reqId,values:[]});};"
-        "window.postMessage({type:'rac:init',v:1,context:{filters:[],state:{},bindings:S.bindings,mode:'view',"
+        "window.postMessage({type:'rac:init',v:1,context:{filters:S.filters||[],state:{},bindings:S.bindings,mode:'view',"
         "locale:'vi-VN'}},'*',[ch.port2]);})();"
     )
     # in the flow at the end of the page: a fixed badge sat on top of the report's content
     note = (f"<footer style=\"clear:both;width:100%;text-align:right;font:11px system-ui;color:#64748b;"
             f"padding:12px 16px\">AppBI · bản xuất {_html.escape(stamp)}"
-            " · số liệu chụp tại thời điểm xuất</footer>")
+            f"{(' · ' + _html.escape(scope)) if scope else ''} · số liệu chụp tại thời điểm xuất (không tự cập nhật)</footer>")
     return doc.replace("</body></html>", f"{note}<script>{_no_close(host, 'script')}</script></body></html>")
 
 

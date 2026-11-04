@@ -302,8 +302,97 @@ def test_export_html_is_a_standalone_page_with_a_data_snapshot_and_no_internals(
     r = client.get(f"/api/v1/report-artifacts/{report.id}/export-html", headers=owner.headers)
     assert r.status_code == 200 and "attachment" in r.headers.get("content-disposition", "")
     page = r.text
-    assert "DRAFT-SECRET" in page and "rac:init" in page and "MessageChannel" in page
+    # what a link serves: the PUBLISHED revision, never the unpublished draft
+    assert "PUBLISHED-ONLY" in page and "DRAFT-SECRET" not in page
+    assert "rac:init" in page and "MessageChannel" in page
     import re as _re
 
     assert '"chart_id"' not in page, "no chart id in the snapshot"
     assert not _re.search(r"select[^<]{0,200}from", page, _re.I), "no SQL in the file"
+
+
+# ── Data rights on every report -> data path (export, duplicate, publish, public link) ──
+# A share on a REPORT is not a grant on its DATA: /data already checks each bound chart
+# and its dataset lineage; every other path that turns the report into numbers must too,
+# or a report share is a way around the data's own rights.
+
+@pytest.fixture()
+def bound(db):  # noqa: F811
+    """A report whose revisions bind one chart the owner can read (explore_charts)."""
+    from app.models.models import Chart, ChartType
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    own = make_user(db, "rpl-data-owner", dashboards="edit", explore_charts="edit")
+    chart = Chart(name=f"RPL bound {uuid.uuid4().hex[:8]}", chart_type=ChartType.KPI, config={}, owner_id=own.id)
+    db.add(chart)
+    db.flush()
+    art = ReportArtifact(name="RPL bound report", owner_id=own.id)
+    db.add(art)
+    db.flush()
+    binding = [{"id": "b1", "chart_id": chart.id, "title": "Revenue", "kind": "kpi"}]
+    rev = ReportArtifactRevision(artifact_id=art.id, number=1, html='<p data-rac-value="b1"></p>', css="", js="",
+                                 bindings=binding, filters=[], source="manual", content_hash="d" * 64, created_by=own.id)
+    db.add(rev)
+    db.flush()
+    art.draft_revision_id = rev.id
+    db.commit()
+    return own, art
+
+
+def _share(client, own, art, who, permission):  # noqa: F811
+    r = client.post(f"/api/v1/shares/report_artifact/{art.id}", json={"user_id": str(who.id), "permission": permission},
+                    headers=own.headers)
+    assert r.status_code in (200, 201), r.text
+
+
+def test_a_report_share_without_data_rights_cannot_read_export_or_copy_the_data(client, db, bound):  # noqa: F811
+    own, art = bound
+    viewer = make_user(db, "rpl-no-data", dashboards="edit")  # the module, a view share, NO chart rights
+    _share(client, own, art, viewer, "view")
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.get(url, headers=viewer.headers).status_code == 200, "the share opens the report"
+    assert client.post(f"{url}/data", json={"binding": "b1", "state": {}}, headers=viewer.headers).status_code == 403
+    exp = client.get(f"{url}/export-html", headers=viewer.headers)
+    assert exp.status_code == 403, "export must not mint data /data refuses"
+    dup = client.post(f"{url}/duplicate", headers=viewer.headers)
+    assert dup.status_code == 403, "a copy the caller owns would let them publish data they cannot read"
+    # the owner, who can read the chart, still can
+    assert client.get(f"{url}/export-html", headers=own.headers).status_code == 200
+    assert client.post(f"{url}/duplicate", headers=own.headers).status_code == 201
+
+
+def test_full_access_to_a_report_without_data_rights_cannot_publish_or_open_a_public_link(client, db, bound):  # noqa: F811
+    own, art = bound
+    # full on the report = the module's admin level; still no right on the bound data
+    manager = make_user(db, "rpl-full-no-data", dashboards="full")
+    url = f"/api/v1/report-artifacts/{art.id}"
+    assert client.get(url, headers=manager.headers).json()["user_permission"] == "full"
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=manager.headers).status_code == 403
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=manager.headers).status_code == 403
+    # the person who can read the data publishes; the manager still cannot open a link on it
+    assert client.post(f"{url}/publish", json={"revision_id": None}, headers=own.headers).status_code == 200
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=manager.headers).status_code == 403
+    assert client.post(f"{url}/public-links", json={"name": "x"}, headers=own.headers).status_code == 201
+
+
+def test_publish_refuses_sample_numbers_until_the_author_says_so(client, db, owner):  # noqa: F811
+    from app.models.report_artifact import ReportArtifact, ReportArtifactRevision
+
+    art = ReportArtifact(name="RPL samples", owner_id=owner.id)
+    db.add(art)
+    db.flush()
+    rev = ReportArtifactRevision(artifact_id=art.id, number=1, html='<p>GOP <span data-rac-sample>20,91 tỷ</span></p>',
+                                 css="", js="", bindings=[], filters=[], source="import", content_hash="e" * 64,
+                                 created_by=owner.id)
+    db.add(rev)
+    db.flush()
+    art.draft_revision_id = rev.id
+    db.commit()
+    url = f"/api/v1/report-artifacts/{art.id}/publish"
+    r = client.post(url, json={"revision_id": None}, headers=owner.headers)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"]["code"] == "SAMPLE_NUMBERS" and r.json()["detail"]["count"] == 1
+    db.refresh(art)
+    assert art.published_revision_id is None, "nothing was published"
+    ok = client.post(url, json={"revision_id": None, "allow_samples": True}, headers=owner.headers)
+    assert ok.status_code == 200, ok.text

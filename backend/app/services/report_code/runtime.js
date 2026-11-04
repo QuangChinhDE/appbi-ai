@@ -134,6 +134,11 @@
       case 'data':
         if (typeof msg.id !== 'string' || !msg.dto) return;
         cache[msg.id] = msg.dto;
+        if (msg.dto.state && typeof msg.dto.state === 'object') {
+          var st = msg.dto.state, changed = false;
+          Object.keys(st).forEach(function (k) { if (JSON.stringify(applied[k]) !== JSON.stringify(st[k])) { applied[k] = st[k]; changed = true; } });
+          if (changed) renderFilterBound();
+        }
         (subs[msg.id] || []).forEach(function (fn) { safe(fn, msg.dto); });
         renderBinding(msg.id);
         checkOverflow();
@@ -204,7 +209,13 @@
     var decimals = opts.decimals !== undefined ? opts.decimals : (f.decimals !== undefined ? f.decimals : null);
     if (kind === 'percent') {
       var p = Math.abs(n) <= 1.5 && !f.isWholePercent ? n * 100 : n;
-      return p.toLocaleString(ctx.locale, { maximumFractionDigits: decimals === null ? 1 : decimals }) + '%';
+      var pd = decimals === null ? 1 : decimals;
+      return p.toLocaleString(ctx.locale, { minimumFractionDigits: opts.decimals !== undefined ? pd : 0, maximumFractionDigits: pd }) + '%' + (opts.suffix || '');
+    }
+    if (num(opts.scale) !== null && num(opts.scale) !== 0) {
+      // the design's own unit ("79,65 tỷ" = value / 1e9, 2 decimals): same number, authored look
+      var sd = decimals === null ? 2 : decimals;
+      return (n / num(opts.scale)).toLocaleString(ctx.locale, { minimumFractionDigits: sd, maximumFractionDigits: sd }) + (opts.suffix || '');
     }
     var o = { maximumFractionDigits: decimals === null ? (compact ? 1 : (Math.abs(n) < 100 ? 2 : 0)) : decimals };
     if (compact) o.notation = 'compact';
@@ -653,6 +664,112 @@
   };
 
   // ── 6. Filters ─────────────────────────────────────────────────────────────────
+  // The filter values the numbers on screen were computed with (from the DTOs): the
+  // viewer's choice, a lock, or the report's default period. Text bound to a filter reads
+  // THIS, so a headline can never name a period the numbers do not cover.
+  var applied = {};
+  function effState(key) { var v = ctx.state && ctx.state[key]; return v !== undefined && v !== null && (!Array.isArray(v) || v.length) ? v : applied[key]; }
+  function monthLabel(iso) { var s = String(iso || ''); return s.length >= 7 ? 'Tháng ' + s.slice(5, 7) + '/' + s.slice(0, 4) : s; }
+  function stateText(key, o) {
+    var decl = filterDecl(key), v = effState(key);
+    if (v === undefined || v === null || (Array.isArray(v) && !v.length)) return o.empty !== undefined ? String(o.empty) : 'Tất cả';
+    if (decl && decl.kind === 'date') {
+      if (decl.grain === 'month') return monthLabel(v[0]);
+      var d = function (x) { return x ? fmtDate(x) : '…'; };
+      return d(v[0]) + ' – ' + d(v[1]);
+    }
+    return Array.isArray(v) ? v.join(', ') : String(v);
+  }
+  function renderFilterBound() {
+    var ts = document.querySelectorAll('[data-rac-filter-text]');
+    for (var i = 0; i < ts.length; i++) {
+      var o = opts(ts[i]);
+      ts[i].textContent = (o.prefix || '') + stateText(ts[i].getAttribute('data-rac-filter-text'), o) + (o.suffix || '');
+      ts[i].setAttribute('data-rac-prov', 'filter');
+    }
+    var fs = document.querySelectorAll('[data-rac-filter]');
+    for (var j = 0; j < fs.length; j++) { var dk = filterDecl(fs[j].getAttribute('data-rac-filter')); if (dk && (dk.grain === 'month' || dk.single)) mountFilter(fs[j]); }
+  }
+  function cellField(d, ref) {
+    if (!ref || ref === 'dim' || ref === 'd') return dims(d)[0] || null;
+    if (ref === 'm') return measures(d)[0] || null;
+    return field(d, ref);
+  }
+  function tone(v, bands) {
+    if (v === null || v === undefined || !Array.isArray(bands)) return '';
+    for (var i = 0; i < bands.length; i++) { var b = bands[i]; if (!Array.isArray(b)) continue; if (b[0] === null || Number(v) < Number(b[0])) return String(b[1]); }
+    return '';
+  }
+  // A repeated structure in free HTML: the authored element is the TEMPLATE, cloned once
+  // per result row; every clone is rebuilt from the BI Core rows on each result.
+  function renderRepeat(tpl) {
+    var id = tpl.getAttribute('data-rac-repeat'), d = cache[id], o = opts(tpl);
+    if (!tpl.__racTpl) { tpl.__racTpl = tpl.cloneNode(true); tpl.__racTpl.removeAttribute('data-rac-repeat'); }
+    var parent = tpl.parentNode; if (!parent) return;
+    var old = parent.querySelectorAll('[data-rac-clone="' + cssEsc(id) + '"]');
+    for (var i = 0; i < old.length; i++) if (old[i].parentNode === parent) parent.removeChild(old[i]);
+    tpl.style.display = 'none';
+    tpl.setAttribute('aria-hidden', 'true');
+    if (!d || d.status === 'loading') { tpl.style.display = ''; return; }
+    var rows = (d.rows || []).slice();
+    if (o.sort) {
+      var desc = o.sort.charAt(0) === '-', sf = cellField(d, desc ? o.sort.slice(1) : o.sort);
+      if (sf) rows.sort(function (a, b) { var x = a[sf.key], y = b[sf.key]; return (x === y ? 0 : x > y ? 1 : -1) * (desc ? -1 : 1); });
+    }
+    if (o.limit) rows = rows.slice(0, parseInt(o.limit, 10));
+    var after = tpl;
+    if (!rows.length) {
+      var none = tpl.__racTpl.cloneNode(false);
+      none.setAttribute('data-rac-clone', id);
+      none.innerHTML = '<span class="rac-note">' + esc(o.empty || 'Không có dữ liệu cho bộ lọc đang chọn') + '</span>';
+      parent.insertBefore(none, after.nextSibling);
+      return;
+    }
+    var maxOf = {};
+    rows.forEach(function (row, idx) {
+      var el = tpl.__racTpl.cloneNode(true);
+      el.setAttribute('data-rac-clone', id);
+      el.setAttribute('data-rac-prov', d.bindingId || id);
+      var cells = el.querySelectorAll('[data-rac-cell]');
+      for (var c = 0; c < cells.length; c++) {
+        var f = cellField(d, cells[c].getAttribute('data-rac-cell'));
+        if (!f) { cells[c].textContent = '—'; continue; }
+        if (cells[c].getAttribute('data-rac-cell') === '#') { cells[c].textContent = String(idx + 1); continue; }
+        cells[c].textContent = f.role === 'measure' ? fmt(row[f.key], f, opts(cells[c])) : label(row[f.key], f);
+        cells[c].title = provTitle(d, f.role === 'measure' ? f : measures(d)[0]);
+        cells[c].setAttribute('data-rac-prov', d.bindingId || id);
+      }
+      var bars = el.querySelectorAll('[data-rac-bar]');
+      for (var b = 0; b < bars.length; b++) {
+        var bf = cellField(d, bars[b].getAttribute('data-rac-bar'));
+        if (!bf) continue;
+        if (maxOf[bf.key] === undefined) maxOf[bf.key] = Math.max.apply(null, rows.map(function (r) { return Math.abs(Number(r[bf.key]) || 0); }).concat([0]));
+        var mx = maxOf[bf.key] || 1;
+        bars[b].style.width = Math.max(0, Math.min(100, (Math.abs(Number(row[bf.key]) || 0) / mx) * 100)).toFixed(1) + '%';
+      }
+      var tones = el.querySelectorAll('[data-rac-tone]');
+      if (el.hasAttribute('data-rac-tone')) tones = [el].concat(Array.prototype.slice.call(tones));
+      for (var t = 0; t < tones.length; t++) {
+        var tf = cellField(d, tones[t].getAttribute('data-rac-tone'));
+        if (tf) tones[t].setAttribute('data-rac-tone-v', tone(row[tf.key], opts(tones[t]).bands || o.bands));
+      }
+      parent.insertBefore(el, after.nextSibling);
+      after = el;
+    });
+  }
+  function renderSamples() {
+    var ss = document.querySelectorAll('[data-rac-sample]');
+    for (var i = 0; i < ss.length; i++) { ss[i].classList.add('rac-sample'); ss[i].title = 'Số mẫu từ thiết kế — chưa nối dữ liệu BI Core'; }
+    // ONE legend says what the dashed outline means (a badge on every figure hid the figures)
+    var lg = document.querySelector('.rac-sample-legend');
+    if (ss.length && !lg) {
+      lg = document.createElement('div');
+      lg.className = 'rac-sample-legend';
+      lg.setAttribute('data-rac-prov', 'legend');
+      document.body.appendChild(lg);
+    }
+    if (lg) { lg.style.display = ss.length ? '' : 'none'; lg.textContent = 'Viền nét đứt = số mẫu của thiết kế, chưa nối dữ liệu BI Core'; }
+  }
   function filterDecl(key) { for (var i = 0; i < ctx.filters.length; i++) if (ctx.filters[i].key === key) return ctx.filters[i]; return null; }
   function setFilter(key, value) {
     if (!filterDecl(key)) { report('filter', 'Unknown filter "' + key + '" — use one of rac.filters()'); return; }
@@ -678,6 +795,33 @@
     }
     el.style.display = '';
     var cur = ctx.state[key];
+    if (decl.kind === 'date' && decl.grain === 'month') {
+      var curM = (effState(key) || [])[0] || '';
+      el.innerHTML = '<div class="rac-filter rac-filter-period"><span class="rac-filter-l">' + esc(el.getAttribute('data-rac-label') || decl.label) + '</span>' +
+        '<select aria-label="' + esc(decl.label) + '"><option value="">' + esc(curM ? monthLabel(curM) : '…') + '</option></select></div>';
+      var pick = el.querySelector('select');
+      values(key, '').then(function (vals) {
+        var ms = (vals || []).map(String);
+        if (!ms.length) return;
+        pick.innerHTML = ms.map(function (m) { return '<option value="' + esc(m) + '"' + (m.slice(0, 7) === String(curM).slice(0, 7) ? ' selected' : '') + '>' + esc(monthLabel(m)) + '</option>'; }).join('');
+      });
+      pick.addEventListener('change', function () { if (this.value) setFilter(key, [this.value, null]); });
+      return;
+    }
+    if (decl.single) {
+      // one value at a time (an org picker): a select, its current value = what the numbers used
+      var curS = (effState(key) || [])[0];
+      el.innerHTML = '<div class="rac-filter rac-filter-period"><span class="rac-filter-l">' + esc(el.getAttribute('data-rac-label') || decl.label) + '</span>' +
+        '<select aria-label="' + esc(decl.label) + '"><option value="">' + esc(curS === undefined ? '…' : String(curS)) + '</option></select></div>';
+      var one = el.querySelector('select');
+      values(key, '').then(function (vals) {
+        var vs = (vals || []).map(String);
+        if (!vs.length) return;
+        one.innerHTML = vs.map(function (v) { return '<option value="' + esc(v) + '"' + (v === String(curS) ? ' selected' : '') + '>' + esc(v) + '</option>'; }).join('');
+      });
+      one.addEventListener('change', function () { if (this.value) setFilter(key, [this.value]); });
+      return;
+    }
     if (decl.kind === 'date') {
       var from = Array.isArray(cur) ? cur[0] || '' : '', to = Array.isArray(cur) ? cur[1] || '' : '';
       el.innerHTML = '<div class="rac-filter rac-filter-date"><span class="rac-filter-l">' + esc(el.getAttribute('data-rac-label') || decl.label) + '</span>' +
@@ -766,6 +910,8 @@
     for (var i = 0; i < els.length; i++) renderViz(els[i]);
     var vs = document.querySelectorAll('[data-rac-value="' + cssEsc(id) + '"]');
     for (var j = 0; j < vs.length; j++) renderValue(vs[j]);
+    var rp = document.querySelectorAll('[data-rac-repeat="' + cssEsc(id) + '"]');
+    for (var r = 0; r < rp.length; r++) renderRepeat(rp[r]);
     var ts = document.querySelectorAll('[data-rac-title="' + cssEsc(id) + '"]');
     for (var k = 0; k < ts.length; k++) if (cache[id] && cache[id].title) ts[k].textContent = cache[id].title;
     var as = document.querySelectorAll('[data-rac-asof="' + cssEsc(id) + '"]');
@@ -776,7 +922,10 @@
     var vs = document.querySelectorAll('[data-rac-value]'); for (var j = 0; j < vs.length; j++) renderValue(vs[j]);
     var fs = document.querySelectorAll('[data-rac-filter]'); for (var k = 0; k < fs.length; k++) mountFilter(fs[k]);
     var cs = document.querySelectorAll('[data-rac-filter-chips]'); for (var l = 0; l < cs.length; l++) mountChips(cs[l]);
+    var rp = document.querySelectorAll('[data-rac-repeat]'); for (var r = 0; r < rp.length; r++) if (!cache[rp[r].getAttribute('data-rac-repeat')]) renderRepeat(rp[r]);
     Object.keys(cache).forEach(renderBinding);
+    renderFilterBound();
+    renderSamples();
   }
   var mountTimer = null;
   function scheduleMount() {

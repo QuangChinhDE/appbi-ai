@@ -175,8 +175,11 @@ def describe_fields(config: Dict[str, Any], meta: Dict[str, Dict[str, Any]]) -> 
 def make_binding(bid: str, chart, title: str, meta: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     cfg = chart.config if isinstance(chart.config, dict) else {}
     ctype = str(getattr(chart.chart_type, "value", chart.chart_type) or cfg.get("chartType") or "")
+    fields = describe_fields(cfg, meta)
+    # `fields` is stored as JSONB, and Postgres REORDERS an object's keys (shorter first): the
+    # chart's metric order (m0, m1, ...) must be kept explicitly or two measures swap places.
     return {"id": bid, "chart_id": chart.id, "title": (title or chart.name or "")[:160],
-            "kind": _KIND_BY_TYPE.get(ctype.upper(), "category"), "fields": describe_fields(cfg, meta)}
+            "kind": _KIND_BY_TYPE.get(ctype.upper(), "category"), "fields": fields, "order": list(fields)}
 
 
 def run_candidate(db: Session, cand: Dict[str, Any]) -> bool:
@@ -323,11 +326,18 @@ def clean_state(decl: List[Dict[str, Any]], state: Any) -> Dict[str, Any]:
             if not isinstance(value, list) or len(value) != 2:
                 raise ValueError("Bộ lọc ngày cần [từ, đến].")
             lo, hi = _iso_date(value[0]), _iso_date(value[1])
+            if is_period(f):
+                if not lo:
+                    raise ValueError("Bộ lọc kỳ cần một tháng.")
+                out[key] = _month_bounds(lo)  # a period is a whole month, whatever was sent
+                continue
             if lo or hi:
                 out[key] = [lo, hi]
             continue
         if not isinstance(value, list) or len(value) > MAX_FILTER_VALUES or not all(_atom_ok(v) for v in value):
             raise ValueError("Giá trị lọc không hợp lệ.")
+        if f.get("single") and len(value) > 1:
+            raise ValueError(f"Bộ lọc '{f['label']}' chỉ chọn một giá trị.")
         out[key] = [str(v) for v in value]
     return out
 
@@ -354,12 +364,65 @@ def conditions(decl: List[Dict[str, Any]], state: Dict[str, Any], *, skip: Optio
     return out
 
 
+def _month_bounds(iso: str) -> List[str]:
+    """[first day, last day] of the month of an ISO date."""
+    import calendar
+
+    y, m = int(iso[:4]), int(iso[5:7])
+    return [f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{calendar.monthrange(y, m)[1]:02d}"]
+
+
+def _months(db: Session, f: Dict[str, Any], decl: List[Dict[str, Any]], state: Dict[str, Any], key: str) -> List[str]:
+    """The months the filter's field holds (newest first) — BI Core distinct values."""
+    from app.services.dataset_model_service import get_distinct_field_values
+
+    res = get_distinct_field_values(db, f["datasetId"], f["fieldKey"], limit=MAX_FILTER_VALUES,
+                                    filters=conditions(decl, state, skip=key) or None)
+    seen = set()
+    for v in res.get("values") or []:
+        iso = _plain(v, "date")
+        if isinstance(iso, str) and len(iso) >= 7 and iso[4] == "-":
+            seen.add(iso[:7] + "-01")
+    return sorted(seen, reverse=True)
+
+
+def is_period(f: Dict[str, Any]) -> bool:
+    return f.get("kind") == "date" and f.get("grain") == "month"
+
+
+def resolve_state(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any]) -> Dict[str, Any]:
+    """THE state a report's numbers are computed with: the caller's (viewer + locks), then
+    each declared default for a filter nobody set. `default: "latest"` on a month filter =
+    the newest month the data holds. One function for every surface (studio /data, public
+    /data, export, the AI Bot), so a headline and the numbers under it cannot disagree."""
+    out = dict(state or {})
+    for f in decl:
+        if f["key"] in out:
+            continue
+        if f.get("default_value") not in (None, "") and f.get("kind") != "date":
+            out[f["key"]] = [str(f["default_value"])]  # e.g. Đơn vị = "Tập đoàn" until a viewer picks one
+            continue
+        if f.get("default") != "latest":
+            continue
+        if is_period(f):
+            months = _months(db, f, decl, out, f["key"])
+            if months:
+                out[f["key"]] = _month_bounds(months[0])
+        elif f.get("kind") != "date":
+            vals = filter_values(db, decl, out, f["key"])
+            if vals:
+                out[f["key"]] = [str(sorted(vals, key=lambda v: str(v))[-1])]
+    return out
+
+
 def filter_values(db: Session, decl: List[Dict[str, Any]], state: Dict[str, Any], key: str, search: str = "") -> List[Any]:
     from app.services.dataset_model_service import get_distinct_field_values
 
     f = next((x for x in decl if x["key"] == key), None)
     if f is None:
         raise ValueError("Bộ lọc không có trong báo cáo.")
+    if is_period(f):
+        return _months(db, f, decl, state, key)  # the month list a period picker offers
     if f["kind"] == "date":
         return []
     res = get_distinct_field_values(db, f["datasetId"], f["fieldKey"], limit=MAX_FILTER_VALUES,
@@ -388,12 +451,21 @@ def _debug_get(debug: Any, key: str) -> Any:
 
 
 def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], state: Dict[str, Any],
-             *, source_label: Optional[str] = None, public: bool = False) -> Dict[str, Any]:
-    """Run one binding through the chart engine and reduce the result to the DTO."""
+             *, source_label: Optional[str] = None, public: bool = False,
+             disclose: Optional[Any] = None) -> Dict[str, Any]:
+    """Run one binding through the chart engine and reduce the result to the DTO.
+
+    The DTO carries `state`: the filter values these numbers were computed with (declared
+    defaults resolved), so text bound to a filter shows the period the numbers cover.
+    `disclose` limits it to the keys the reader may know (a public link's hidden lock is
+    never named); None = every declared key."""
     from app.services.chart_service import ChartService
 
     bid = binding["id"]
-    base = {"bindingId": bid, "title": binding.get("title") or "", "kind": binding.get("kind") or ""}
+    state = resolve_state(db, decl, state)
+    allowed = {f["key"] for f in decl} if disclose is None else set(disclose)
+    base = {"bindingId": bid, "title": binding.get("title") or "", "kind": binding.get("kind") or "",
+            "state": {k: v for k, v in state.items() if k in allowed}}
     conds = conditions(decl, state)
     try:
         result = ChartService.get_chart_data(db, int(binding["chart_id"]), extra_filters=conds or None,
@@ -412,8 +484,10 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
     debug = result.get("debug") if isinstance(result, dict) else getattr(result, "debug", None)
     described: Dict[str, Dict[str, Any]] = binding.get("fields") or {}
 
-    order: List[str] = [r for r, d in described.items() if d.get("role") != "measure"] + \
-                       [r for r, d in described.items() if d.get("role") == "measure"]
+    keyed = [r for r in (binding.get("order") or []) if r in described] + \
+            [r for r in described if r not in (binding.get("order") or [])]
+    order: List[str] = [r for r in keyed if described[r].get("role") != "measure"] + \
+                       [r for r in keyed if described[r].get("role") == "measure"]
     for row in rows[:5]:
         if isinstance(row, dict):
             for k, v in row.items():
@@ -487,4 +561,11 @@ def public_bindings(bindings: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 
 
 def public_filters(decl: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    return [{"key": f["key"], "label": f["label"], "kind": f["kind"]} for f in decl]
+    out = []
+    for f in decl:
+        item = {"key": f["key"], "label": f["label"], "kind": f["kind"]}
+        for extra in ("grain", "default", "single", "default_value"):
+            if f.get(extra) not in (None, "", False):
+                item[extra] = f[extra]
+        out.append(item)
+    return out
