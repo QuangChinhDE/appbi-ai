@@ -243,7 +243,9 @@ async def _dataset_status(env: Env, dataset_id: int) -> dict[str, Any]:
     if not isinstance(items, list):
         items = []
     state = st.get("publish_state")
-    syncing = bool(st.get("syncing"))
+    # A Sync & Publish run in flight shows as a running refresh run and a syncing
+    # progress phase even when `syncing` (the stoppable-run flag) is false.
+    syncing = bool(st.get("syncing")) or (st.get("progress") or {}).get("phase") in ("syncing", "building", "validating")         or any(str(r.get("status")) in ("running", "queued", "pending") for r in (items or [])[:1])
     status = "syncing" if syncing else ("published" if state == "published" else "sync_failed" if state == "sync_failed" else state or "draft")
     return {
         "status": status,

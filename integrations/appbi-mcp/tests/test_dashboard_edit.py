@@ -154,3 +154,14 @@ async def test_viewer_cannot_plan_and_bad_ops_are_refused(env_for):
 def test_draft_layout_guard_refuses_draft_row_keys():
     with pytest.raises(GuardViolation):
         BODY_GUARDS[("PUT", "/dashboards/{id}/draft-layout")]({"chart_layouts": [{"id": 1, "layout": {"draftOnly": True}}]})
+
+
+async def test_editing_my_own_draft_tile_sends_no_draft_row_keys(env_for):
+    b = Builder()
+    b.d["dashboard_charts"][0]["layout"].update(draftOnly=True, draftOwner="u1")  # a tile added in my draft (real BigQuery run)
+    env = env_for(b)
+    out = await de.plan_dashboard_edit(env, 5, _ops({"op": "layout", "tile_id": 11, "title": "Orders (BigQuery)"}))
+    res = await _run(env, out["plan_id"])
+    assert res["status"] == "draft_ready"
+    sent = b.writes()[0][3]["chart_layouts"][0]["layout"]
+    assert not {"draftOnly", "draftOwner"} & set(sent) and sent["custom_title"] == "Orders (BigQuery)"

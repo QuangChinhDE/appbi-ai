@@ -160,7 +160,10 @@ async def plan_dashboard_edit(env: Env, dashboard_id: int, operations: Annotated
             if int(new.get("x", 0)) + int(new.get("w", 1)) > GRID_COLS:
                 errors.append(f"op {i}: tile {tid} would extend past the {GRID_COLS}-column grid")
                 continue
-            steps.append({"op": "layout", "tile_id": tid, "layout": {k: v for k, v in new.items() if k != "_v"}})
+            # Draft-row keys (draftOnly/draftOwner/draftRemoved*) are AppBI's bookkeeping,
+            # not layout: the server strips them too; they are never sent.
+            row_keys = {"_v", "draftOnly", "draftOwner", "draftRemoved", "draftRemovedBy"}
+            steps.append({"op": "layout", "tile_id": tid, "layout": {k: v for k, v in new.items() if k not in row_keys}})
             rows.append({"change": "move / resize", "tile": _label(t),
                          "before": f"x{cur.get('x')} y{cur.get('y')} {cur.get('w')}x{cur.get('h')} page {cur.get('pageId') or '-'}",
                          "after": f"x{new.get('x')} y{new.get('y')} {new.get('w')}x{new.get('h')} page {new.get('pageId') or '-'}"
