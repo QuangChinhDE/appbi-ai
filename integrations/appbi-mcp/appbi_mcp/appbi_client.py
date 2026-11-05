@@ -79,6 +79,11 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/charts/"),
     ("GET", "/charts/{id}/usage"),
     ("PUT", "/charts/{id}"),                              # a SHARED chart: approved with its usage listed
+    # workboards: reads + lifecycle (approved)
+    ("GET", "/workboards/"),
+    ("GET", "/workboards/{id}"),
+    ("POST", "/workboards/{id}/publish"),
+    ("POST", "/workboards/{id}/unpublish"),
     # sharing (owner/admin decided by AppBI) -- each grant/revoke separately approved
     ("GET", "/shares/{seg}/{id}"),
     ("POST", "/shares/{seg}/{id}"),

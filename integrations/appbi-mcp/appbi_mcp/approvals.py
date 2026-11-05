@@ -36,6 +36,7 @@ KIND_TITLES = {
     "share": "Share a resource with someone",
     "unshare": "Revoke someone's access",
     "chart_edit": "Change a shared chart everywhere it is shown",
+    "workboard_lifecycle": "Publish or unpublish a Workboard",
     "vibe_create": "Create a draft AI Vibe report",
     "vibe_source": "Change an AI Vibe report's code (new draft revision)",
     "vibe_ai_edit": "Run an AI edit on an AI Vibe report (new draft revision)",
