@@ -758,6 +758,25 @@ def _served_revision(db: Session, art: ReportArtifact) -> ReportArtifactRevision
     return L.get_revision(db, art, art.published_revision_id) or _draft(db, art)
 
 
+@router.get("/{artifact_id}/readiness")
+def readiness(artifact_id: int, revision: Optional[int] = None, data: bool = False, db: Session = Depends(get_db),
+              current_user: User = Depends(require_permission(MODULE, "view"))):
+    """What blocks publishing this revision and what to look at, per place on the page
+    (services/report_code/readiness.py). `data=1` also reads the bindings (row addresses),
+    under the caller's own rights."""
+    from app.services.report_code import readiness as R
+
+    art = _load(db, artifact_id, current_user)
+    rev = _revision_for(db, art, revision)
+    dtos = None
+    if data:
+        _require_bindings_access(db, current_user, rev)
+        from app.services.report_code.generation import _probe
+
+        dtos = _probe(db, list(rev.bindings or []), list(rev.filters or []))
+    return {"revision": rev.number, **R.report(rev, dtos=dtos)}
+
+
 @router.post("/{artifact_id}/data")
 def binding_data(artifact_id: int, body: DataBody, db: Session = Depends(get_db),
                  current_user: User = Depends(require_permission(MODULE, "view"))):

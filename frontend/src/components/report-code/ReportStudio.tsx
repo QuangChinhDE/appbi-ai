@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
+import { ReadinessPanel } from '@/components/report-code/ReadinessPanel';
 import { DevicePreview, type Device } from '@/components/report-code/DevicePreview';
 import { ReportFrame, type RuntimeIssue } from '@/components/report-code/ReportFrame';
 import { AiPanel, DataPanel } from '@/components/report-code/StudioPanels';
@@ -337,6 +338,7 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
         </div>
       </div>
 
+      <ReadinessPanel reportId={reportId} revision={draft?.number} />
       {(detail.unbound?.draft || detail.unbound?.published) ? (
         <div className="mx-4 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:mx-5"
           role="status" data-testid="studio-unbound">

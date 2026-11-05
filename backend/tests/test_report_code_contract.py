@@ -1066,6 +1066,10 @@ def test_the_context_pack_frees_the_design_and_binds_every_figure_to_the_bi_core
         assert rule in pack, rule
     assert 'data-rac-value=\\"@c' not in pack and 'data-rac-value="@c' in pack, "a copyable, valid example"
     assert "sidebar" not in pack.lower().split("## 6.")[0], "no imposed layout"
+    import json as _json
+
+    check = _json.loads(pack.split("```json\n")[1].split("\n```")[0])
+    assert "@c1" in check["data"] and "@f1" in check["filters"] and "data-rac-value" in check["attributes"]
 
 
 def test_the_summary_counts_unbound_places_of_the_published_version_too():
@@ -1082,3 +1086,115 @@ def test_the_summary_counts_unbound_places_of_the_published_version_too():
                           updated_at=None, last_published_at=None)
     s = L._summary(art, draft, pub, 0)
     assert s["unbound"] == {"draft": 0, "published": 3}
+
+
+# ── Readiness: one report, per place; AI only where the rules are unsure ─────────────
+
+_READY_HTML = (
+    '<section data-rac-region="kpis" data-rac-label="Chỉ số">'
+    '<div class="card"><h3>Doanh thu</h3><b data-rac-value="b1"></b></div>'
+    '<div class="card"><h3>Số đơn</h3><b data-rac-value="b1"></b></div>'
+    '<div class="card"><h3>Tồn kho</h3><b data-rac-value="missing"></b></div>'
+    '<p>Top 10 theo tháng 8, năm 2026. Cập nhật 24/08/2026.</p>'
+    '<p>Tăng 12,5% so với cùng kỳ, đạt 1.234 đơn.</p>'
+    '<p class="note">Dữ liệu tĩnh — số liệu mẫu cho bản thiết kế.</p>'
+    '<span data-rac-sample>9.999</span>'
+    '<div data-rac-filter="f9"></div>'
+    '</section>')
+_READY_BINDINGS = [{"id": "b1", "title": "Doanh thu"}, {"id": "b2", "title": "Số đơn"}]
+
+
+def test_the_readiness_report_names_each_problem_at_its_place():
+    from types import SimpleNamespace
+    from app.services.report_code import readiness as R
+
+    rev = SimpleNamespace(html=_READY_HTML, js="rac.bind('b7', function(){});", bindings=_READY_BINDINGS,
+                          filters=[{"key": "f1"}])
+    rep = R.report(rev, with_origin=False)
+    assert rep["ready"] is False
+    codes = [x["code"] for x in rep["blocking"]]
+    assert codes.count("UNBOUND") == 3, rep["blocking"]  # "missing", filter f9, rac.bind('b7')
+    assert codes.count("SAMPLE") == 1
+    unbound = next(x for x in rep["blocking"] if "missing" in x["message"])
+    assert unbound["place"] == {"region": "kpis", "label": "Chỉ số", "snippet": '<b data-rac-value="missing">'}
+    assert unbound["fix"]
+    w = {x["code"]: x for x in rep["warnings"]}
+    # a rank, a month, a year, a date are not figures; a typed growth and a count are
+    static = [x for x in rep["warnings"] if x["code"] == "STATIC_FIGURE"]
+    assert len(static) == 1 and "12,5%" in static[0]["message"] and "1.234" in static[0]["message"]
+    assert "STALE_TEXT" in w
+    assert "Số đơn" in w["CARD_LABEL"]["message"] and "b1" in w["CARD_LABEL"]["message"]
+    assert rep["counts"]["UNBOUND"] == 3
+
+
+def test_a_clean_page_written_to_the_contract_is_ready():
+    from types import SimpleNamespace
+    from app.services.report_code import readiness as R
+
+    html = ('<section data-rac-region="kpis" data-rac-label="Chỉ số"><div class="card"><h3>Doanh thu</h3>'
+            '<b data-rac-value="b1"></b></div><div data-rac-filter="f1"></div><p>Báo cáo năm 2026.</p></section>')
+    rep = R.report(SimpleNamespace(html=html, js="", bindings=_READY_BINDINGS, filters=[{"key": "f1"}]), with_origin=False)
+    assert rep == {"ready": True, "blocking": [], "warnings": [], "counts": {}}
+
+
+def test_publish_refuses_a_loopback_report_origin_on_a_server(monkeypatch):
+    from types import SimpleNamespace
+    from app.core.config import settings
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "https://bi.example.com")
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "http://127.0.0.1:3000")
+    rev = SimpleNamespace(id=2, html='<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[])
+    art = SimpleNamespace(id=1, draft_revision_id=2, published_revision_id=None, last_published_at=None)
+    monkeypatch.setattr(L, "get_revision", lambda db, a, rid: rev)
+    with pytest.raises(L.DanglingReferences) as ex:
+        L.publish(None, art)
+    assert "REPORT_ARTIFACT_ORIGIN" in str(ex.value) and art.published_revision_id is None
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://report-docs.example.com")
+    assert L.publish(None, art) is rev
+
+
+def test_the_model_is_asked_only_about_the_places_the_rules_are_unsure_of(monkeypatch):
+    """Every analyse used to send EVERY slot and 160 candidates to the model, certain or not.
+    A slot the rules settle never reaches it; an unsure one goes with a short candidate list."""
+    from app.services import llm_client
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    cands = B.candidates(_MODEL)
+    for c in cands:
+        c["title"] = B._localize_title(c["title"])
+    sent = []
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(lambda **kw: sent.append(kw["prompt"]) or {"map": []}))
+    sure = {"id": "s1", "kind": "chart", "context": "Doanh thu theo tháng", "sample": ""}
+    unsure = {"id": "s2", "kind": "value", "context": "Chỉ số X", "sample": "42"}
+    stats = {}
+    out = I.propose([sure, unsure], cands, [], stats=stats)
+    assert out["s1"]["source"] == "rules" and stats["ai_slots"] == 1
+    brief = sent[0].split("never by position:\n")[1].split("\n\nCANDIDATE DATA")[0] if sent else ""
+    assert len(sent) == 1 and '"s2"' in brief and '"s1"' not in brief, "only the unsure place is sent"
+    listed = [l for l in sent[0].split("CANDIDATE DATA (governed, by id):\n")[1].split("\n\n")[0].splitlines() if l.strip()]
+    assert 0 < len(listed) <= I.SHORTLIST
+    sent.clear()
+    stats = {}
+    I.propose([sure], cands, [], stats=stats)
+    assert sent == [] and stats["ai_slots"] == 0, "nothing unsure: no model call at all"
+
+
+def test_a_page_written_to_the_contract_imports_without_any_model_call(monkeypatch):
+    from app.services import llm_client
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    called = []
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(lambda **kw: called.append(1) or {}))
+    from types import SimpleNamespace
+
+    class _Q:
+        def filter(self, *a): return self
+        def __iter__(self): return iter([])
+
+    db = SimpleNamespace(query=lambda *a: _Q())
+    out = I.analyze(db, dataset_id=9, html='<b data-rac-value="@c1"></b><div data-rac-filter="@f1"></div>', css="", js="")
+    assert out["compatible"] is True and out["ai_slots"] == 0 and called == []

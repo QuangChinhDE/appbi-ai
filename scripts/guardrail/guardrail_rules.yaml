@@ -267,6 +267,12 @@ features:
     keywords: [mcp, "remote mcp", connector, claude, "mcp-oauth", "connect claude", "plan_dataset", "plan_dashboard", "execute_plan"]
     required_tests: [mcp_integration_offline, mcp_integration_live]
 
+  - id: report_code
+    label: "AI Vibe Report (report-as-code): bindings, import, readiness / publish gate, runtime, report public links + bot context"
+    files: ["backend/app/services/report_code/**", backend/app/api/report_artifacts.py, backend/app/api/public_reports.py, "frontend/src/components/report-code/**"]
+    keywords: [vibe, "report code", "report-as-code", "data-rac", binding, readiness, "context pack", "Chưa gắn dữ liệu"]
+    required_tests: [report_code_contract, report_links_pg]
+
   - id: schema_migrations
     label: "Alembic schema migrations (single head, parent committed, additive)"
     files: ["backend/alembic/**"]
@@ -879,6 +885,13 @@ tests:
     requires: postgres
     run: "pytest backend/tests/test_semantic_sync_authored_dims_pg.py"
     locks: "on real Postgres through the real routes: dimensions edited via PUT /datasets/{id}/model/views/{view} survive POST /generate-model?force=true as read by the Dataset model, a saved chart (/charts/{id}/data) and a public dashboard tile, with the hand-computed monthly revenue unchanged"
+  report_code_contract:
+    run: "pytest backend/tests/test_report_code_contract.py"
+    locks: "a report reads only governed bindings: sanitised markup, no sample number or dangling anchor published (readiness), re-import keeps binding ids, a place with no binding says 'not bound', the bot reads only what the page draws, the loopback report origin is a local install's only, the model is asked only about unsure import places, the context pack frees the design and binds every figure"
+  report_links_pg:
+    requires: postgres
+    run: "pytest backend/tests/test_report_public_links_http_pg.py"
+    locks: "report public links over HTTP: only the published revision, locks applied or refused and never overridden, an unbound place answers BINDING_UNBOUND (never a way around a lock), the bot closed unless the link opens it, readiness served to the author only"
   pair4_surfaces:
     requires: postgres
     run: "pytest backend/tests/test_pair4_surfaces_pg.py"
