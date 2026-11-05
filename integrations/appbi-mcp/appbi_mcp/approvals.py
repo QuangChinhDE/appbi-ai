@@ -32,6 +32,7 @@ KIND_TITLES = {
     "dataset_publish": "Publish a Dataset",
     "dashboard_publish": "Publish a Dashboard",
     "dashboard_edit": "Edit a Dashboard (your draft)",
+    "model_edit": "Edit a Dataset's data model",
     "vibe_create": "Create a draft AI Vibe report",
     "vibe_source": "Change an AI Vibe report's code (new draft revision)",
     "vibe_ai_edit": "Run an AI edit on an AI Vibe report (new draft revision)",

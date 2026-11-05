@@ -63,6 +63,10 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/datasets/{id}/generate-model"),
     ("POST", "/datasets/{id}/model/joins"),
     ("PUT", "/datasets/{id}/model/views/{id}"),
+    # model edits of an existing dataset (guards below)
+    ("PUT", "/datasets/{id}/tables/{id}"),                 # transformations only (calculated columns)
+    ("POST", "/datasets/{id}/tables/{id}/preview"),        # read: sample rows for a calculated-column preview
+    ("POST", "/dashboards/import-html/preview-calculated"),  # AppBI's calculated-field preview (no writes)
     # datasets — publish (approval-gated by the caller)
     ("POST", "/datasets/{id}/publish"),
     # charts
@@ -127,7 +131,6 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/charts/{id}"),
     ("DELETE", "/datasets/{id}"),
     ("POST", "/datasets/{id}/model/joins/batch"),
-    ("POST", "/datasets/{id}/tables/{id}/preview"),
     # Last-write-wins with no version (F4): the dictionary is sent at dataset create.
     ("PUT", "/datasets/{id}/dictionary"),
     # HTML import: batch/draft-dataset/AI-fix variants are never used (W4).
@@ -191,6 +194,20 @@ def _guard_draft_filters(body: Any) -> None:
         raise GuardViolation("draft-filters writes must carry base_rev")
     if body.get("remove_tile_ids"):
         raise GuardViolation("this service never removes tiles")
+
+
+def _guard_table_update(body: Any) -> None:
+    if not isinstance(body, dict) or set(body) != {"transformations"} or not isinstance(body["transformations"], list):
+        raise GuardViolation("table updates from this service change transformations only (calculated columns)")
+
+
+def _guard_table_preview(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("refresh_schema") or int(body.get("limit") or 100) > 100:
+        raise GuardViolation("table preview is a bounded read (limit <= 100, no schema refresh)")
+
+
+def _guard_preview_calculated(form: Any) -> None:
+    _form_fields(form, {"sample_rows_json", "columns_json", "calculated_fields_json", "row_limit"}, "preview-calculated")
 
 
 def _guard_draft_layout(body: Any) -> None:
@@ -347,6 +364,7 @@ FORM_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/dashboards/import-html/validate-plans"),
     ("POST", "/dashboards/import-html/dry-run-build"),
     ("POST", "/dashboards/import-html/build"),
+    ("POST", "/dashboards/import-html/preview-calculated"),
 })
 
 
@@ -361,6 +379,9 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("PUT", "/dashboards/{id}/draft-filters"): _guard_draft_filters,
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
     ("PUT", "/dashboards/{id}/draft-layout"): _guard_draft_layout,
+    ("PUT", "/datasets/{id}/tables/{id}"): _guard_table_update,
+    ("POST", "/datasets/{id}/tables/{id}/preview"): _guard_table_preview,
+    ("POST", "/dashboards/import-html/preview-calculated"): _guard_preview_calculated,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
     ("PUT", "/datasets/{id}/model/views/{id}"): _guard_view_put,
     ("POST", "/datasets/"): _guard_dataset_create,
@@ -381,6 +402,7 @@ _REQUIRED_PARAMS: dict[tuple[str, str], dict[str, str]] = {
 # Query parameters forbidden on otherwise-allowed routes.
 _FORBIDDEN_PARAMS: dict[tuple[str, str], set[str]] = {
     ("PUT", "/datasets/{id}/model/views/{id}"): {"force"},
+    ("PUT", "/datasets/{id}/tables/{id}"): {"force"},
 }
 
 
