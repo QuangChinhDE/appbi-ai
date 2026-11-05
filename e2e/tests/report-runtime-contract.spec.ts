@@ -25,7 +25,12 @@ const BODY = `
 <div id="kpip" data-rac-viz="kpi" data-rac-bind="timep"></div>
 <div id="ref" data-rac-viz="bar" data-rac-bind="refused"></div>
 <ul><li data-rac-repeat="top"><span data-rac-cell="d"></span> <b data-rac-cell="m"></b></li></ul>
-<div id="bars" data-rac-viz="bar" data-rac-bind="top"></div>`;
+<div id="bars" data-rac-viz="bar" data-rac-bind="top"></div>
+<div id="u-viz" data-rac-viz="bar" data-rac-bind="missing"></div>
+<div id="u-val" data-rac-value="missing"></div>
+<table><tbody id="u-rows"><tr data-rac-repeat="missing"><td data-rac-cell="d"></td></tr></tbody></table>
+<div id="u-srv" data-rac-viz="kpi" data-rac-bind="srvunbound"></div>
+<div id="u-flt" data-rac-filter="missing"></div>`;
 
 const F = {
   ratio: [{ key: 'm0', label: '% đạt KH', role: 'measure', kind: 'number', format: { kind: 'percent' } }],
@@ -42,6 +47,7 @@ const DTOS = {
   time: dto('time', F.time, [{ d0: '2026-07-01', m0: 100 }, { d0: '2026-08-01', m0: 110 }]),
   timep: dto('timep', F.time, [{ d0: '2026-07-01', m0: 100 }, { d0: '2026-08-01', m0: 40 }], { partial: ['2026-08-01'] }),
   refused: { bindingId: 'refused', title: 'r', kind: '', status: 'refused', rows: [], fields: [], error: 'Biểu đồ này không áp được một giới hạn bắt buộc' },
+  srvunbound: { bindingId: 'srvunbound', status: 'unbound', code: 'BINDING_UNBOUND', rows: [], fields: [], error: 'Chưa gắn dữ liệu' },
   top: dto('top', F.cat, [{ d0: 'SP', m0: 100 }, { d0: 'RJ', m0: 50 }], { topN: { n: 2, direction: 'top' } }),
 };
 
@@ -96,4 +102,16 @@ test('the report runtime formats, selects and labels - it never computes an offi
   await expect(f.locator('li[data-rac-prov="cut"]')).toContainText('Top 2');
   await expect(f.locator('#bars .rac-cut')).toContainText('Top 2');
   await expect(f.locator('li[data-rac-clone="top"]:not([data-rac-prov="cut"])')).toHaveCount(2);
+});
+
+
+test('a place with no data is said "not bound" on the tile - never an empty or broken box', async ({ page }) => {
+  // Live: artifact 1 rev 1 was published with three tables bound to "missing" and showed
+  // them EMPTY to every viewer. Every kind of place says it, in the studio and to a viewer.
+  const f = await mount(page);
+  for (const id of ['#u-viz', '#u-val', '#u-rows', '#u-srv']) {
+    await expect(f.locator(`${id} [data-rac-prov="unbound"]`).first(), id).toContainText('Chưa gắn dữ liệu');
+  }
+  await expect(f.locator('#u-flt [data-rac-prov="unbound"]')).toContainText('Bộ lọc chưa gắn dữ liệu');
+  await expect(f.locator('#u-rows tr[data-rac-repeat]')).toBeHidden();
 });

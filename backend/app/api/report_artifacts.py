@@ -764,12 +764,12 @@ def binding_data(artifact_id: int, body: DataBody, db: Session = Depends(get_db)
     art = _load(db, artifact_id, current_user)
     rev = _revision_for(db, art, body.revision)
     binding = next((b for b in rev.bindings or [] if b.get("id") == body.binding), None)
-    if binding is None:
-        raise HTTPException(status_code=404, detail="Nguồn dữ liệu không thuộc báo cáo này.")
     try:
         state = B.clean_state(rev.filters or [], body.state)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if binding is None:
+        return B.unbound_dto(body.binding)  # "not bound", apart from a lost chart (404) / rights (403)
     _check_chart_access(db, current_user, int(binding["chart_id"]))
     ds = db.query(Dataset).filter(Dataset.id == art.dataset_id).first() if art.dataset_id else None
     return B.mint_dto(db, binding, rev.filters or [], state, source_label=ds.name if ds else None)

@@ -177,12 +177,13 @@ def public_data(token: str, body: PublicDataBody, request: Request, db: Session 
                 x_public_session: Optional[str] = Header(default=None)):
     art, rev, link = _live(db, token, x_public_session)
     binding = next((b for b in rev.bindings or [] if b.get("id") == body.binding), None)
-    if binding is None:
-        raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    try:
+    try:  # first: an override of a lock is refused whatever binding is asked for
         state = PL.effective_state(rev.filters or [], link.filters_config, body.state, link.appearance_config)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if binding is None:
+        # the link is live (resolved above): the PLACE is not bound - said as such
+        return B.unbound_dto(body.binding)
     hidden = {str(e.get("field")) for e in (link.filters_config or []) if isinstance(e, dict) and e.get("hidden")}
     return B.mint_dto(db, binding, rev.filters or [], state, public=True,
                       disclose=[f["key"] for f in rev.filters or [] if f["key"] not in hidden],
