@@ -163,7 +163,13 @@ async def plan_model_edit(env: Env, dataset_id: int, operations: Annotated[list[
             if o["type"] == "formula" and not (o["expression"] and o["depends_on"]):
                 errors.append(f"op {i}: a formula measure needs expression and depends_on")
                 continue
-            body = _measure_body({**o, "filters": o["filters"]}, {})
+            # Filters here already name views ('<view>.<column>'); a cross-view filter
+            # is applied by AppBI through the relationship (EXISTS), keeping the grain.
+            unknown = [f["field"] for f in o["filters"] if "." in f["field"] and f["field"].split(".", 1)[0] not in views]
+            if unknown:
+                errors.append(f"op {i}: filter field(s) {unknown} are not '<view>.<column>' of this dataset")
+                continue
+            body = _measure_body({**o, "filters": o["filters"]}, {n: n for n in views})
             dry = await env.appbi.post(f"/datasets/{dataset_id}/model/views/{v['id']}/measures/dry-run", body)
             if not dry.get("ok"):
                 errors.append(f"op {i}: AppBI rejected measure '{o['name']}': {dry.get('error')}")

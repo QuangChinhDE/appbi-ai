@@ -113,13 +113,16 @@ async def test_plan_previews_real_values_and_writes_nothing(env_for):
         {"op": "upsert_measure", "view": "orders", "name": "completed_revenue", "type": "sum", "column": "amount",
          "filters": [{"field": "status", "operator": "eq", "value": "completed"}]},
         {"op": "update_dimension", "view": "orders", "name": "status", "label": "Order status"},
+        {"op": "upsert_measure", "view": "orders", "name": "x_rev", "type": "sum", "column": "amount",
+         "filters": [{"field": "orders.status", "operator": "eq", "value": "completed"}]},
         {"op": "add_calculated_column", "view": "orders", "name": "amount_k", "expression": "amount / 1000"}))
     assert out["status"] == "awaiting_approval" and m.writes() == []
     assert out["previews"][0]["items"][0]["value now"] == 2253900
-    assert out["previews"][1]["items"][0]["amount_k"] == 0.01
+    assert out["previews"][-1]["items"][0]["amount_k"] == 0.01
     res = await _run(env, out["plan_id"])
     assert res["status"] == "draft_ready"
-    assert [x["name"] for x in m.view["measures"]] == ["revenue", "completed_revenue"]
+    assert [x["name"] for x in m.view["measures"]] == ["revenue", "completed_revenue", "x_rev"]
+    assert m.view["measures"][2]["filters"][0]["field"] == "orders.status"
     assert m.view["dimensions"][0]["label"] == "Order status"
     assert m.transformations[0]["params"] == {"newField": "amount_k", "expression": "amount / 1000"}
     puts = [c for c in m.calls if c[0] == "PUT" and "/views/" in c[1]]
