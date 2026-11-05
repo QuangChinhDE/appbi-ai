@@ -63,5 +63,7 @@ def appbi_pat_scopes(mcp_scopes: list[str]) -> dict[str, str]:
     """
     granted = set(mcp_scopes)
     level = "full" if PUBLISH in granted else "edit" if AUTHOR in granted else "view"
-    return {"data_sources": "edit" if level != "view" else "view", "datasets": level,
+    # A module administrator (full) reads every source; capping data_sources lower would
+    # take that away. Source WRITES stay unreachable: the allowlist has none but re-test.
+    return {"data_sources": level, "datasets": level,
             "explore_charts": level, "dashboards": level}
