@@ -45,10 +45,10 @@ const DTOS = {
   top: dto('top', F.cat, [{ d0: 'SP', m0: 100 }, { d0: 'RJ', m0: 50 }], { topN: { n: 2, direction: 'top' } }),
 };
 
-async function mount(page: Page): Promise<Frame> {
+async function mount(page: Page, body: string = BODY, dtos: Record<string, unknown> = DTOS): Promise<Frame> {
   // Served from a real URL, as the isolated report origin serves it (the runtime's navigation
   // guard proves itself with a same-document hash navigation, which a srcdoc cannot hold).
-  const doc = `<!doctype html><html><head><meta charset="utf-8"><script>${RUNTIME.replace(/<\/script/gi, '<\\/script')}</script></head><body>${BODY}</body></html>`;
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><script>${RUNTIME.replace(/<\/script/gi, '<\\/script')}</script></head><body>${body}</body></html>`;
   await page.route('http://report.test/**', (r) => r.fulfill({ status: 200, contentType: 'text/html; charset=utf-8',
     body: r.request().url().endsWith('/doc') ? doc : '<!doctype html><html><body><iframe id="f" sandbox="allow-scripts" style="width:900px;height:900px"></iframe></body></html>' }));
   await page.goto('http://report.test/host');
@@ -67,7 +67,7 @@ async function mount(page: Page): Promise<Frame> {
       f.contentWindow!.postMessage({ type: 'rac:init', v: 1, context: { filters: [], state: {}, bindings: Object.keys(dtos).map((id) => ({ id, title: id, kind: '' })), mode: 'studio', locale: 'vi-VN' } }, '*', [ch.port2]);
     };
     f.src = 'http://report.test/doc';
-  }), DTOS);
+  }), dtos);
   return page.frames().find((fr) => fr !== page.mainFrame())!;
 }
 
@@ -96,4 +96,24 @@ test('the report runtime formats, selects and labels - it never computes an offi
   await expect(f.locator('li[data-rac-prov="cut"]')).toContainText('Top 2');
   await expect(f.locator('#bars .rac-cut')).toContainText('Top 2');
   await expect(f.locator('li[data-rac-clone="top"]:not([data-rac-prov="cut"])')).toHaveCount(2);
+});
+
+
+test("the studio audit never flags the runtime's own notes, ranks, dates or a year before a full stop", async ({ page }) => {
+  // Live (/dashboards/code/1): "thẻ ghi 'Phiếu quá hạn SLA' nhưng số 10 là 'Số phiếu'" - the 10 was
+  // the runtime's own "Top 10 theo biểu đồ nguồn" and a row of another chart happened to be 10;
+  // and "Nguồn số 2026." from the sentence "... tính tới mốc 24/08/2026."
+  const cards = {
+    sla: dto('sla', F.cat, Array.from({ length: 12 }, (_, i) => ({ d0: `L${i}`, m0: 100 + i })), { title: 'Phiếu quá hạn SLA', topN: { n: 10, direction: 'top' } }),
+    kind: dto('kind', [{ key: 'd0', label: 'Loại', role: 'dimension', kind: 'string' }, { key: 'm0', label: 'Số phiếu', role: 'measure', kind: 'number', aggregation: 'sum' }],
+      [{ d0: 'Lệnh sản xuất — Dán', m0: 10 }], { title: 'Số phiếu theo loại hoạt động' }),
+  };
+  const body = `<div class="card"><h3>Phiếu quá hạn SLA</h3><div data-rac-viz="bar" data-rac-bind="sla"></div></div>
+<div class="card"><h3>Số phiếu theo loại hoạt động</h3><div data-rac-viz="bar" data-rac-bind="kind"></div></div>
+<aside><p>Dữ liệu cập nhật. Quá hạn SLA tính tới mốc 24/08/2026.</p><p>Báo cáo năm 2026.</p></aside>`;
+  await mount(page, body, cards);
+  await page.waitForTimeout(2500); // the audit settles
+  const issues: string[] = await page.evaluate(() => (window as any).__issues);
+  expect(issues.filter((m) => /đặt sai chỗ/.test(m)), "no misplacement from the runtime's own 'Top 10'").toEqual([]);
+  expect(issues.filter((m) => /2026|24|08/.test(m) && /không khớp/.test(m)), 'a date / a year before a full stop is no figure').toEqual([]);
 });

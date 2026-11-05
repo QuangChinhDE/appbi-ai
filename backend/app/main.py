@@ -34,6 +34,13 @@ async def lifespan(app: FastAPI):
     import logging
     logging.getLogger(__name__).info("Data directory: %s", settings.data_dir_path)
 
+    # Where report documents are served from: a misconfiguration is said loudly, not
+    # discovered as a blank report on the server
+    from app.services.report_code.lifecycle import origin_warning
+    _ow = origin_warning()
+    if _ow:
+        logging.getLogger(__name__).warning("[report-code] %s", _ow)
+
     # Test-only AI spending cap: refuse unmetered paid AI requests (inert without a budget)
     from app.services.llm_test_budget import install_guard
     install_guard()

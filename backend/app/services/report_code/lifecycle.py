@@ -374,10 +374,40 @@ def report_origin() -> Optional[str]:
     app_origins = [o.strip().rstrip("/") for o in settings.cors_origins_list if o.strip().startswith("http")]
     if configured:
         return None if configured in app_origins else configured
+    # The 127.0.0.1 twin of localhost is a separate origin ONLY on the machine that runs the
+    # app. Guessed on a server (a dev "localhost" left among the CORS origins of a real
+    # domain), it sent every viewer's browser to ITS OWN machine: a blank report. So it is
+    # guessed only when every app origin is loopback - a local install.
+    if not app_origins or any(not _loopback(urlsplit(o).hostname) for o in app_origins):
+        return None
     for o in app_origins:
         parts = urlsplit(o)
         if parts.hostname == "localhost":
             return f"{parts.scheme}://127.0.0.1{':' + str(parts.port) if parts.port else ''}"
+    return None
+
+
+def _loopback(host: Optional[str]) -> bool:
+    return (host or "").lower() in ("localhost", "127.0.0.1", "::1", "[::1]") or (host or "").startswith("127.")
+
+
+def origin_warning() -> Optional[str]:
+    """What an operator must hear at startup about where report documents are served from."""
+    from urllib.parse import urlsplit
+
+    from app.core.config import settings
+
+    configured = (settings.REPORT_ARTIFACT_ORIGIN or "").strip().rstrip("/")
+    app_origins = [o.strip().rstrip("/") for o in settings.cors_origins_list if o.strip().startswith("http")]
+    public = [o for o in app_origins if not _loopback(urlsplit(o).hostname)]
+    if configured and _loopback(urlsplit(configured).hostname) and public:
+        return (f"REPORT_ARTIFACT_ORIGIN={configured} is a loopback address while the app is served from "
+                f"{public[0]}: every viewer's browser would load reports from its OWN machine (blank report). "
+                "Set it to a dedicated subdomain (e.g. https://report-docs.<your-domain>) routed to this backend.")
+    if report_origin() is None and public:
+        return ("REPORT_ARTIFACT_ORIGIN is not set: reports are served from the app's own origin, so the "
+                "author's report JavaScript is BLOCKED (security). Set it to a dedicated subdomain routed to "
+                "/api/v1/public/report-docs/ on this backend to run report scripts.")
     return None
 
 

@@ -1040,7 +1040,10 @@
   // value of its bound data. Numbers drawn by rac.viz / data-rac-value are trusted (the
   // runtime formats them from the DTO); the rest is checked against every formatted value.
   var auditT = null, auditSeen = {};
-  var TRUSTED = '.rac-kpi,.rac-svg,.rac-table-wrap,.rac-heat,.rac-gauge,.rac-progress,.rac-donut,.rac-filter,.rac-chip,.rac-tip,[data-rac-value],[data-rac-asof],script,style,input,select,textarea,option';
+  var TRUSTED = '.rac-kpi,.rac-svg,.rac-table-wrap,.rac-heat,.rac-gauge,.rac-progress,.rac-donut,.rac-filter,.rac-chip,.rac-tip,[data-rac-value],[data-rac-asof],'
+    + '.rac-note,.rac-state,.rac-unbound-chip,.rac-sample-legend,[data-rac-prov],script,style,input,select,textarea,option';
+  // a date written in the text (24/08/2026, 2026-08-24) is not a figure: never split into numbers
+  var DATE_RX = /\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}\b|\b\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}\b/g;
   function auditNumbers() {
     clearTimeout(auditT);
     auditT = setTimeout(function () {
@@ -1125,14 +1128,17 @@
       for (var node = walker.nextNode(); node && marked < 120; node = walker.nextNode()) {
         var el = node.parentElement;
         if (!el || el.closest(TRUSTED)) continue;
-        var toks = String(node.nodeValue || '').match(/[-+]?\d[\d.,]*\s?(?:Tr|Tỷ|tỷ|N|K|M|B|%|₫)?/g) || [];
+        var toks = String(node.nodeValue || '').replace(DATE_RX, ' ').match(/[-+]?\d[\d.,]*\s?(?:Tr|Tỷ|tỷ|N|K|M|B|%|₫)?/g) || [];
         toks.forEach(function (tok) {
-          var t = tok.replace(/\s+/g, '');
+          // the sentence's own punctuation is not part of the figure ("mốc 2026." -> 2026)
+          var t = tok.replace(/\s+/g, '').replace(/^[.,]+|[.,]+$/g, '');
           var n = parseFloat(t.replace(/\./g, '').replace(',', '.'));
-          if (isFinite(n) && allowed[t]) { checkAssoc(el, t); return; }
           if (!isFinite(n)) return;
+          // FIRST the numbers that are not figures - a rank, a month, a day, a year: equal
+          // to some bound value by chance ("Top 10" vs a row worth 10) they are no misplacement
           if (/^\d{4}$/.test(t) && n >= 1900 && n <= 2100) return;   // years in headings
           if (/^\d{1,2}$/.test(t) && n <= 31) return;                // ranks, months, days
+          if (allowed[t]) { checkAssoc(el, t); return; }
           if (!el.classList.contains('rac-static')) { el.classList.add('rac-static'); marked++; }
           if (bad.indexOf(t) < 0 && bad.length < 6) bad.push(t);
         });

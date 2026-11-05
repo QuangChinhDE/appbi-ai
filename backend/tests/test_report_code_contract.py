@@ -1029,3 +1029,40 @@ def test_publish_refuses_a_page_with_anchors_to_data_the_report_does_not_have():
         assert L.publish(None, art) is rev and art.published_revision_id == 2
     finally:
         L.get_revision = L_get
+
+
+def test_a_server_never_gets_the_loopback_report_origin_and_a_misconfiguration_is_said(monkeypatch):
+    """Live (/dashboards/code/1 on the server): a dev "localhost" among the CORS origins of
+    the real domain made report_origin() guess 127.0.0.1 - every viewer's browser loaded the
+    report from ITS OWN machine: a blank Studio. The loopback twin is a local install's only."""
+    from app.core.config import settings
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "")
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "http://localhost:3000,https://bi.example.com")
+    assert L.report_origin() is None, "a real domain is served: never the viewer's loopback"
+    assert "REPORT_ARTIFACT_ORIGIN is not set" in (L.origin_warning() or "")
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "http://127.0.0.1:3000")
+    assert "loopback" in (L.origin_warning() or ""), "a configured loopback origin on a server is said"
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://report-docs.example.com")
+    assert L.origin_warning() is None and L.report_origin() == "https://report-docs.example.com"
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "")
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
+    assert L.report_origin() == "http://127.0.0.1:3000" and L.origin_warning() is None, "a local install keeps its twin"
+
+
+def test_the_context_pack_frees_the_design_and_binds_every_figure_to_the_bi_core(monkeypatch):
+    """PO 2026-11-05: an outside AI may design freely (layout, CSS, any JS) - ONLY the data
+    connection is a contract, so the page always runs against the Dataset through the BI
+    Core instead of fake numbers typed into the HTML."""
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert "What is yours" in pack and "Any JavaScript" in pack, "the design is the author's"
+    assert "data contract" in pack and "**Never**" in pack
+    for rule in ("const data = [", "sample / mock / demo data", "add up, average or compare rows", "invent a placeholder"):
+        assert rule in pack, rule
+    assert 'data-rac-value=\\"@c' not in pack and 'data-rac-value="@c' in pack, "a copyable, valid example"
+    assert "sidebar" not in pack.lower().split("## 6.")[0], "no imposed layout"
