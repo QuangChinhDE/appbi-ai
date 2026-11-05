@@ -97,11 +97,35 @@ class SampleNumbersRemain(ValueError):
     """Publishing would present a design's sample numbers to readers as if they were data."""
 
 
+class DanglingReferences(ValueError):
+    """The page points at data the revision does not have (a "missing" anchor left by an
+    import, a deleted binding or filter): publishing it would show empty widgets."""
+
+
+_FILTER_REF_RX = re.compile(r"data-rac-filter(?:-text)?=[\"']([^\"']+)[\"']")
+
+
+def dangling_references(rev) -> List[str]:
+    """Every data / filter anchor of the page that names nothing this revision has."""
+    html = re.sub(r"<!--.*?-->", "", rev.html or "", flags=re.S)
+    js = re.sub(r"/\*.*?\*/|^\s*//.*$", "", rev.js or "", flags=re.S | re.M)
+    known = {b.get("id") for b in rev.bindings or [] if isinstance(b, dict)}
+    keys = {f.get("key") for f in rev.filters or [] if isinstance(f, dict)}
+    out = [r for r in _refs(html + "\n" + js) if r not in known]
+    out += [r for r in _FILTER_REF_RX.findall(html) if r not in keys]
+    return out
+
+
 def publish(db: Session, artifact: ReportArtifact, *, revision_id: Optional[int] = None,
             allow_samples: bool = False) -> ReportArtifactRevision:
     target = get_revision(db, artifact, revision_id or artifact.draft_revision_id)
     if target is None:
         raise ValueError("Báo cáo chưa có phiên bản nào để xuất bản.")
+    dangling = dangling_references(target)
+    if dangling:
+        raise DanglingReferences(
+            f"Còn {len(dangling)} vị trí trỏ tới dữ liệu hoặc bộ lọc không có trong báo cáo "
+            f"({', '.join(sorted(set(dangling))[:6])}). Gắn lại dữ liệu cho các vị trí đó rồi xuất bản.")
     n = sample_marks(target.html)
     if n and not allow_samples:
         raise SampleNumbersRemain(

@@ -212,6 +212,21 @@ def _localize_title(title: str) -> str:
     return re.sub(r"\s+by\s+", " theo ", t)
 
 
+def serves(db: Session, binding: Dict[str, Any], cand: Dict[str, Any]) -> bool:
+    """Does this binding's chart already compute this candidate (same table, chart type
+    and role config)? The match of a re-import, by meaning - not by a positional id."""
+    from app.models.models import Chart
+
+    cid = binding.get("chart_id") if isinstance(binding, dict) else None
+    chart = db.get(Chart, cid) if db is not None and isinstance(cid, int) else None
+    if chart is None:
+        return False
+    cfg = chart.config if isinstance(chart.config, dict) else {}
+    ctype = str(getattr(chart.chart_type, "value", chart.chart_type) or cfg.get("chartType") or "")
+    return (chart.dataset_table_id == cand.get("table") and ctype.upper() == str(cand.get("type") or "").upper()
+            and (cfg.get("roleConfig") or {}) == (cand.get("role") or {}))
+
+
 def next_binding_id(bindings: List[Dict[str, Any]]) -> str:
     used = {b.get("id") for b in bindings}
     n = 1
@@ -223,13 +238,34 @@ def next_binding_id(bindings: List[Dict[str, Any]]) -> str:
 def bind_candidates(db: Session, picks: List[Tuple[Dict[str, Any], str]], *, existing: List[Dict[str, Any]],
                     owner_id, dataset_id: int, prefix: str, meta: Dict[str, Dict[str, Any]],
                     pool: Optional[List[Dict[str, Any]]] = None, limits: Optional[Dict[str, int]] = None,
-                    budget_s: float = PROBE_BUDGET_S) -> Tuple[List[Dict[str, Any]], Dict[str, str], List[str]]:
+                    budget_s: float = PROBE_BUDGET_S, reuse: Optional[List[Dict[str, Any]]] = None,
+                    ) -> Tuple[List[Dict[str, Any]], Dict[str, str], List[str]]:
     """Run each pick; keep what returns data; create its chart. A refused pick is
     replaced by the next pool candidate of the same kind (when a pool is given).
+
+    `reuse`: bindings the report already had. A pick that one of them already serves
+    (same table, chart type and role config) gets THAT binding and its id back - no new
+    chart, no renumbering. A reused binding not in `existing` is returned as new.
 
     Returns (new bindings, {candidate id: binding id}, notes)."""
     started = time.time()
     notes: List[str] = []
+    mapping: Dict[str, str] = {}
+    out: List[Dict[str, Any]] = []
+    in_existing = {b.get("id") for b in existing}
+    taken: set = set()
+    left = []
+    for cand, title in picks:
+        b = next((b for b in (reuse or []) if b.get("id") not in taken and serves(db, b, cand)), None)
+        if b is None:
+            left.append((cand, title))
+            continue
+        taken.add(b.get("id"))
+        mapping[cand["id"]] = b["id"]
+        if b.get("id") not in in_existing:
+            out.append(b)
+    picks = left
+    existing = list(existing) + out
     tried = set()
     picked_ids = {c["id"] for c, _ in picks}
     queue = list(picks) + [(c, "") for c in (pool or []) if c["id"] not in picked_ids]
@@ -265,8 +301,6 @@ def bind_candidates(db: Session, picks: List[Tuple[Dict[str, Any], str]], *, exi
         kept.append((cand, title))
         kind_count[cand["kind"]] = kind_count.get(cand["kind"], 0) + 1
 
-    out: List[Dict[str, Any]] = []
-    mapping: Dict[str, str] = {}
     all_bindings = list(existing)
     for cand, title in kept:
         title = title or _localize_title(cand["title"])
