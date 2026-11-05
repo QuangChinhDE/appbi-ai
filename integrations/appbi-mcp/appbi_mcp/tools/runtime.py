@@ -143,7 +143,7 @@ def _audit(app: AppContext, principal: Principal | None, event: str, args: dict[
 
 
 def register_all(mcp: Any, app: AppContext) -> dict[str, str]:
-    from . import dashboard, dashboard_edit, dataset, discovery, html_import, model_edit, publish, vibe  # noqa: F401 - registration side effect
+    from . import dashboard, dashboard_edit, dataset, discovery, html_import, model_edit, publish, sources, vibe  # noqa: F401 - registration side effect
 
     scopes: dict[str, str] = {}
     for spec in REGISTRY:

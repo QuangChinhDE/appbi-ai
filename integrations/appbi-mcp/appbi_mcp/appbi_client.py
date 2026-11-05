@@ -43,6 +43,8 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/datasources/{id}"),
     ("GET", "/datasources/{id}/schema"),
     ("GET", "/datasources/{id}/tables/{seg}/{seg}"),
+    # re-test a SAVED source with its stored secret (the request carries nothing)
+    ("POST", "/datasources/{id}/test"),
     # datasets — reads
     ("GET", "/datasets/"),
     ("GET", "/datasets/{id}"),
@@ -125,7 +127,6 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/{id}/discard-draft"),
     ("POST", "/auth/personal-access-tokens/"),
     ("POST", "/datasources/query"),
-    ("POST", "/datasources/{id}/test"),
     ("POST", "/datasources/validate-sql"),
     ("PUT", "/charts/{id}"),
     ("DELETE", "/charts/{id}"),

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
 import { ArrowLeft, Loader2, ShieldAlert } from 'lucide-react';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
+import { HandoffBanner } from '@/components/datasources/HandoffBanner';
 import { useDataSource, useUpdateDataSource } from '@/hooks/use-datasources';
 import { getResourcePermissions } from '@/hooks/use-resource-permission';
 import type { DataSourceCreate } from '@/types/api';
@@ -82,6 +83,7 @@ export default function EditDataSourcePage() {
         </div>
         <div className="rounded-lg border border-[rgb(var(--border-line))] bg-surface-1 p-6 shadow-linear-sm">
           <h2 className="text-2xl font-bold mb-6">Edit Data Source</h2>
+          <HandoffBanner />
           <DataSourceForm
             initialData={dataSource}
             onSubmit={handleUpdate}
