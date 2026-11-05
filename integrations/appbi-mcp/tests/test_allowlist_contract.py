@@ -39,8 +39,23 @@ def test_forbidden_routes_are_not_reachable(method, template):
     assert ac.match_route(method, concrete) is None, f"{method} {template} must not be on the allowlist"
 
 
-def test_no_delete_or_patch_is_allowed():
-    assert not [r for r in ac.ALLOWED_ROUTES if r[0] in ("DELETE", "PATCH")]
+def test_delete_and_patch_are_only_draft_edits():
+    # The only DELETE/PATCH the integration may send are the Manual Builder's DRAFT
+    # edits (remove a tile in the caller's draft, edit a widget in the caller's draft),
+    # and each is refused without draft=true, which would write the live row.
+    risky = [r for r in ac.ALLOWED_ROUTES if r[0] in ("DELETE", "PATCH")]
+    assert sorted(risky) == [("DELETE", "/dashboards/{id}/charts/{id}"), ("PATCH", "/dashboards/{id}/widgets/{id}")]
+    for method, template in risky:
+        assert ac._REQUIRED_PARAMS[(method, template)] == {"draft": "true"}
+
+
+async def test_a_live_delete_or_patch_never_leaves_the_process():
+    client = ac.AppbiClient("http://appbi.invalid/api/v1", "pat", "r")
+    with pytest.raises(ac.GuardViolation):
+        await client.request("DELETE", "/dashboards/1/charts/2")
+    with pytest.raises(ac.GuardViolation):
+        await client.request("PATCH", "/dashboards/1/widgets/2", params={"draft": "false"}, json={"widget_config": {}})
+    assert client.calls == []
 
 
 def test_forbidden_list_names_real_routes(routes):

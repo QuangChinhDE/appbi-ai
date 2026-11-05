@@ -78,6 +78,14 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/{id}/charts"),
     ("POST", "/dashboards/{id}/widgets"),
     ("PUT", "/dashboards/{id}/draft-filters"),
+    # Manual Builder edits of an existing dashboard -- the caller's DRAFT only
+    ("PUT", "/dashboards/{id}/draft-layout"),
+    ("PUT", "/dashboards/{id}/draft-responsive"),
+    ("DELETE", "/dashboards/{id}/charts/{id}"),          # only with draft=true (see _REQUIRED_PARAMS)
+    ("PATCH", "/dashboards/{id}/widgets/{id}"),          # only with draft=true
+    ("POST", "/dashboards/{id}/charts/{id}/restore"),
+    ("POST", "/dashboards/{id}/charts/{id}/swap-chart"),
+    ("POST", "/dashboards/{id}/charts/{id}/fork-chart"),
     ("POST", "/dashboards/{id}/publish"),
     # HTML report import (W4) -- form-encoded; new draft dashboards only (guards below)
     ("GET", "/datasets/{id}/import-skill"),
@@ -107,8 +115,6 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/dashboards/{id}"),
     ("PUT", "/dashboards/{id}/layout"),
     ("DELETE", "/dashboards/{id}"),
-    ("DELETE", "/dashboards/{id}/charts/{id}"),
-    ("PATCH", "/dashboards/{id}/widgets/{id}"),
     ("POST", "/dashboards/report-starter"),
     ("POST", "/dashboards/{id}/public-links"),
     ("PATCH", "/dashboards/{id}/public-links/{seg}"),
@@ -185,6 +191,15 @@ def _guard_draft_filters(body: Any) -> None:
         raise GuardViolation("draft-filters writes must carry base_rev")
     if body.get("remove_tile_ids"):
         raise GuardViolation("this service never removes tiles")
+
+
+def _guard_draft_layout(body: Any) -> None:
+    items = body.get("chart_layouts") if isinstance(body, dict) else None
+    if not isinstance(items, list) or not items:
+        raise GuardViolation("draft-layout carries chart_layouts")
+    for it in items:
+        if not isinstance(it, dict) or not isinstance(it.get("layout"), dict) or "draftOnly" in it["layout"] or "draftOwner" in it["layout"]:
+            raise GuardViolation("draft-layout entries are {id, layout} without draft row keys")
 
 
 def _guard_dashboard_publish(body: Any) -> None:
@@ -345,6 +360,7 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/dashboards/{id}/widgets"): _guard_add_slicer,
     ("PUT", "/dashboards/{id}/draft-filters"): _guard_draft_filters,
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
+    ("PUT", "/dashboards/{id}/draft-layout"): _guard_draft_layout,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
     ("PUT", "/datasets/{id}/model/views/{id}"): _guard_view_put,
     ("POST", "/datasets/"): _guard_dataset_create,
@@ -354,6 +370,12 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/report-artifacts/{id}/proposal/apply"): _guard_vibe_apply,
     ("POST", "/report-artifacts/{id}/ai-edit"): _guard_vibe_ai_edit,
     ("POST", "/report-artifacts/{id}/publish"): _guard_vibe_publish,
+}
+
+# Query parameters a route MUST carry: these routes write live rows without them.
+_REQUIRED_PARAMS: dict[tuple[str, str], dict[str, str]] = {
+    ("DELETE", "/dashboards/{id}/charts/{id}"): {"draft": "true"},
+    ("PATCH", "/dashboards/{id}/widgets/{id}"): {"draft": "true"},
 }
 
 # Query parameters forbidden on otherwise-allowed routes.
@@ -453,6 +475,9 @@ class AppbiClient:
         if guard is not None:
             guard(form if is_form else json)
         data = {k: ("true" if v is True else "false" if v is False else str(v)) for k, v in form.items()} if form is not None else None
+        for key, value in _REQUIRED_PARAMS.get((method, template), {}).items():
+            if str((params or {}).get(key, "")).lower() != value:
+                raise GuardViolation(f"{template} is only used with {key}={value} (draft edit, never the live row)")
         for bad in _FORBIDDEN_PARAMS.get((method, template), set()):
             if params and params.get(bad):
                 raise GuardViolation(f"query parameter {bad!r} is not allowed on {template}")

@@ -12,6 +12,7 @@ from ..oauth import scopes as sc
 from ..operations import OperationError, Plan, Run, outcome_for_appbi_error
 from ..state import canonical_json, sha256_hex
 from .dashboard import run_dashboard_plan
+from .dashboard_edit import run_dashboard_edit
 from .dataset import run_dataset_plan
 from .discovery import model_digest
 from .html_import import run_dashboard_html_plan
@@ -21,7 +22,7 @@ from .vibe import VIBE_KINDS, run_vibe_plan, run_vibe_publish, vibe_publish_is_s
 log = logging.getLogger("appbi_mcp.tools.publish")
 
 RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan, "dashboard_html": run_dashboard_html_plan,
-           **{k: run_vibe_plan for k in VIBE_KINDS}}
+           "dashboard_edit": run_dashboard_edit, **{k: run_vibe_plan for k in VIBE_KINDS}}
 PUBLISH_KINDS = ("dataset_publish", "dashboard_publish", "vibe_publish")
 PUBLISH_TERMINAL = {"published", "sync_failed"}
 
@@ -151,7 +152,8 @@ async def _dashboard_state(env: Env, dashboard_id: int) -> tuple[dict[str, Any],
     ]
     shared = d.get("shared_draft") or {}
     return d, {"rev": shared.get("rev"), "tile_base_v": tile_base_v, "my_draft_tiles": mine,
-               "shared_has_changes": bool(shared.get("has_changes")), "other_authors": shared.get("other_authors") or []}
+               "shared_has_changes": bool(shared.get("has_changes")), "other_authors": shared.get("other_authors") or [],
+               "has_draft": bool(d.get("has_draft"))}
 
 
 @tool(scope=sc.READ, title="Request a publish", read_only=True)
@@ -196,7 +198,7 @@ async def request_publish(
                                 body={"dataset_id": resource_id}, summary=summary, fingerprint=fp)
     else:
         d, st = await _dashboard_state(env, resource_id)
-        if not st["my_draft_tiles"] and not st["tile_base_v"] and not st["shared_has_changes"]:
+        if not st["my_draft_tiles"] and not st["tile_base_v"] and not st["shared_has_changes"] and not st["has_draft"]:
             return {"status": "nothing_to_publish", "message": "You have no unpublished changes on this dashboard."}
         keep_shared = bool(st["other_authors"])
         warnings = []
@@ -210,6 +212,7 @@ async def request_publish(
                 {"title": "Shared filter/page draft", "items": [
                     "Published with this change" if st["shared_has_changes"] and not keep_shared else
                     "Left unpublished (co-authors are editing it)" if keep_shared else "No changes"]},
+                {"title": "Preview your draft (Builder, real renderer and data)", "links": [env.link(f"/dashboards/{resource_id}")]},
                 {"title": "What happens", "items": [
                     "Your draft becomes what every viewer of this dashboard sees.",
                     "If a co-author published any of the same tiles since now, AppBI refuses and nothing is overwritten.",
