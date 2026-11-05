@@ -39,6 +39,15 @@ Runs as the connected user's own PAT; audit row per call. E2E evidence = real MC
   dashboard renders 98.7K.
 - Evidence: .artifacts/live-evidence*/ (local, not committed).
 
+## Round 2 (2026-11-05, after owner review)
+- CI 69bdcc95 live-journeys red (3): fixed at root - approval limiter per signed-in user + Retry-After; consent page
+  reads settings:full as admin (CI admin got an empty PAT); rig/CI nginx stacked the app CSP on report documents
+  (isolated report origin) - report-docs location now keeps Core's own CSP. CI 8a5c5381: Preflight + MCP integration GREEN.
+- Merged origin/demo 6cf33fa9 (report re-import anchors); report-code contract 75 PASS; local live suite 12 PASS at 8a5c5381.
+- Workboards: discovery + approved publish/unpublish. Agent Flows / Chat / Govern: NOT PAT-eligible in Core
+  (core/authz/registry.py) -> unreachable for any PAT client by design; owner decision needed.
+- Public Read MCP: Core reviewed, spec docs/features/public-read-mcp/spec.md, decisions D1-D5 pending.
+
 ## Open limitations
 - AI-generated Vibe proposal with a real model: NOT VERIFIED end-to-end after the proposal change (rig has no AI key;
   appbi-ai Core predates the proposal endpoints). Mechanism verified with code proposals live + AI path offline.
