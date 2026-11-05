@@ -24,6 +24,28 @@ Runs as the connected user's own PAT; audit row per call. E2E evidence = real MC
   source edit, stale_plan keeps co-author edit, AppBI 409 base_number, compare, restore, approved publish
   (published_number=4), one real AI edit (1 call, rev5, published untouched). Bug found+fixed: regions are objects.
 
+## Verification status (final, 2026-11-05)
+- Offline: MCP 247 PASS · backend test_report_code_contract 72 PASS · tsc PASS · presentation contracts 128 PASS
+- Route contract: 576 routes, 0 missing/stale/unclassified (run inside the rig backend image)
+- verify.py task (base origin/demo): PASS; mcp_integration_live NOT VERIFIED by verify itself -> run manually below
+- Live rig (isolated compose project appbi-mcprig, Core/FE/MCP built from this branch = HEAD code): 12 PASS, 1 allowed skip
+  (BigQuery host absent in rig). Real MCP SDK client + OAuth + Chromium approvals: Vibe proposal preview BEFORE save,
+  reject, stale, restore, publish (full only); model edit with AppBI-computed preview values; dashboard draft edit,
+  Builder render, publish; share (full only) + co-author stale; read-only reader; source handoff resume + re-test;
+  existing acceptance + security lifecycle journeys.
+- Real BigQuery (appbi-ai stack Core 89419b24 + MCP of this branch as an independent container, removed afterwards):
+  dataset 225 measures = BigQuery SQL (items 112650, orders 98666, sellers 3095, delivered_orders 96478 cross-table);
+  model edit; dashboard 259 draft edit + publish; dataset Sync & Publish to BigQuery generation 1793880773936;
+  dashboard renders 98.7K.
+- Evidence: .artifacts/live-evidence*/ (local, not committed).
+
+## Open limitations
+- AI-generated Vibe proposal with a real model: NOT VERIFIED end-to-end after the proposal change (rig has no AI key;
+  appbi-ai Core predates the proposal endpoints). Mechanism verified with code proposals live + AI path offline.
+- Production nginx.conf CSP (frame-src/form-action 'self') would block Report Studio's isolated report origin (pre-existing;
+  local edge has no CSP). Core/deploy owner.
+- Not exposed by design: users/teams/permissions admin, PATs, public links, deletes, Workboards/Agent Flows/Chat writes.
+- Claude Desktop/claude.ai client not run in this session (MCP SDK client used); remote HTTPS still unverified.
 ## Commits
 cffdad1a M1 tools · ba82abda proposals (Core+Studio) · 7187a218 M2 · 3e66b0e9 M3 · 7885bb87 M4 · 3eb15537 M5
 
@@ -33,4 +55,4 @@ cffdad1a M1 tools · ba82abda proposals (Core+Studio) · 7187a218 M2 · 3e66b0e9
 - Live rig (isolated compose project appbi-mcprig, :18180): IN PROGRESS
 
 ## Next action
-Bring up rig at HEAD, bootstrap users, run tests/live (vibe + parity + existing acceptance), fix failures.
+Owner review of PR; decide merge to demo. Optional: real-model AI Vibe proposal on a stack with an AI key.
