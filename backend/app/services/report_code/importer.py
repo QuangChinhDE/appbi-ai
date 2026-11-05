@@ -555,6 +555,10 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
     notes: List[str] = list(warnings)
     compatible = bool(_PLACEHOLDER.search(html + js)) or "data-rac-" in html
     decl = list(existing_filters)
+    # The pasted code REPLACES the page: a binding it no longer references is an orphan,
+    # never kept (it spent the binding room and pushed new data to "missing"). A binding
+    # it references by id keeps that id; the others may be reused for the same data.
+    previous, existing = list(existing), _referenced(existing, html, js)
 
     if compatible:
         progress("Mã đã tương thích AppBI — chạy dữ liệu qua BI Core")
@@ -562,7 +566,7 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
         picks = [(by_id[c], "") for c in wanted if c in by_id]
         notes += [f"@{c} không có trong semantic model hiện tại — đã bỏ." for c in wanted if c not in by_id]
         added, mapping_ids, n2 = B.bind_candidates(db, picks, existing=existing, owner_id=owner_id, dataset_id=dataset_id,
-                                                   prefix=f"[Code] {report_name}", meta=meta)
+                                                   prefix=f"[Code] {report_name}", meta=meta, reuse=previous)
         notes += n2
         html = re.sub(r"@(c\d+)\b", lambda m: mapping_ids.get(m.group(1), "missing"), html)
         js = re.sub(r"@(c\d+)\b", lambda m: mapping_ids.get(m.group(1), "missing"), js)
@@ -570,6 +574,7 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
         decl, fmap = _add_filters(decl, dims, fids)
         html = re.sub(r"@(f\d+)\b", lambda m: fmap.get(m.group(1), "missing"), html)
         js = re.sub(r"@(f\d+)\b", lambda m: fmap.get(m.group(1), "missing"), js)
+        notes += _missing_notes(html, js)
         return {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added, "filters": decl, "notes": notes}
 
     progress("Đọc các vị trí dữ liệu trong HTML")
@@ -588,7 +593,7 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
         picks.append((plan["cand"], plan["cand"]["title"]))
         by_id[plan["cand"]["id"]] = plan["cand"]
     added, cmap, n2 = B.bind_candidates(db, picks, existing=existing, owner_id=owner_id, dataset_id=dataset_id,
-                                        prefix=f"[Code] {report_name}", meta=meta)
+                                        prefix=f"[Code] {report_name}", meta=meta, reuse=previous)
     notes += n2
     filter_slots = {m["slot"]: m.get("dimension") for m in mapping if m.get("slot") in slots and slots[m["slot"]]["kind"] == "filter" and m.get("dimension")}
     period_dims = {m.get("dimension") for m in mapping if m.get("slot") in slots and m.get("dimension") and (
@@ -847,6 +852,21 @@ def _list_template(html: str, tags, slot: Dict[str, Any], plan: Dict[str, Any], 
 
 
 _VIZ = {"kpi", "bar", "column", "hbar", "line", "area", "donut", "pie", "table", "heatmap", "gauge", "waterfall", "progress", "sparkline"}
+
+
+def _referenced(bindings: List[Dict[str, Any]], html: str, js: str) -> List[Dict[str, Any]]:
+    from app.services.report_code import lifecycle as L
+
+    refs = set(L._refs((html or "") + "\n" + (js or "")))
+    return [b for b in bindings if isinstance(b, dict) and b.get("id") in refs]
+
+
+_MISSING_RX = re.compile(r"data-rac-[a-z-]+=[\"']missing[\"']|rac\.\w+\(\s*[\"']missing[\"']")
+
+
+def _missing_notes(html: str, js: str) -> List[str]:
+    n = len(_MISSING_RX.findall((html or "") + (js or "")))
+    return [f"Còn {n} vị trí chưa gắn được dữ liệu (\"missing\") — báo cáo chưa xuất bản được cho đến khi gắn lại."] if n else []
 
 
 def _add_filters(decl: List[Dict[str, Any]], dims: List[Dict[str, Any]], dim_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
