@@ -216,8 +216,36 @@ def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
                  .filter(ReportArtifactPublicLink.artifact_id.in_([a.id for a in arts]),
                          ReportArtifactPublicLink.is_active.is_(True))
                  .group_by(ReportArtifactPublicLink.artifact_id).all())
-    return [_summary(a, revs.get(a.draft_revision_id), revs.get(a.published_revision_id), int(links.get(a.id, 0)))
-            for a in arts]
+    unbound = _unbound_counts(db, revs)
+    return [_summary(a, revs.get(a.draft_revision_id), revs.get(a.published_revision_id), int(links.get(a.id, 0)),
+                     unbound=unbound) for a in arts]
+
+
+#: (revision id, content hash) -> its unbound places. A saved revision never changes (a new
+#: save is a new revision), so the list reads each revision's code once per process.
+_UNBOUND_MEMO: Dict[tuple, int] = {}
+_UNBOUND_MEMO_MAX = 4096
+
+
+def _unbound_counts(db: Session, revs: Dict[int, Any]) -> Dict[int, int]:
+    out, todo = {}, []
+    for rid, r in revs.items():
+        key = (rid, getattr(r, "content_hash", None))
+        if key in _UNBOUND_MEMO:
+            out[rid] = _UNBOUND_MEMO[key]
+        else:
+            todo.append(rid)
+    if todo:
+        rows = db.query(ReportArtifactRevision.id, ReportArtifactRevision.content_hash, ReportArtifactRevision.html,
+                        ReportArtifactRevision.js, ReportArtifactRevision.bindings, ReportArtifactRevision.filters) \
+            .filter(ReportArtifactRevision.id.in_(todo)).all()
+        if len(_UNBOUND_MEMO) > _UNBOUND_MEMO_MAX:
+            _UNBOUND_MEMO.clear()
+        for r in rows:
+            n = len(dangling_references(r))
+            _UNBOUND_MEMO[(r.id, r.content_hash)] = n
+            out[r.id] = n
+    return out
 
 
 def _active_links(db: Session, art: ReportArtifact) -> int:
@@ -232,7 +260,14 @@ def summary(db: Session, art: ReportArtifact) -> Dict[str, Any]:
                     get_revision(db, art, art.published_revision_id), _active_links(db, art))
 
 
-def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, Any]:
+def _summary(art: ReportArtifact, draft, pub, active_links: int, *, unbound: Optional[Dict[int, int]] = None) -> Dict[str, Any]:
+    def places(rev) -> int:
+        if rev is None:
+            return 0
+        if unbound is not None and getattr(rev, "id", None) in unbound:
+            return unbound[rev.id]
+        return len(dangling_references(rev)) if hasattr(rev, "html") else 0
+
     return {
         "id": art.id, "name": art.name, "description": art.description, "dataset_id": art.dataset_id,
         "owner_id": str(art.owner_id) if art.owner_id else None,
@@ -244,6 +279,10 @@ def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, An
         "chart_ids": sorted({int(x["chart_id"]) for r in (draft, pub) if r is not None
                              for x in (r.bindings or []) if isinstance(x, dict) and isinstance(x.get("chart_id"), int)}),
         "has_unpublished_changes": bool(draft and (not pub or draft.content_hash != pub.content_hash)),
+        # places that point at data the revision does not have ("missing" from an import, a
+        # deleted binding/filter): counted on READ, so a version published before the
+        # publish guard existed is flagged too - nothing to backfill, nothing to go stale
+        "unbound": {"draft": places(draft), "published": places(pub)},
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.
         "public_enabled": active_links > 0, "public_link_count": active_links,

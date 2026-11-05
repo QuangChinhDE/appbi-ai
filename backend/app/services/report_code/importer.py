@@ -866,7 +866,7 @@ _MISSING_RX = re.compile(r"data-rac-[a-z-]+=[\"']missing[\"']|rac\.\w+\(\s*[\"']
 
 def _missing_notes(html: str, js: str) -> List[str]:
     n = len(_MISSING_RX.findall((html or "") + (js or "")))
-    return [f"Còn {n} vị trí chưa gắn được dữ liệu (\"missing\") — báo cáo chưa xuất bản được cho đến khi gắn lại."] if n else []
+    return [f"{n} vị trí chưa gắn được dữ liệu, cần gắn tay (tab Dữ liệu) — báo cáo chưa xuất bản được cho đến khi gắn lại."] if n else []
 
 
 def _add_filters(decl: List[Dict[str, Any]], dims: List[Dict[str, Any]], dim_ids: List[str]) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
