@@ -32,20 +32,43 @@ async def _report(token: str, rid: int) -> dict:
         return r.json()
 
 
-async def _frame_text(page, timeout_ms: int = 30_000) -> str:
-    """Text the REAL report document renders (the isolated-origin frame)."""
+async def _frame_text(page, timeout_ms: int = 30_000, want: str | None = None) -> str:
+    """Text the REAL report document renders (the isolated-origin frame); with `want`,
+    wait until it shows that text (the frame renders asynchronously)."""
     deadline = time.time() + timeout_ms / 1000
+    last = ""
     while time.time() < deadline:
         for f in page.frames:
             if "report-docs" in f.url:
                 try:
                     body = await f.inner_text("body")
                     if body.strip():
-                        return body
+                        last = body
+                        if want is None or want in body:
+                            return body
                 except Exception:  # noqa: BLE001 - frame still loading
                     pass
         await page.wait_for_timeout(500)
-    return ""
+    return last
+
+
+async def _open(page, p: Person, url: str) -> None:
+    """Navigate like a user: if AppBI asks to sign in again, do it and come back."""
+    await page.goto(url)
+    await page.wait_for_load_state("domcontentloaded")
+    for _ in range(2):
+        if "/login" not in page.url:
+            return
+        # AppBI rate-limits sign-in/refresh per IP (5-10/min); every rig browser shares
+        # the edge's IP, so wait the window out once, as a user would retry.
+        await page.wait_for_timeout(62_000)
+        await page.goto(url)
+        await page.wait_for_load_state("domcontentloaded")
+        if "/login" in page.url:
+            await p.login(page)
+            await page.wait_for_url(lambda u: "/login" not in u, timeout=30_000)
+            await page.goto(url)
+            await page.wait_for_load_state("domcontentloaded")
 
 
 async def _shot(page, name: str) -> None:
@@ -83,10 +106,11 @@ async def test_vibe_preview_before_save_approval_publish_and_permissions():
             edit = tool_json(await client.call_tool("plan_vibe_source_edit", {"report_id": rid, "html": new_html, "css": rev1["css"], "js": rev1["js"]}))
             assert edit["status"] == "awaiting_approval" and "?proposal=" in edit["preview_url"], edit
             page = await p.browser_context.new_page()
-            await page.goto(edit["preview_url"].replace("http://localhost:18999", RIG_URL))
+            await _open(page, p, edit["preview_url"])
             await page.get_by_test_id("studio-preview-proposal").wait_for(timeout=30_000)
-            assert MARK in await _frame_text(page), "the proposal is what the real renderer shows"
+            text = await _frame_text(page, want=MARK)
             await _shot(page, "vibe-1-proposal-preview-before-save")
+            assert MARK in text, ("the proposal is what the real renderer shows", [f.url for f in page.frames])
             assert (await _report(token, rid))["draft_number"] == 1, "previewing saved nothing"
 
             # The approval page shows the real diff and the same preview link.
@@ -105,12 +129,13 @@ async def test_vibe_preview_before_save_approval_publish_and_permissions():
             assert again.get("already_done") and (await _report(token, rid))["draft_number"] == 2, "no duplicate save"
 
             # The revision link opens the real Studio on that revision.
-            await page.goto(f"{RIG_URL}/dashboards/code/{rid}?revision=1")
+            await _open(page, p, f"{RIG_URL}/dashboards/code/{rid}?revision=1")
             await page.get_by_test_id("studio-preview-old").wait_for(timeout=30_000)
-            assert MARK not in await _frame_text(page)
-            await page.goto(f"{RIG_URL}/dashboards/code/{rid}?revision=2")
-            assert MARK in await _frame_text(page)
+            assert MARK not in await _frame_text(page, timeout_ms=8_000, want=MARK)
+            await _open(page, p, f"{RIG_URL}/dashboards/code/{rid}?revision=2")
+            rev2 = await _frame_text(page, want=MARK)
             await _shot(page, "vibe-3-saved-revision-2")
+            assert MARK in rev2, [f.url for f in page.frames]
 
             # 3. Rejected in the browser -> nothing saved, plan can never run.
             rej = tool_json(await client.call_tool("plan_vibe_source_edit", {"report_id": rid, "html": new_html + "<p>rejected</p>", "css": "", "js": ""}))
@@ -140,15 +165,26 @@ async def test_vibe_preview_before_save_approval_publish_and_permissions():
             restored = tool_json(await client.call_tool("execute_plan", {"plan_id": rs["plan_id"]}))
             assert restored["status"] == "draft_ready" and restored["draft_number"] == after["draft_number"] + 1
 
-            # 6. Publish is its own approval; nothing goes live before it.
-            req = tool_json(await client.call_tool("request_publish", {"resource_type": "vibe_report", "resource_id": rid}))
-            assert req["status"] == "awaiting_approval", req
-            assert tool_json(await client.call_tool("publish", {"plan_id": req["plan_id"]}))["status"] == "awaiting_approval"
-            assert (await _report(token, rid))["published_number"] is None
-            assert await p.approve(req["approval_url"]) == "Approved"
-            pub = tool_json(await client.call_tool("publish", {"plan_id": req["plan_id"]}))
-            assert pub["status"] == "published" and (await _report(token, rid))["published_number"] == restored["draft_number"], pub
+            # 6. The author has the dashboards module at EDIT: AppBI lets only FULL publish a
+            #    Vibe report (the Studio hides Publish too) and the MCP says so, with no plan.
+            denied = tool_json(await client.call_tool("request_publish", {"resource_type": "vibe_report", "resource_id": rid}))
+            assert denied["status"] == "forbidden", denied
             await page.close()
+
+        # Publish by an account with FULL (admin): its own approval; nothing live before it.
+        adm = await person("admin", b)
+        async with mcp_session(adm) as aclient:
+            req = tool_json(await aclient.call_tool("request_publish", {"resource_type": "vibe_report", "resource_id": rid}))
+            assert req["status"] == "awaiting_approval", req
+            assert tool_json(await aclient.call_tool("publish", {"plan_id": req["plan_id"]}))["status"] == "awaiting_approval"
+            assert (await _report(token, rid))["published_number"] is None
+            ap = await adm.browser_context.new_page()
+            await ap.goto(req["approval_url"])
+            await _shot(ap, "vibe-4-publish-approval")
+            await ap.close()
+            assert await adm.approve(req["approval_url"]) == "Approved"
+            pub = tool_json(await aclient.call_tool("publish", {"plan_id": req["plan_id"]}))
+            assert pub["status"] == "published" and (await _report(token, rid))["published_number"] == restored["draft_number"], pub
 
         # 7. Another author and a read-only user cannot touch it.
         for key in ("author_b", "reader"):

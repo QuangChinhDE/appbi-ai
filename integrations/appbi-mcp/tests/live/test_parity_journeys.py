@@ -11,7 +11,7 @@ import pytest
 
 from .harness import API_URL, RIG_URL, appbi_session_token, browser, mcp_session, rig_state, tool_json
 from .test_acceptance import COMPLETED_REVENUE, REVENUE, REVENUE_BY_REGION, _metric, build_dataset, person, tables
-from .test_vibe_journey import _shot
+from .test_vibe_journey import _open, _shot
 
 pytestmark = pytest.mark.live
 
@@ -100,7 +100,7 @@ async def test_model_and_dashboard_edit_share_and_conflict():
             assert live_title == next(x for x in before["dashboard_charts"] if x["id"] == tiles["Revenue"])["layout"].get("custom_title"), \
                 "the published tile is unchanged until publish"
             page = await pa.browser_context.new_page()
-            await page.goto(f"{RIG_URL}/dashboards/{did}")
+            await _open(page, pa, f"{RIG_URL}/dashboards/{did}")
             await page.wait_for_load_state("networkidle")
             await page.wait_for_timeout(2500)
             assert "Total revenue (MCP)" in await page.inner_text("body"), "the Builder renders the author's draft"
@@ -156,7 +156,7 @@ async def test_source_handoff_new_and_resume():
             assert h["status"] == "handoff_required" and "/datasources/new?handoff=1" in h["handoff_url"], h
             assert tool_json(await client.call_tool("check_source_handoff", {"handoff_id": h["handoff_id"]}))["status"] == "pending"
             page = await p.browser_context.new_page()
-            await page.goto(h["handoff_url"])
+            await _open(page, p, h["handoff_url"])
             await page.get_by_test_id("source-handoff-banner").wait_for(timeout=30_000)
             await _shot(page, "m4-source-handoff-page")
             # The user saves the source in AppBI (credentials typed into AppBI, never into the assistant).
