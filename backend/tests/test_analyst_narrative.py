@@ -255,3 +255,18 @@ def test_a_blank_member_reads_as_blank_never_none():
             {"name": "r", "ref": "v.revenue", "role": "measure", "label": "Doanh thu", "aggregation": "sum"}]
     story = describe(cols, [{"c": "West", "r": 9.0}, {"c": None, "r": 1.0}], time_ref=None, truncated=False)
     assert any(b.startswith("(trống):") for b in story["bullets"]) and not any("None" in b for b in story["bullets"])
+
+
+def test_a_percent_measure_is_told_as_a_percent_never_as_its_ratio():
+    """Live 2026-11-05 (Vibe and Manual bots): "% đạt KH GOP" was answered "1.01" while
+    every tile shows 101%. A percent measure holds a ratio (the platform convention):
+    the Core says it x100, from the semantic format, never guessed from the label."""
+    from app.services.data_core.narrative import describe, fmt
+
+    cols = [{"name": "m", "ref": "v.dat_gop", "role": "measure", "label": "% đạt KH GOP",
+             "aggregation": "avg", "format": "percent"}]
+    assert describe(cols, [{"m": 1.01}], time_ref=None, truncated=False)["headline"] == "% đạt KH GOP: 101%."
+    assert describe(cols, [{"m": 0.8799}], time_ref=None, truncated=False)["headline"] == "% đạt KH GOP: 87.99%."
+    plain = [{**cols[0], "format": None, "label": "GOP"}]
+    assert describe(plain, [{"m": 1.01}], time_ref=None, truncated=False)["headline"] == "GOP: 1.01."
+    assert fmt(1.01) == "1.01", "outside a percent measure's description nothing changes"

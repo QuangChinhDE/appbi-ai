@@ -893,3 +893,51 @@ def test_a_cached_result_keeps_the_response_encoding_of_dates_and_decimals(tmp_p
     got = store.get(1, "k")["data"][0]
     assert got == jsonable_encoder(row), got
     assert got["order_month"] == "2024-01-01T00:00:00"
+
+
+# ── What the report bot reads, and where its sources point ──────────────────────────
+
+_PAGE_HTML = ('<section data-rac-region="kpis" data-rac-label="Tổng quan">'
+              '<div class="card"><b data-rac-value="b1"></b></div></section>'
+              '<section data-rac-region="trend" data-rac-label="Xu hướng doanh thu">'
+              '<div data-rac-viz="line" data-rac-bind="b2"></div>'
+              '<div data-rac-viz="table" data-rac-bind="b1"></div></section>')
+_PAGE_BINDINGS = [{"id": "b1", "chart_id": 11, "title": "Doanh thu"},
+                  {"id": "b2", "chart_id": 12, "title": "Doanh thu theo tháng"},
+                  {"id": "b3", "chart_id": 13, "title": "Bị khai báo nhưng không vẽ"},
+                  {"id": "b4", "chart_id": 14, "title": "Vẽ bằng JS"}]
+
+
+def test_the_report_bot_never_reads_a_binding_the_page_does_not_draw():
+    from types import SimpleNamespace
+    from app.services.report_code import public_bot as PB
+
+    rev = SimpleNamespace(html=_PAGE_HTML, js="rac.bind('b4', function(d){});", bindings=_PAGE_BINDINGS)
+    ids = [b["id"] for b in PB.page_bindings(rev)]
+    assert ids == ["b1", "b2", "b4"], "b3 is declared but drawn nowhere: out of the bot's scope"
+    # a declared-only page (the sink probe) gives the bot nothing to read
+    assert PB.page_bindings(SimpleNamespace(html="<h1>x</h1>", js="", bindings=_PAGE_BINDINGS)) == []
+
+
+def test_the_report_sections_are_the_cores_pages_with_the_charts_drawn_in_them():
+    from types import SimpleNamespace
+    from app.services.report_code import public_bot as PB
+
+    rev = SimpleNamespace(html=_PAGE_HTML, js="", bindings=_PAGE_BINDINGS)
+    sections = PB.page_sections(rev, {b["id"]: b["chart_id"] for b in _PAGE_BINDINGS})
+    assert sections == [{"id": "kpis", "name": "Tổng quan", "chart_ids": [11]},
+                        {"id": "trend", "name": "Xu hướng doanh thu", "chart_ids": [12, 11]}]
+
+
+def test_a_report_source_carries_the_binding_ids_that_draw_it(monkeypatch):
+    from types import SimpleNamespace
+    from app.services.answer_core.published_report import PublishedReportScope
+
+    scope = PublishedReportScope.__new__(PublishedReportScope)
+    scope.ctx = SimpleNamespace(chart_meta={11: {"name": "Doanh thu", "anchors": ["b1", "b9"]}, 12: {"name": "x"}})
+    scope.turn_id = "t" * 16
+    p = SimpleNamespace(explore=SimpleNamespace(dataset_name="Doanh thu", explore_id=11))
+    ev = scope.evidence(p, SimpleNamespace(meta={"chart_id": 11, "chart": "Doanh thu"}))
+    assert ev["anchors"] == ["b1", "b9"] and ev["chart_id"] == 11
+    ev2 = scope.evidence(p, SimpleNamespace(meta={"chart_id": 12, "chart": "x"}))
+    assert "anchors" not in ev2, "a dashboard chart has no anchors: its tile is found by chart"

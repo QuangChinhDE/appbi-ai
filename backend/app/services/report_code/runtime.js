@@ -160,12 +160,26 @@
         break;
       case 'focus':
         // "show this chart" from the viewer's AI Bot: the block that draws this binding
-        var target = msg.id ? document.querySelector('[data-rac-bind="' + cssEsc(String(msg.id)) + '"],[data-rac-value="' + cssEsc(String(msg.id)) + '"]') : null;
-        if (target) {
-          var box = target.closest('.card,[data-rac-region]') || target;
-          box.scrollIntoView({ block: 'center', behavior: 'smooth' });
-          box.classList.add('rac-flash');
-          setTimeout(function () { box.classList.remove('rac-flash'); }, 1600);
+        // A binding can be drawn more than once (a KPI and its chart, a table below):
+        // scroll to the first VISIBLE block that draws it (a chart before a number in a
+        // sentence) and flash every block that shows it.
+        if (msg.id) {
+          var q = cssEsc(String(msg.id));
+          var all = Array.prototype.slice.call(document.querySelectorAll('[data-rac-bind="' + q + '"]'))
+            .concat(Array.prototype.slice.call(document.querySelectorAll('[data-rac-value="' + q + '"]')));
+          var boxes = [];
+          for (var k = 0; k < all.length; k++) {
+            var bx = all[k].closest('.card,[data-rac-region]') || all[k];
+            if (boxes.indexOf(bx) < 0) boxes.push(bx);
+          }
+          var first = null;
+          for (var v = 0; v < boxes.length && !first; v++) if (boxes[v].getClientRects().length) first = boxes[v];
+          first = first || boxes[0];
+          if (first) {
+            first.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            boxes.forEach(function (b) { b.classList.add('rac-flash'); });
+            setTimeout(function () { boxes.forEach(function (b) { b.classList.remove('rac-flash'); }); }, 1600);
+          }
         }
         break;
       case 'provenance':

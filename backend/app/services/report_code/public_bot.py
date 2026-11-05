@@ -16,6 +16,7 @@ An Agent Flow add-on is a dashboard-link binding today; a report link has none.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -55,7 +56,10 @@ def build_context(db: Session, rev, link, viewer_state: Any):
             # viewer - the marker every public surface's disclosure reads
             public_filters.append({**cond, DISCLOSE_KEY: False} if key in hidden_keys else cond)
 
-    chart_ids = {int(b["chart_id"]) for b in rev.bindings or [] if isinstance(b.get("chart_id"), int)}
+    # Only what the PAGE shows: a binding declared but drawn nowhere in the published
+    # HTML/JS is not part of what the link serves to a reader, so the bot cannot read it.
+    shown = page_bindings(rev)
+    chart_ids = {int(b["chart_id"]) for b in shown if isinstance(b.get("chart_id"), int)}
     charts = db.query(Chart).filter(Chart.id.in_(chart_ids)).all() if chart_ids else []
     dataset_ids = sorted({f["datasetId"] for f in decl if f.get("datasetId")}
                          | {int(c.config.get("dataset_id")) for c in charts
@@ -68,12 +72,54 @@ def build_context(db: Session, rev, link, viewer_state: Any):
                       snapshot_ttl_minutes=None)
     ctx.served_table_ids = {c.dataset_table_id for c in charts if c.dataset_table_id is not None}
     ctx.adopt_scope(chart_ids, dataset_ids)
-    # the report's own titles for its charts (what the viewer reads on the page)
-    for b in rev.bindings or []:
+    # the report's own titles for its charts (what the viewer reads on the page), and
+    # where each is drawn: the binding ids a source chip scrolls to (`anchors`)
+    for b in shown:
         cid = b.get("chart_id")
-        if cid in ctx.chart_meta and b.get("title"):
-            ctx.chart_meta[cid]["name"] = str(b["title"])
+        if cid not in ctx.chart_meta:
+            continue
+        meta = ctx.chart_meta[cid]
+        if b.get("title") and not meta.get("anchors"):
+            meta["name"] = str(b["title"])
+        meta.setdefault("anchors", []).append(str(b["id"]))
+    # the page's sections (data-rac-region + its label) play the part a dashboard's
+    # pages play for the Core: "the chart in the Revenue section" ranks that chart first
+    ctx.pages = page_sections(rev, {str(b["id"]): b.get("chart_id") for b in shown})
     return ctx
+
+
+_REF_ATTR_RX = re.compile(r'data-rac-(?:bind|value|title|asof)\s*=\s*["\']([^"\']+)["\']')
+_JS_LITERAL_RX = re.compile(r'["\']([A-Za-z0-9_\-:.]{1,80})["\']')
+
+
+def _refs(html: str, js: str) -> set:
+    return set(_REF_ATTR_RX.findall(html or "")) | set(_JS_LITERAL_RX.findall(js or ""))
+
+
+def page_bindings(rev) -> List[Dict[str, Any]]:
+    """The published bindings the page references: a data-rac-* attribute in its HTML
+    or a string literal in its JS (rac.bind('b3'), a list of ids). A binding referenced
+    nowhere is not drawn, so a reader of the link never sees it."""
+    refs = _refs(getattr(rev, "html", ""), getattr(rev, "js", ""))
+    return [b for b in rev.bindings or [] if isinstance(b, dict) and str(b.get("id")) in refs]
+
+
+def page_sections(rev, chart_of: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """[{id, name, chart_ids}] - each labelled region of the page and the charts drawn in it."""
+    from app.services.report_code import document as D
+
+    html = getattr(rev, "html", "") or ""
+    out = []
+    for reg in D.list_regions(html):
+        markup = D.region_markup(html, reg["id"]) or ""
+        ids = []
+        for ref in _REF_ATTR_RX.findall(markup):
+            cid = chart_of.get(ref)
+            if isinstance(cid, int) and cid not in ids:
+                ids.append(cid)
+        if ids:
+            out.append({"id": reg["id"], "name": reg.get("label") or reg["id"], "chart_ids": ids})
+    return out
 
 
 def resolver(token: str, session_token: Optional[str], viewer_state: Any):

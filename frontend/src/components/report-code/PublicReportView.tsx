@@ -119,35 +119,46 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           ))}
         </div>
       )}
-      <ReportFrame
-        src={`${meta.document_url}${sep}v=${meta.version}`}
-        isolated={meta.isolated}
-        bindings={meta.bindings}
-        filters={meta.filters}
-        fetchData={fetchData}
-        fetchValues={fetchValues}
-        mode="view"
-        title={meta.name}
-        onStateChange={(st) => setViewerState({ ...st })}
-        focus={focus}
-        className="min-h-0 flex-1"
-      />
-      {meta.appearance?.ai_bot_enabled === true && (
-        <DashboardAiBot
-          surface="reports"
-          token={token}
-          sessionToken={getPublicSession(token)}
-          dashboardName={headline || meta.name}
-          viewerState={viewerState as Record<string, unknown>}
-          chartTitles={meta.bindings.map((b) => b.title).filter(Boolean)}
-          onShowChart={(name) => {
-            const n = name.trim().toLowerCase();
-            const b = meta.bindings.find((x) => x.title.trim().toLowerCase() === n)
-              || meta.bindings.find((x) => n.includes(x.title.trim().toLowerCase()) || x.title.trim().toLowerCase().includes(n));
-            if (b) setFocus((f) => ({ id: b.id, n: (f?.n || 0) + 1 }));
-          }}
+      {/* The report and its AI Bot side by side, as on a dashboard link: the panel takes
+          its width in this row and the report narrows beside it (never below it, never
+          over it); closing the panel gives the report its width back. */}
+      <div className="flex min-h-0 flex-1" data-testid="public-report-body">
+        <ReportFrame
+          src={`${meta.document_url}${sep}v=${meta.version}`}
+          isolated={meta.isolated}
+          bindings={meta.bindings}
+          filters={meta.filters}
+          fetchData={fetchData}
+          fetchValues={fetchValues}
+          mode="view"
+          title={meta.name}
+          onStateChange={(st) => setViewerState({ ...st })}
+          focus={focus}
+          className="min-h-0 min-w-0 flex-1"
         />
-      )}
+        {variant === 'public' && meta.appearance?.ai_bot_enabled === true && (
+          <DashboardAiBot
+            surface="reports"
+            token={token}
+            sessionToken={getPublicSession(token)}
+            dashboardName={headline || meta.name}
+            viewerState={viewerState as Record<string, unknown>}
+            chartTitles={meta.bindings.map((b) => b.title).filter(Boolean)}
+            onShowChart={(name, anchors) => {
+              // the Core says where the page draws it (binding ids): exact, even when two
+              // blocks share a title; the title is only the fallback of an older answer
+              const known = new Set(meta.bindings.map((b) => b.id));
+              let id = (anchors || []).find((a) => known.has(a));
+              if (!id) {
+                const n = name.trim().toLowerCase();
+                id = (meta.bindings.find((x) => x.title.trim().toLowerCase() === n)
+                  || meta.bindings.find((x) => n.includes(x.title.trim().toLowerCase()) || x.title.trim().toLowerCase().includes(n)))?.id;
+              }
+              if (id) setFocus((f) => ({ id: id as string, n: (f?.n || 0) + 1 }));
+            }}
+          />
+        )}
+      </div>
       {variant === 'public' && (
         <div className="flex items-center justify-between border-t border-slate-200 bg-white px-4 py-1.5 text-[11px] text-slate-400">
           <span>{meta.preview ? 'Xem trước liên kết · ' : ''}Phiên bản {meta.version}{meta.published_at ? ` · xuất bản ${new Date(meta.published_at).toLocaleString('vi-VN')}` : ''}</span>

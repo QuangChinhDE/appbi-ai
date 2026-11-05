@@ -900,3 +900,68 @@ def test_the_model_never_sets_a_target_against_a_figure_the_code_did_not():
             "- Mục tiêu doanh thu năm là 12.000.000.")
     out = drop_target_comparisons(text, guide)
     assert "chưa đạt" not in out and "West đạt 88.073." in out and "Mục tiêu doanh thu năm là 12.000.000." in out
+
+
+def test_a_chart_the_links_lock_cannot_reach_is_replanned_once_on_one_that_can(scope, monkeypatch):
+    """Live 2026-11-05 (Manual bot, dashboard 256): "Tổng doanh thu" was planned on the
+    "Sức khỏe" chart, whose table the link's month lock cannot reach - refused, while the
+    "Doanh thu" chart under the same lock shows 82,96 tỷ. The engine decides: the refused
+    chart leaves this turn's catalog and the question is planned once more."""
+    from app.services.agent_flows.tools import context
+    from app.services.data_core import planner, service
+
+    s2 = "w.revenue"
+    scope._charts[12] = _Chart(12, "Sức khỏe", ["Tổng quan"], 90, "bigquery", [], {s2: "sum"})
+    scope._entries.insert(0, CatalogExplore(12, None, 90, "Sức khỏe", None, "w", "bigquery", "x",
+                                            [CatalogField(s2, "measure", "sum", "Doanh thu")]))
+
+    def fetch(c, chart_id, *, extra_filters=None):
+        c.calls.append((chart_id, extra_filters))
+        if chart_id == 12:
+            raise ValueError("Biểu đồ này không áp được một giới hạn bắt buộc")
+        return {"columns": [R], "rows": [[220.0]], "filters_applied": [], "restricted_by_author": 1}
+
+    monkeypatch.setattr(context, "_fetch_chart_data", fetch)
+    plans = []
+
+    def make_plan(question, catalog, **_k):
+        first = catalog[0]
+        plans.append(first.explore_id)
+        ref = next(f.ref for f in first.fields if f.kind == "measure")
+        return planner.validate({"status": "plan", "explore_id": first.explore_id, "dimensions": [],
+                                 "measures": [ref], "covered": {"doanh thu": ref}}, catalog)
+
+    monkeypatch.setattr(service, "make_plan", make_plan)
+    out = service.ask(None, None, "Tổng doanh thu", None, scope=scope, turn_id="t" * 32)
+    assert plans == [12, 11], "planned once more, without the chart the lock cannot reach"
+    assert out["status"] == "answered" and out["rows"] == [{R: 220.0}]
+
+    # no other chart: the engine's refusal stands, said as it is (nothing left to re-plan on)
+    scope._unservable.clear()
+    scope._entries = scope._entries[:1]
+    plans.clear()
+    out = service.ask(None, None, "Tổng doanh thu", None, scope=scope, turn_id="u" * 32)
+    assert plans == [12] and out["status"] == "refused" and out["code"] == "filter_unreachable"
+
+
+def test_a_percent_measure_reaches_the_analysis_in_percent_and_its_figure_is_verified(scope, monkeypatch):
+    """Live 2026-11-05: the analysis wrote "87,99%" from the tile "% đạt KH" (a ratio,
+    0.8799, shown 87,99%) and the check listed the tile's own figure as NOT verified.
+    A percent measure is read as the tiles show it: x100, its column said in %."""
+    from dataclasses import replace
+
+    from app.services.agent_flows.tools import context
+    from app.services.answer_core import guided_analysis as g
+
+    scope._entries[0] = replace(scope._entries[0], fields=[
+        replace(f, number_format="percent") if f.ref == A else f for f in scope._entries[0].fields])
+    sent = {}
+
+    def model(prompt, system=None, max_tokens=None):
+        sent["payload"] = json.loads(prompt)
+        return {"answer": "Giá TB của Laptop ở South đạt 3000%.", "charts_used": ["Doanh thu theo sản phẩm"]}
+
+    out = g.analyse(scope, question="Phân tích giá trung bình", instructions=None, complete=model)
+    rows = sent["payload"]["charts"][0]["rows"]
+    assert {"Sản phẩm": "Laptop", "Vùng": "South", "Doanh thu": 50.0, "Giá TB (%)": 3000.0} in rows
+    assert out["unverified_figures"] == [], "the tile's own percent is verified"

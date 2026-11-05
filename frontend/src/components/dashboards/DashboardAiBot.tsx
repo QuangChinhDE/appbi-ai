@@ -46,7 +46,7 @@ interface Props {
   chartTitles?: string[];
   /** Brings a chart of the report into view (its page, its tile): a source chip under an
    *  answer opens the chart it was read from. Absent: the chips are plain labels. */
-  onShowChart?: (chartName: string) => void;
+  onShowChart?: (chartName: string, anchors?: string[]) => void;
   /** Which public surface answers (default: a dashboard link). */
   surface?: PublicBotSurface;
   /** A report link: the viewer's current filter choices on the report. */
@@ -54,7 +54,7 @@ interface Props {
 }
 
 /** The report's "show this chart" action, for the source chips of every answer. */
-const ShowChartContext = React.createContext<((chartName: string) => void) | null>(null);
+const ShowChartContext = React.createContext<((chartName: string, anchors?: string[]) => void) | null>(null);
 
 interface Exchange {
   id: string;
@@ -436,14 +436,14 @@ function SourceChip({ kind, t }: { kind: 'core' | 'guide' | 'unsupported' | 'pol
 
 /** A chart an answer was read from, as a chip: a click brings the chart into view on the
  *  report (customer feedback 2026-10-29: "click the chart name to see it in detail"). */
-function ChartChip({ name, t }: { name: string; t: Translate }) {
+function ChartChip({ name, anchors, t }: { name: string; anchors?: string[]; t: Translate }) {
   const show = React.useContext(ShowChartContext);
   const label = chartTitle(name);
   const look = 'mx-0.5 inline-flex max-w-full items-center rounded-full border border-brand/25 bg-brand/5 px-2 py-0.5 '
     + 'align-middle text-micro font-emphasis text-brand';
   return show ? (
     <button type="button" className={`${look} hover:bg-brand/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand/40`}
-            onClick={() => show(name)} title={t('dashboards.aiBot.core.showChart')} data-testid="ai-bot-chart-chip"
+            onClick={() => show(name, anchors)} title={t('dashboards.aiBot.core.showChart')} data-testid="ai-bot-chart-chip"
             data-chart={name}>
       <span className="truncate">{label}</span>
     </button>
@@ -646,7 +646,9 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
                     <tr key={i} className="odd:bg-surface-2">
                       {cols.map((c) => (
                         <td key={c.name} className={`px-1.5 py-1 ${c.role === 'measure' ? 'text-right tabular-nums' : ''}`}>
-                          {fmt(r[c.name], locale)}
+                          {c.format === 'percent' && typeof r[c.name] === 'number'
+                            ? `${((r[c.name] as number) * 100).toLocaleString(locale, { maximumFractionDigits: 2 })}%`
+                            : fmt(r[c.name], locale)}
                         </td>
                       ))}
                     </tr>
@@ -670,7 +672,7 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
           )}
           {ev && (
             <div className="mt-2 space-y-0.5 text-label text-text-tertiary" data-testid="ai-bot-evidence">
-              {ev.source && <p>{t('dashboards.aiBot.core.sourceLabel')} <ChartChip name={ev.source} t={t} /></p>}
+              {ev.source && <p>{t('dashboards.aiBot.core.sourceLabel')} <ChartChip name={ev.source} anchors={ev.anchors} t={t} /></p>}
               {(ev.pages || []).length > 0 && <p>{t('dashboards.aiBot.core.pages', { pages: (ev.pages || []).join(', ') })}</p>}
               {filters.length > 0 && <p>{t('dashboards.aiBot.core.filters', { filters: filters.join('; ') })}</p>}
               {(ev.filters_dropped || []).length > 0 && (
@@ -710,7 +712,7 @@ function EnvelopeView({ e, locale, t, onRetry, onPick, busy }: {
                 <>
                   {t('dashboards.aiBot.core.analysisFromLabel')}
                   <span className="inline" data-testid="ai-bot-analysis-sources">
-                    {(data.analysis.charts || []).map((name) => <ChartChip key={name} name={name} t={t} />)}
+                    {(data.analysis.charts || []).map((name) => <ChartChip key={name} name={name} anchors={data.analysis?.anchors?.[name]} t={t} />)}
                   </span>
                   {/* "figures read from these charts" only when every figure was found in them */}
                   {' '}{t((data.analysis.unverified_figures || []).length > 0
