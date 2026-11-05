@@ -87,7 +87,12 @@ export default function ConnectMcpPage() {
         ]);
         if (cancelled) return;
         setUserEmail(String(me?.email || ''));
-        const perms: Record<string, string> = (me?.permissions as Record<string, string>) || {};
+        const raw: Record<string, string> = (me?.permissions as Record<string, string>) || {};
+        // `settings: full` is an administrator: the backend grants every module full from
+        // it (_normalize_permissions), so the page must read it the same way.
+        const perms: Record<string, string> = raw.settings === 'full'
+          ? new Proxy(raw, { get: (t, k) => (typeof k === 'string' ? 'full' : (t as any)[k]) })
+          : raw;
         setUserPerms(perms);
         const rank: Record<string, number> = { none: 0, view: 1, edit: 2, full: 3 };
         const writable = ['datasets', 'explore_charts', 'dashboards'].every((m) => (rank[perms[m]] ?? 0) >= 2);

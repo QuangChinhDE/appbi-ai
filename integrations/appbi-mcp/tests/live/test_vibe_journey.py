@@ -106,10 +106,14 @@ async def test_vibe_preview_before_save_approval_publish_and_permissions():
             edit = tool_json(await client.call_tool("plan_vibe_source_edit", {"report_id": rid, "html": new_html, "css": rev1["css"], "js": rev1["js"]}))
             assert edit["status"] == "awaiting_approval" and "?proposal=" in edit["preview_url"], edit
             page = await p.browser_context.new_page()
+            console: list[str] = []
+            page.on("console", lambda m: console.append(f"{m.type}: {m.text}"[:300]))
             await _open(page, p, edit["preview_url"])
             await page.get_by_test_id("studio-preview-proposal").wait_for(timeout=30_000)
             text = await _frame_text(page, want=MARK)
             await _shot(page, "vibe-1-proposal-preview-before-save")
+            if MARK not in text:
+                (EVIDENCE / "vibe-preview-console.txt").write_text(chr(10).join(console), encoding="utf-8")
             assert MARK in text, ("the proposal is what the real renderer shows", [f.url for f in page.frames])
             assert (await _report(token, rid))["draft_number"] == 1, "previewing saved nothing"
 
