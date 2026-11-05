@@ -1,5 +1,6 @@
 'use client';
 
+import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 /**
@@ -7,7 +8,7 @@ import { useSearchParams } from 'next/navigation';
  * credentials and sign-in are entered HERE, never through the assistant. After
  * saving, the user goes back to the assistant, which finds the source in AppBI.
  */
-export function HandoffBanner() {
+function Banner() {
   const search = useSearchParams();
   if (search?.get('handoff') !== '1') return null;
   const type = (search.get('type') || '').slice(0, 40);
@@ -22,4 +23,9 @@ export function HandoffBanner() {
       </div>
     </div>
   );
+}
+
+/** Suspense: the page is statically rendered and the banner only reads the query on the client. */
+export function HandoffBanner() {
+  return <Suspense fallback={null}><Banner /></Suspense>;
 }
