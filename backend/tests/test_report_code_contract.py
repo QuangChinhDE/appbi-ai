@@ -1013,3 +1013,91 @@ def test_discard_and_a_running_job_both_protect_the_slot(monkeypatch):
     with pytest.raises(ValueError):
         L.stage_proposal(None, art, user_id=None, base_revision_id=11, html="x", css="", js="", bindings=[], filters=[],
                          source="manual", note=None)
+
+
+# ── Re-import / re-bind keeps every anchor and every binding id ─────────────────────
+
+def _reimport_world(monkeypatch, n_cands: int):
+    """n KPI candidates; charts live in a fake db so an old binding can be matched back to
+    the candidate it serves (same table, chart type, role config)."""
+    from types import SimpleNamespace
+    from app.services.report_code import bindings as B
+
+    cands = [{"id": f"c{i}", "kind": "kpi", "type": "KPI", "table": 7, "title": f"M{i}", "measure": f"M{i}",
+              "role": {"metrics": [{"field": f"v.m{i}", "agg": "sum"}]}} for i in range(1, n_cands + 1)]
+    charts = {}
+
+    def create(db, cand, title, **kw):
+        cid = 500 + len(charts)
+        charts[cid] = SimpleNamespace(id=cid, name=title, chart_type="KPI", dataset_table_id=cand["table"],
+                                      config={"chartType": "KPI", "roleConfig": cand["role"]})
+        return charts[cid]
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: {"views": []})
+    monkeypatch.setattr(B, "candidates", lambda model: cands)
+    monkeypatch.setattr(B, "field_meta", lambda model: {})
+    monkeypatch.setattr(B, "filter_dimensions", lambda model, ds: [])
+    monkeypatch.setattr(B, "run_candidate", lambda db, cand: True)
+    monkeypatch.setattr(B, "create_candidate_chart", create)
+    db = SimpleNamespace(get=lambda model, cid: charts.get(cid))
+    return db, cands, charts
+
+
+def test_a_reimport_reuses_the_bindings_it_had_and_leaves_no_missing_anchor(monkeypatch):
+    """Live (artifact 1, rev 2): the second import of the same report kept the 13 old
+    bindings as 'existing', gave the KPIs NEW ids (b14..b16) and, the 16-binding room
+    spent, wrote data-rac-bind="missing" in 19 of 22 places. A re-import binds the SAME
+    data to the SAME ids, keeps no orphan, and writes every anchor."""
+    from app.services.report_code import importer as I
+
+    db, cands, _ = _reimport_world(monkeypatch, 13)
+    html = "".join(f'<div class="card"><b data-rac-value="@c{i}"></b></div>' for i in range(1, 14))
+    first = I.apply(db, dataset_id=1, html=html, css="", js="", mapping=[], filters=[], owner_id=None,
+                    report_name="R", existing=[], existing_filters=[], progress=lambda s: None)
+    assert [b["id"] for b in first["bindings"]] == [f"b{i}" for i in range(1, 14)]
+    assert "missing" not in first["html"]
+
+    # the same design pasted again (and a 14th..16th KPI added) onto the same report
+    html2 = html + "".join(f'<div class="card"><b data-rac-value="@c{i}"></b></div>' for i in (1, 2, 3))
+    second = I.apply(db, dataset_id=1, html=html2, css="", js="", mapping=[], filters=[], owner_id=None,
+                     report_name="R", existing=first["bindings"], existing_filters=[], progress=lambda s: None)
+    assert "missing" not in second["html"], "every anchor is written back"
+    assert [b["id"] for b in second["bindings"]] == [f"b{i}" for i in range(1, 14)], \
+        "the same data keeps its id: no renumbering, no duplicate, no orphan"
+    assert second["html"].count('data-rac-value="b1"') == 2
+
+
+def test_a_reimport_drops_bindings_the_new_page_no_longer_uses(monkeypatch):
+    from app.services.report_code import importer as I
+
+    db, cands, _ = _reimport_world(monkeypatch, 16)
+    html = "".join(f'<b data-rac-value="@c{i}"></b>' for i in range(1, 17))
+    first = I.apply(db, dataset_id=1, html=html, css="", js="", mapping=[], filters=[], owner_id=None,
+                    report_name="R", existing=[], existing_filters=[], progress=lambda s: None)
+    assert len(first["bindings"]) == 16
+    # a new design that shows 3 OTHER metrics + 1 kept by its id: the room is not spent on orphans
+    db2, _c, _ = db, cands, None
+    html2 = '<b data-rac-value="b16"></b>' + "".join(f'<b data-rac-value="@c{i}"></b>' for i in (14, 15))
+    second = I.apply(db2, dataset_id=1, html=html2, css="", js="", mapping=[], filters=[], owner_id=None,
+                     report_name="R", existing=first["bindings"], existing_filters=[], progress=lambda s: None)
+    assert sorted(b["id"] for b in second["bindings"]) == ["b14", "b15", "b16"]
+    assert "missing" not in second["html"]
+
+
+def test_publish_refuses_a_page_with_anchors_to_data_the_report_does_not_have():
+    from types import SimpleNamespace
+    from app.services.report_code import lifecycle as L
+
+    rev = SimpleNamespace(id=2, html='<b data-rac-value="missing"></b><div data-rac-filter="f9"></div><b data-rac-value="b1"></b>',
+                          js="", bindings=[{"id": "b1"}], filters=[{"key": "f1"}])
+    art = SimpleNamespace(id=1, draft_revision_id=2, published_revision_id=None, last_published_at=None)
+    L_get = L.get_revision
+    try:
+        L.get_revision = lambda db, a, rid: rev
+        with pytest.raises(L.DanglingReferences) as ex:
+            L.publish(None, art)
+        assert "2" in str(ex.value) and art.published_revision_id is None
+        rev.html = '<b data-rac-value="b1"></b><div data-rac-filter="f1"></div>'
+        assert L.publish(None, art) is rev and art.published_revision_id == 2
+    finally:
+        L.get_revision = L_get
