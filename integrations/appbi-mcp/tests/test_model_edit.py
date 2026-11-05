@@ -56,6 +56,12 @@ class Model:
             return {}
         if template == "/datasets/{id}/tables/{id}":
             self.transformations = body["transformations"]
+            # AppBI's model sync exposes each calculated column as a field
+            for t in body["transformations"]:
+                name = t["params"]["newField"]
+                if name not in {d["name"] for d in self.view["dimensions"]}:
+                    self.view["dimensions"].append({"name": name, "type": "number"})
+                    self.version += 1
             return {}
         if template == "/datasets/{id}/model/health":
             return {"blocking": []}

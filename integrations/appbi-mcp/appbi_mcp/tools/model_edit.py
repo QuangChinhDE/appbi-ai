@@ -348,6 +348,24 @@ async def run_model_edit(env: Env, run: Run) -> dict[str, Any]:
             await run.write(key, lambda s=s, upd=upd: _save_view(env, did, s["view"], upd, key))
             done.append(f"dimension {s['view']}.{s['name']}")
 
+    # Verify: AppBI turns a calculated column into a field asynchronously (background
+    # model sync). Wait until every new column is a field, so the model is settled
+    # before anyone plans on it.
+    wanted = {(s["view"], s["step"]["params"]["newField"]) for s in body["steps"] if s["op"] == "add_calculated_column"}
+    if wanted:
+        import asyncio
+        import time as _time
+        deadline = _time.time() + 60
+        while True:
+            fresh = await env.appbi.get(f"/datasets/{did}/model")
+            have = {(v.get("name"), d.get("name")) for v in fresh.get("views", []) or [] for d in v.get("dimensions", []) or []}
+            if wanted <= have:
+                break
+            if _time.time() > deadline:
+                raise OperationError("partially_failed", f"AppBI saved the calculated column(s) but has not exposed them as fields yet: {sorted(wanted - have)}. "
+                                     "Call execute_plan again to re-check.", step="verify")
+            await asyncio.sleep(2)
+        await asyncio.sleep(3)  # let the sync's last write land before reading health
     health = await env.appbi.get(f"/datasets/{did}/model/health", execute="true")
     if health.get("blocking"):
         raise OperationError("blocked", "AppBI's semantic health check reports blocking problems after the edit.", step="health", detail=health["blocking"])

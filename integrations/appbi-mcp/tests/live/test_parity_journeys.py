@@ -19,7 +19,14 @@ pytestmark = pytest.mark.live
 async def _approve_and_run(client, p, plan: dict) -> dict:
     assert plan["status"] == "awaiting_approval", plan
     assert tool_json(await client.call_tool("execute_plan", {"plan_id": plan["plan_id"]}))["status"] == "awaiting_approval"
-    assert await p.approve(plan["approval_url"]) == "Approved"
+    try:
+        assert await p.approve(plan["approval_url"]) == "Approved"
+    except Exception:
+        pg = await p.browser_context.new_page()
+        await pg.goto(plan["approval_url"])
+        await _shot(pg, f"approval-failed-{p.key}")
+        print("APPROVAL PAGE", pg.url, (await pg.inner_text("body"))[:500])
+        raise
     return tool_json(await client.call_tool("execute_plan", {"plan_id": plan["plan_id"]}))
 
 
@@ -112,13 +119,22 @@ async def test_model_and_dashboard_edit_share_and_conflict():
             after = await _dashboard(token_a, did)
             assert next(x for x in after["dashboard_charts"] if x["layout"].get("custom_title") == "Total revenue (MCP)")
 
-            # ── M5: share (own approval) -> the co-author can edit; a stale plan is refused ──
+            # ── M5: sharing needs FULL on the resource (AppBI's rule, same in the UI) ──
             sh = tool_json(await ca.call_tool("plan_share", {"resource_type": "dashboard", "resource_id": did, "permission": "edit",
                                                             "email": st["users"]["author_b"]["email"]}))
-            assert (await _approve_and_run(ca, pa, sh))["status"] == "done"
-            dsh = tool_json(await ca.call_tool("plan_share", {"resource_type": "dataset", "resource_id": ds["dataset_id"], "permission": "view",
-                                                             "email": st["users"]["author_b"]["email"]}))
-            assert (await _approve_and_run(ca, pa, dsh))["status"] == "done"
+            assert sh["status"] == "forbidden", sh
+            adm = await person("admin", b)
+            async with mcp_session(adm) as cadm:
+                for rtype, rid_, lvl in (("dashboard", did, "edit"), ("dataset", ds["dataset_id"], "view")):
+                    plan = tool_json(await cadm.call_tool("plan_share", {"resource_type": rtype, "resource_id": rid_, "permission": lvl,
+                                                                          "email": st["users"]["author_b"]["email"]}))
+                    ap_page = await adm.browser_context.new_page()
+                    await ap_page.goto(plan["approval_url"])
+                    await _shot(ap_page, f"m5-share-{rtype}-approval")
+                    await ap_page.close()
+                    assert (await _approve_and_run(cadm, adm, plan))["status"] == "done"
+                shares = tool_json(await cadm.call_tool("list_shares", {"resource_type": "dashboard", "resource_id": did}))
+                assert any(x.get("permission") == "edit" for x in shares["shares"]), shares
 
             pb = await person("author_b", b)
             async with mcp_session(pb) as cb:
