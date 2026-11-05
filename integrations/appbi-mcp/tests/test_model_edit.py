@@ -42,9 +42,10 @@ class Model:
         if template.endswith("/measures/preview"):
             return {"ok": True, "rows": [{"v": 2253900}]}
         if template == "/datasets/{id}/tables/{id}/preview":
-            return {"columns": [{"name": "amount", "type": "number"}], "rows": [{"amount": 10}, {"amount": 20}]}
-        if template == "/dashboards/import-html/preview-calculated":
-            return {"rows": [{"amount": 10, "amount_k": 0.01}], "errors": []}
+            steps = body.get("draft_transformations") or []
+            if any("VARCHAR" in t["params"]["expression"] for t in steps):
+                raise AppbiError(400, "invalid", "400 Type not found: VARCHAR")  # the warehouse's answer
+            return {"columns": ["amount", "amount_k"], "rows": [{"amount": 10, "amount_k": 0.01}, {"amount": 20, "amount_k": 0.02}]}
         if template == "/datasets/{id}/model/views/{id}":
             if body["expected_view_version"] != f"v{self.version}":
                 raise AppbiError(409, "conflict", "stale", {"code": "view_stale"})
@@ -119,6 +120,8 @@ async def test_plan_previews_real_values_and_writes_nothing(env_for):
     assert out["status"] == "awaiting_approval" and m.writes() == []
     assert out["previews"][0]["items"][0]["value now"] == 2253900
     assert out["previews"][-1]["items"][0]["amount_k"] == 0.01
+    preview_calls = [c for c in m.calls if "/tables/" in c[1] and c[1].endswith("/preview")]
+    assert preview_calls[0][2]["draft_transformations"][-1]["params"]["newField"] == "amount_k"
     res = await _run(env, out["plan_id"])
     assert res["status"] == "draft_ready"
     assert [x["name"] for x in m.view["measures"]] == ["revenue", "completed_revenue", "x_rev"]
@@ -164,3 +167,13 @@ def test_table_update_guard_allows_only_transformations():
             g(bad)
     with pytest.raises(GuardViolation):
         BODY_GUARDS[("POST", "/datasets/{id}/tables/{id}/preview")]({"limit": 50, "refresh_schema": True})
+
+
+async def test_an_expression_the_warehouse_rejects_never_reaches_approval(env_for):
+    """Claude Desktop on BigQuery (2026-11-05): a DuckDB preview showed '2017' for
+    LEFT(CAST(ts AS VARCHAR), 4) and BigQuery refused it at save. The preview now runs on
+    the source engine, so the plan is refused with the warehouse's message."""
+    m = Model()
+    out = await me.plan_model_edit(env_for(m), 1, _ops(
+        {"op": "add_calculated_column", "view": "orders", "name": "y", "expression": "LEFT(CAST(amount AS VARCHAR), 4)"}))
+    assert out["status"] == "invalid" and "VARCHAR" in out["errors"][0] and m.writes() == []

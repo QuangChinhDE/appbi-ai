@@ -68,7 +68,6 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     # model edits of an existing dataset (guards below)
     ("PUT", "/datasets/{id}/tables/{id}"),                 # transformations only (calculated columns)
     ("POST", "/datasets/{id}/tables/{id}/preview"),        # read: sample rows for a calculated-column preview
-    ("POST", "/dashboards/import-html/preview-calculated"),  # AppBI's calculated-field preview (no writes)
     # datasets — publish (approval-gated by the caller)
     ("POST", "/datasets/{id}/publish"),
     # charts
@@ -221,10 +220,9 @@ def _guard_table_update(body: Any) -> None:
 def _guard_table_preview(body: Any) -> None:
     if not isinstance(body, dict) or body.get("refresh_schema") or int(body.get("limit") or 100) > 100:
         raise GuardViolation("table preview is a bounded read (limit <= 100, no schema refresh)")
-
-
-def _guard_preview_calculated(form: Any) -> None:
-    _form_fields(form, {"sample_rows_json", "columns_json", "calculated_fields_json", "row_limit"}, "preview-calculated")
+    steps = body.get("draft_transformations")
+    if steps is not None and (not isinstance(steps, list) or not steps or steps[-1].get("type") != "add_column"):
+        raise GuardViolation("a draft preview appends exactly the proposed calculated column")
 
 
 def _guard_draft_layout(body: Any) -> None:
@@ -381,7 +379,6 @@ FORM_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("POST", "/dashboards/import-html/validate-plans"),
     ("POST", "/dashboards/import-html/dry-run-build"),
     ("POST", "/dashboards/import-html/build"),
-    ("POST", "/dashboards/import-html/preview-calculated"),
 })
 
 
@@ -399,7 +396,6 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("PUT", "/datasets/{id}/tables/{id}"): _guard_table_update,
     ("POST", "/shares/{seg}/{id}"): _guard_share,
     ("POST", "/datasets/{id}/tables/{id}/preview"): _guard_table_preview,
-    ("POST", "/dashboards/import-html/preview-calculated"): _guard_preview_calculated,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
     ("PUT", "/datasets/{id}/model/views/{id}"): _guard_view_put,
     ("POST", "/datasets/"): _guard_dataset_create,

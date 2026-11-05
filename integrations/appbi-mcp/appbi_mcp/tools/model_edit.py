@@ -8,7 +8,8 @@ concurrent edit), the transformation compiler's expression validation.
 
 Preview before approval, all computed by AppBI on real data:
 * a new or changed measure: its dry-run SQL and its value (`measures/preview`);
-* a calculated column: AppBI's calculated-field preview over real sample rows;
+* a calculated column: AppBI's live table preview on the source's own engine with the
+  proposed step (nothing saved), so an expression the warehouse rejects never reaches approval;
 * a relationship: AppBI's key evidence (`model/joins/suggestion`).
 """
 
@@ -217,24 +218,23 @@ async def plan_model_edit(env: Env, dataset_id: int, operations: Annotated[list[
                 errors.append(f"op {i}: column '{o['name']}' already exists on {o['view']}")
                 continue
             sample: list[Any] = []
+            step = {"type": "add_column", "enabled": True, "params": {"newField": o["name"], "expression": o["expression"]}}
             try:
-                pv = await env.appbi.post(f"/datasets/{dataset_id}/tables/{table_id}/preview", {"limit": 50})
-                rows_in = pv.get("rows") or pv.get("data") or []
-                cols = [{"name": c.get("name"), "type": c.get("type")} for c in (pv.get("columns") or []) if isinstance(c, dict)] \
-                    or [{"name": k, "type": "string"} for k in (rows_in[0].keys() if rows_in else [])]
-                calc = await env.appbi.post_form("/dashboards/import-html/preview-calculated", {
-                    "sample_rows_json": json.dumps(rows_in, default=str), "columns_json": json.dumps(cols),
-                    "calculated_fields_json": json.dumps([{"name": o["name"], "expression": o["expression"]}]), "row_limit": 50})
-                if calc.get("errors"):
-                    errors.append(f"op {i}: AppBI rejected the expression: {calc['errors']}")
-                    continue
-                sample = [{k: r.get(k) for k in list(r)[:3] + [o["name"]]} for r in (calc.get("rows") or [])[:5]]
+                # AppBI's own live preview of the table on the SOURCE engine (BigQuery,
+                # Postgres, ...), with the proposed step appended; nothing is saved.
+                pv = await env.appbi.post(f"/datasets/{dataset_id}/tables/{table_id}/preview",
+                                          {"limit": 20, "draft_transformations": list(table.get("transformations") or []) + [step]})
+                rows_out = pv.get("rows") or pv.get("data") or []
+                sample = [{o["name"]: r.get(o["name"]), **{k: r.get(k) for k in list(r)[:2] if k != o["name"]}} for r in rows_out[:5]]
+                if rows_out and all(r.get(o["name"]) is None for r in rows_out):
+                    warnings.append(f"{o['name']}: AppBI computed only empty values on the sample rows")
             except AppbiError as exc:
-                warnings.append(f"{o['name']}: AppBI preview unavailable for this account ({exc.message}); AppBI still validates on save")
+                errors.append(f"op {i}: the source engine rejected the expression: {exc.message}")
+                continue
             steps.append({"op": "add_calculated_column", "view": o["view"], "table_id": table_id,
-                          "step": {"type": "add_column", "enabled": True, "params": {"newField": o["name"], "expression": o["expression"]}}})
+                          "step": step})
             rows.append({"change": "add calculated column", "target": f"{o['view']}.{o['name']}", "detail": o["expression"]})
-            previews.append({"title": f"Calculated column {o['name']} on real rows (AppBI)", "items": sample or ["(no preview)"]})
+            previews.append({"title": f"Calculated column {o['name']} computed by the source engine on real rows (AppBI)", "items": sample or ["(no rows)"]})
 
     if errors:
         return {"status": "invalid", "errors": errors, "warnings": warnings}

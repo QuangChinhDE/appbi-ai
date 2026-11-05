@@ -121,17 +121,11 @@ def test_validate_guard():
 
 
 def test_only_the_five_import_routes_are_allowed():
-    # The HTML import wizard uses exactly these five. preview-calculated is allowed for a
-    # different purpose (the model editor's calculated-column preview: pure computation
-    # over sample rows, no writes) and only with its three data fields.
-    preview = "/dashboards/import-html/preview-calculated"
-    import_routes = {t for _, t in ac.ALLOWED_ROUTES if "import" in t} - {preview}
+    import_routes = {t for _, t in ac.ALLOWED_ROUTES if "import" in t}
     assert import_routes == {"/datasets/{id}/import-skill", ANALYZE, VALIDATE, DRY, BUILD}
-    with pytest.raises(GuardViolation):
-        _guard(preview, {"sample_rows_json": "[]", "columns_json": "[]", "calculated_fields_json": "[]", "dataset_id": 1})
     for path in ("/dashboards/import-html/build-batch", "/dashboards/import-html/prepare-draft",
                  "/dashboards/import-html/fix-chart-plan", "/dashboards/import-html/source-preview",
-                 "/dashboards/import-html/analyze-batch"):
+                 "/dashboards/import-html/analyze-batch", "/dashboards/import-html/preview-calculated"):
         assert ac.match_route("POST", path) is None
 
 
