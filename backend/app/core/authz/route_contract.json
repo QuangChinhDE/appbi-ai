@@ -251,6 +251,7 @@
  "GET /api/v1/report-artifacts/{artifact_id}/public-links": "resource",
  "GET /api/v1/report-artifacts/{artifact_id}/public-links/{link_id}/ai-status": "resource",
  "GET /api/v1/report-artifacts/{artifact_id}/public-links/{link_id}/ai/catalog": "resource",
+ "GET /api/v1/report-artifacts/{artifact_id}/readiness": "resource",
  "GET /api/v1/report-artifacts/{artifact_id}/revisions": "resource",
  "GET /api/v1/report-artifacts/{artifact_id}/revisions/{number}": "resource",
  "GET /api/v1/semantic/explores": "scope",
