@@ -9,6 +9,8 @@ Also: the result checks (`checks`) and the Chart Draft the answer proposes.
 """
 from __future__ import annotations
 
+import contextvars
+
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
@@ -24,9 +26,17 @@ def _num(v: Any) -> Optional[float]:
     return f if f == f else None
 
 
+#: the number format of the measure being described ("percent": a ratio, shown x100)
+_KIND: contextvars.ContextVar[str] = contextvars.ContextVar("narrative_number_kind", default="")
+
+
 def fmt(v: Optional[float]) -> str:
     if v is None:
         return "—"
+    if _KIND.get() == "percent":
+        # the platform convention (every tile, the report runtime): a percent measure
+        # holds a ratio - 1.01 is read and shown as 101%, never as "1.01"
+        return f"{v * 100:,.2f}".rstrip("0").rstrip(".") + "%"
     a = abs(v)
     if a >= 1e9:
         return f"{v / 1e9:,.2f} tỷ"
@@ -59,6 +69,15 @@ def describe(columns: list[dict], rows: list[dict], *, time_ref: Optional[str], 
         return {"headline": "Không có dữ liệu cho câu hỏi này trong phạm vi được phép.", "bullets": [],
                 "facts": [], "checks": checks}
     m = measures[0]
+    token = _KIND.set(str(m.get("format") or ""))
+    try:
+        return _describe(m, rows, time_col, cat_col, checks, truncated=truncated, grain=grain, today=today,
+                         period=period, order=order, top=top)
+    finally:
+        _KIND.reset(token)
+
+
+def _describe(m, rows, time_col, cat_col, checks, *, truncated, grain, today, period, order, top) -> dict:
     # Only a SUM or a COUNT adds up across rows: a share of "the total" or a sum over
     # groups of an average / a rate / a distinct count is a number the data does not
     # hold (live 2026-10-28: a report showing 72.7% was explained with another %).

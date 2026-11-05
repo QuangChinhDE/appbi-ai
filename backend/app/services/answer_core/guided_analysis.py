@@ -266,9 +266,17 @@ def published_data(scope, question: str = "", must_read: tuple[int, ...] = ()) -
             continue
         if data.get("filters_not_applied"):
             continue
+        # A percent measure holds a ratio (the platform convention): it is read as the
+        # tiles show it, in percent and said so - else the model wrote "87,99%" from
+        # 0.8799 and the check flagged the tile's own figure as unverified.
+        percent = {f.ref for f in entry.fields if getattr(f, "number_format", "") == "percent"}
+        for ref in percent:
+            labels[ref] = f"{labels.get(ref, ref.rsplit('.', 1)[-1])} (%)"
         name = (lambda c: labels.get(c, c.rsplit(".", 1)[-1]))
         cols = [str(c) for c in data.get("columns") or []]
-        rows = [{name(c): v for c, v in zip(cols, r)} for r in (data.get("rows") or [])]
+        rows = [{name(c): (round(v * 100, 6) if c in percent and isinstance(v, (int, float))
+                           and not isinstance(v, bool) else v) for c, v in zip(cols, r)}
+                for r in (data.get("rows") or [])]
         additive = frozenset(name(ref) for ref, agg in (chart.measures or {}).items() if agg in ("sum", "count"))
         rows, facts = _facts(rows, additive, int(data.get("source_top_n") or 0))
         out.append({"chart": chart.name, "pages": chart.pages, "facts": facts,
@@ -389,6 +397,10 @@ def analyse(scope, *, question: str, instructions: Optional[str], previous_answe
     unverified = unverified_figures(text, verified)
     known = {c["chart"] for c in charts}
     used = [str(n) for n in (raw.get("charts_used") or []) if str(n) in known][:MAX_CHARTS]
+    by_name = {c.name: c.chart_id for c in getattr(scope, "_charts", {}).values()}
+    anchors = {n: scope.anchors(by_name[n]) for n in used
+               if n in by_name and hasattr(scope, "anchors") and scope.anchors(by_name[n])}
     return {"text": publisher_guide.mark_unverified(text, unverified), "charts": used,
+            **({"anchors": anchors} if anchors else {}),
             "unverified_figures": unverified,
             "used_notes": (bool(instructions) or guide is not None) and raw.get("used_publisher_notes") is True}

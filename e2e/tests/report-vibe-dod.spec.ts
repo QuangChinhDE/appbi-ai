@@ -368,6 +368,61 @@ test('J6 Public AI Bot: offered only when the link enables it; locks hold', asyn
   expect(status.enabled).toBe(true);
   test.info().annotations.push({ type: 'ai-bot-ready', description: String(status.ready) });
   await shot(anon, 'j6-public-bot');
+
+  // The panel opens BESIDE the report (as on a dashboard link), never below or over it:
+  // the report narrows and keeps its height; closing gives the width back. No model call:
+  // the answer is a recorded envelope whose source points at binding b1.
+  await anon.route(`**/public/reports/${pw.token}/ai/status`, (r) => r.fulfill({ json: { enabled: true, ready: true } }));
+  await anon.route(`**/public/reports/${pw.token}/ai/answer`, (r) => r.fulfill({
+    status: 200, headers: { 'content-type': 'text/event-stream' },
+    body: `data: ${JSON.stringify({ type: 'accepted', turn_id: 't-dod' })}\n\n`
+      + `data: ${JSON.stringify({ type: 'final', envelope: { v: 'chat.v1', status: 'answered', code: null, message: null,
+        data: { answer: { text: 'Doanh thu: 1.234', checks: [] }, columns: [], rows: [],
+          evidence: { source: 'Không trùng tiêu đề nào', chart_id: 1, anchors: ['b1'], filters_applied: [] } },
+        supporting: null, notices: [] } })}\n\n`
+      + `data: ${JSON.stringify({ type: 'done' })}\n\n`,
+  }));
+  for (const [w, h] of [[1440, 900], [820, 1100], [390, 844]] as const) {
+    await anon.setViewportSize({ width: w, height: h });
+    await anon.reload();
+    await expect(anon.getByTestId('public-report')).toBeVisible();
+    const frameEl = anon.getByTestId('report-frame');
+    await expect(frameEl).toBeVisible();
+    const before = (await frameEl.boundingBox())!;
+    await anon.getByTestId('ai-bot-open').click();
+    const panel = anon.getByTestId('ai-bot-panel');
+    await expect(panel).toBeVisible();
+    const p = (await panel.boundingBox())!;
+    const during = (await frameEl.boundingBox())!;
+    expect(p.x, `${w}: the panel is on the right of the report`).toBeGreaterThanOrEqual(during.x + during.width - 2);
+    expect(p.y, `${w}: never pushed below the report`).toBeLessThan(during.y + during.height);
+    expect(p.x + p.width, `${w}: inside the viewport`).toBeLessThanOrEqual(w + 1);
+    expect(during.width, `${w}: the report narrows`).toBeLessThan(before.width - 100);
+    expect(Math.abs(during.height - before.height), `${w}: the report keeps its height`).toBeLessThan(4);
+    expect(await anon.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), `${w}: no horizontal scroll`).toBe(true);
+    await shot(anon, `j6-bot-open-${w}`);
+    if (w === 1440) {
+      // the source chip scrolls to the block that draws b1 - by its binding id, not its title
+      await anon.getByTestId('ai-bot-input').fill('Doanh thu?');
+      await anon.getByTestId('ai-bot-send').click();
+      await anon.getByTestId('ai-bot-chart-chip').first().click();
+      const frame = anon.frameLocator('[data-testid="report-frame"]');
+      await expect(frame.locator('.rac-flash').first()).toBeVisible({ timeout: 5_000 });
+      expect(await frame.locator('.rac-flash [data-rac-bind="b1"], .rac-flash[data-rac-bind="b1"], .rac-flash [data-rac-value="b1"]').count()).toBeGreaterThan(0);
+      await shot(anon, 'j6-bot-source-focus');
+    }
+    await anon.getByTestId('ai-bot-close').click();
+    await expect(panel).toBeHidden();
+    const after = (await frameEl.boundingBox())!;
+    expect(Math.abs(after.width - before.width), `${w}: closing restores the width`).toBeLessThan(4);
+  }
+  await anon.unroute('**/ai/status');
+  await anon.unroute('**/ai/answer');
+  await anon.setViewportSize({ width: 1440, height: 900 });
+  // the embed of a report, as of a dashboard, has no AI Bot
+  await anon.goto(`/embed/r/${pw.token}`);
+  await expect(anon.getByTestId('public-report')).toBeVisible();
+  await expect(anon.getByTestId('ai-bot-open')).toHaveCount(0);
   // without the password the bot is closed too
   expect((await anon.request.get(`${PUB}/${pw.token}/ai/status`)).status()).toBe(401);
   // a viewer cannot loosen the lock by asking: refused before any turn is admitted (no model call)

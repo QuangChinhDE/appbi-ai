@@ -347,12 +347,16 @@ export interface PublicAnswerColumn {
   ref?: string | null;
   role: string;
   label?: string;
+  /** The semantic number format of a measure ("percent": a ratio, shown x100). */
+  format?: string;
 }
 
 export interface PublicAnswerEvidence {
   source?: string;
   source_type?: string;
   chart_id?: number;
+  /** A report link: the binding ids that draw this chart on the page. */
+  anchors?: string[];
   pages?: string[];
   filters_applied?: string[];
   filters_withheld?: number;
@@ -376,7 +380,7 @@ export interface PublicAnswerData {
   /** The guided analysis of the published charts and the publisher's prompt: in place
    *  of a could-not-plan refusal (code `ai_analysis`), or beside an answer it evaluates.
    *  Labelled; its unread figures listed; `used_notes` when it used the prompt. */
-  analysis?: { text: string; charts?: string[]; unverified_figures?: string[]; used_notes?: boolean } | null;
+  analysis?: { text: string; charts?: string[]; anchors?: Record<string, string[]>; unverified_figures?: string[]; used_notes?: boolean } | null;
   /** A term the publisher's guide defines, answered verbatim (code `guide_definition`). */
   definition?: { name: string; aliases?: string[]; formula: string; note?: string } | null;
   /** The publisher's target beside the system's one total, computed by code. */

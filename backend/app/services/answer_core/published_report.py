@@ -181,6 +181,10 @@ def _engine_filters(ref: str, cond: dict) -> list[dict]:
     raise _refuse("filter_unsupported", "Bộ lọc này không áp được trên báo cáo đã công khai.", field=ref)
 
 
+#: re-plans a turn may make after the engine refused a chart under the link's locks
+MAX_UNSERVABLE = 3
+
+
 class PublishedReportScope:
     """The Answer Core's scope for one public link's viewer (see module docstring)."""
 
@@ -194,6 +198,9 @@ class PublishedReportScope:
         self._charts: dict[int, _Chart] = {}
         self._entries: Optional[list] = None
         self._reads = 0
+        #: charts the engine refused under the link's locks this turn (a tile the page
+        #: cannot show either): no longer offered to the planner (`mark_unservable`)
+        self._unservable: set[int] = set()
         #: the publisher's guide (`publisher_guide.PublisherGuide`), set before the catalog is built
         self.guide = None
 
@@ -201,7 +208,16 @@ class PublishedReportScope:
     def catalog(self) -> list:
         if self._entries is None:
             self._entries = self._build_catalog()
-        return self._entries
+        return [e for e in self._entries if e.explore_id not in self._unservable]
+
+    def mark_unservable(self, explore_id: int) -> bool:
+        """The engine could not apply a lock of this link to this chart: the page cannot
+        show it under that lock, so the planner is not offered it again this turn. At most
+        MAX_UNSERVABLE re-plans a turn (each one planner call), only while another chart remains."""
+        if len(self._unservable) >= MAX_UNSERVABLE or len(self.catalog()) < 2:
+            return False
+        self._unservable.add(int(explore_id))
+        return True
 
     def _build_catalog(self) -> list:
         from app.models.dataset import DatasetTable
@@ -275,7 +291,8 @@ class PublishedReportScope:
                     words = tuple(dict.fromkeys([*words, metric_words]))[:12]
                 if glossary.get(ref):
                     words = tuple(dict.fromkeys([*glossary[ref], *words]))[:16]
-                cf.append(CatalogField(ref, "measure", agg, str(m.get("label") or ref), desc, words))
+                cf.append(CatalogField(ref, "measure", agg, str(m.get("label") or ref), desc, words,
+                                       vocab.measure_format(dataset_id, ref)))
                 measures[ref] = agg
             if not measures:
                 continue
@@ -495,7 +512,16 @@ class PublishedReportScope:
             "filters_dropped": m.get("filters_not_applied") or [], "rows_returned": m.get("rows_returned"),
             "duration_ms": m.get("duration_ms"), "freshness": m.get("data_as_of") or "live",
             "regrouped": bool(m.get("regrouped")),
+            # where the page draws it (a report's binding ids; a dashboard has none:
+            # its tiles are found by chart)
+            **({"anchors": list(self.anchors(m.get("chart_id")))} if self.anchors(m.get("chart_id")) else {}),
         }
+
+    def anchors(self, chart_id: Any) -> list:
+        try:
+            return list(((getattr(self.ctx, "chart_meta", None) or {}).get(int(chart_id)) or {}).get("anchors") or [])
+        except (TypeError, ValueError):
+            return []
 
 
 def _terms(text: str) -> set[str]:
@@ -613,6 +639,14 @@ class _Vocabulary:
 
         defn, _ = self._defn(dataset_id, ref, "dimension")
         return str(defn.get("type") or "string"), str(defn.get("description") or "")[:200], _synonyms(defn)
+
+    def measure_format(self, dataset_id, ref: str) -> str:
+        from app.services.data_core.catalog import format_kind
+
+        try:
+            return format_kind(self._defn(dataset_id, ref, "measure")[0])
+        except (AttributeError, TypeError):  # a view without measures: no format, a plain number
+            return ""
 
     def measure(self, dataset_id, ref: str, chart_agg: Any) -> tuple[str, str, tuple]:
         from app.services.data_core.catalog import _synonyms

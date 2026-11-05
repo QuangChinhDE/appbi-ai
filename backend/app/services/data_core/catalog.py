@@ -21,6 +21,12 @@ BOUNDED = frozenset({"postgresql", "mysql", "bigquery"})
 _TIME_TYPES = frozenset({"date", "time", "datetime", "timestamp"})
 
 
+def format_kind(defn: Any) -> str:
+    """A semantic measure's number format kind ("percent", "currency", ...) or ""."""
+    fmt = defn.get("format") if isinstance(defn, dict) else None
+    return str(fmt.get("kind") or "").lower() if isinstance(fmt, dict) else ""
+
+
 @dataclass
 class CatalogField:
     ref: str              # view.field — what GQS takes
@@ -33,6 +39,9 @@ class CatalogField:
     #: Business words people use for this field (semantic definition key
     #: `synonyms`), e.g. "nhóm sản phẩm" for a category column.
     synonyms: tuple[str, ...] = ()
+    #: the semantic model's number format kind of a measure ("percent": the value is a
+    #: ratio, shown x100 - the platform convention every tile follows); "" = plain
+    number_format: str = ""
 
     def as_prompt(self) -> dict:
         out = {"ref": self.ref, "type": self.type, "label": self.label}
@@ -197,7 +206,8 @@ def discover(authz: Any, *, limit: int = 40) -> list[CatalogExplore]:
                 if isinstance(m, dict) and m.get("name") and norm(m["name"]) not in ex_measures:
                     gov = aliases.get(f"{v.name}.{m['name']}") or aliases.get(str(m["name"])) or ()
                     fields.append(CatalogField(f"{v.name}.{m['name']}", "measure", str(m.get("type") or "sum"),
-                                               _label(m), str(m.get("description") or "")[:200], vocab(m, gov)))
+                                               _label(m), str(m.get("description") or "")[:200], vocab(m, gov),
+                                               format_kind(m)))
         if not any(f.kind == "measure" for f in fields):
             continue
         out.append(CatalogExplore(

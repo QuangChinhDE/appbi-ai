@@ -247,16 +247,30 @@ def ask(db, user, question: str, deps: Optional[CoreDeps], *, previous: Optional
         result = main_read(p)
     except GovernedRefusal as refusal:
         steps.append({"step": "governed_query", "detail": f"Từ chối: {refusal.code}"})
-        return {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
-                "message": refusal.message_vi, "detail": _safe_detail(refusal), "plan": p.as_dict(),
-                "consent_available": consent_enabled and refusal.code == "filter_would_drop"}
+        refused = {"status": "refused", "turn_id": turn_id, "steps": steps, "code": refusal.code,
+                   "message": refusal.message_vi, "detail": _safe_detail(refusal), "plan": p.as_dict(),
+                   "consent_available": consent_enabled and refusal.code == "filter_would_drop"}
+        mark = getattr(scope, "mark_unservable", None)
+        if (refusal.code == "filter_unreachable" and mark is not None and consented_plan is None
+                and value_choice is None and not choice_token and mark(p.explore.explore_id)):
+            # A public link: the planner chose a chart its locks cannot reach (its tile
+            # is refused on the page too) while another published chart may answer.
+            # Plan once more without it; nothing better found -> this refusal stands.
+            again = ask(db, user, question, deps, previous=previous, turn_id=turn_id,
+                        ceiling_dataset_ids=ceiling_dataset_ids, dataset_id=dataset_id,
+                        on_step=on_step, should_stop=should_stop, scope=scope)
+            if again.get("status") in ("answered", "clarify"):
+                return again
+        return refused
     evidence = scope.evidence(p, result)
     steps.append({"step": "governed_query",
                   "detail": f"{evidence.get('rows_returned')} dòng · {evidence.get('duration_ms')} ms",
                   "query_id": evidence.get("query_id")})
 
     labels = {f.ref: f.label for f in p.explore.fields}
-    columns = [{"name": c.name, "ref": c.ref, "role": c.role, "label": labels.get(c.ref or "", c.name)}
+    formats = {f.ref: f.number_format for f in p.explore.fields if getattr(f, "number_format", "")}
+    columns = [{"name": c.name, "ref": c.ref, "role": c.role, "label": labels.get(c.ref or "", c.name),
+                **({"format": formats[c.ref]} if c.role == "measure" and c.ref in formats else {})}
                for c in result.columns]
     rows = [{c["name"]: _jsonable(r.get(c["name"])) for c in columns} for r in result.rows]
     measure_cols = [c["name"] for c in columns if c["role"] == "measure"]
