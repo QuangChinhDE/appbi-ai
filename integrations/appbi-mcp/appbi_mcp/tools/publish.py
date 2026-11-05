@@ -14,6 +14,7 @@ from ..state import canonical_json, sha256_hex
 from .dashboard import run_dashboard_plan
 from .dashboard_edit import run_dashboard_edit
 from .dataset import run_dataset_plan
+from .governance import GOVERNANCE_KINDS, run_governance
 from .model_edit import run_model_edit
 from .discovery import model_digest
 from .html_import import run_dashboard_html_plan
@@ -23,7 +24,8 @@ from .vibe import VIBE_KINDS, run_vibe_plan, run_vibe_publish, vibe_publish_is_s
 log = logging.getLogger("appbi_mcp.tools.publish")
 
 RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan, "dashboard_html": run_dashboard_html_plan,
-           "dashboard_edit": run_dashboard_edit, "model_edit": run_model_edit, **{k: run_vibe_plan for k in VIBE_KINDS}}
+           "dashboard_edit": run_dashboard_edit, "model_edit": run_model_edit,
+           **{k: run_governance for k in GOVERNANCE_KINDS}, **{k: run_vibe_plan for k in VIBE_KINDS}}
 PUBLISH_KINDS = ("dataset_publish", "dashboard_publish", "vibe_publish")
 PUBLISH_TERMINAL = {"published", "sync_failed"}
 

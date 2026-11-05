@@ -44,8 +44,11 @@ def test_delete_and_patch_are_only_draft_edits():
     # edits (remove a tile in the caller's draft, edit a widget in the caller's draft),
     # and each is refused without draft=true, which would write the live row.
     risky = [r for r in ac.ALLOWED_ROUTES if r[0] in ("DELETE", "PATCH")]
-    assert sorted(risky) == [("DELETE", "/dashboards/{id}/charts/{id}"), ("PATCH", "/dashboards/{id}/widgets/{id}")]
+    assert sorted(risky) == [("DELETE", "/dashboards/{id}/charts/{id}"), ("DELETE", "/shares/{seg}/{id}/entries/{id}"),
+                             ("PATCH", "/dashboards/{id}/widgets/{id}")]
     for method, template in risky:
+        if template.startswith("/shares/"):
+            continue  # revoking one share entry: its own browser approval (tools/governance.py)
         assert ac._REQUIRED_PARAMS[(method, template)] == {"draft": "true"}
 
 

@@ -77,6 +77,12 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/charts/{id}/data"),
     ("POST", "/charts/dry-run-create"),
     ("POST", "/charts/"),
+    ("GET", "/charts/{id}/usage"),
+    ("PUT", "/charts/{id}"),                              # a SHARED chart: approved with its usage listed
+    # sharing (owner/admin decided by AppBI) -- each grant/revoke separately approved
+    ("GET", "/shares/{seg}/{id}"),
+    ("POST", "/shares/{seg}/{id}"),
+    ("DELETE", "/shares/{seg}/{id}/entries/{id}"),
     # dashboards — reads, draft writes, publish
     ("GET", "/dashboards/"),
     ("GET", "/dashboards/{id}"),
@@ -128,7 +134,6 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/auth/personal-access-tokens/"),
     ("POST", "/datasources/query"),
     ("POST", "/datasources/validate-sql"),
-    ("PUT", "/charts/{id}"),
     ("DELETE", "/charts/{id}"),
     ("DELETE", "/datasets/{id}"),
     ("POST", "/datasets/{id}/model/joins/batch"),
@@ -195,6 +200,12 @@ def _guard_draft_filters(body: Any) -> None:
         raise GuardViolation("draft-filters writes must carry base_rev")
     if body.get("remove_tile_ids"):
         raise GuardViolation("this service never removes tiles")
+
+
+def _guard_share(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("permission") not in ("view", "edit", "full") \
+            or (bool(body.get("email")) == bool(body.get("team_id"))) or set(body) - {"permission", "email", "team_id"}:
+        raise GuardViolation("a share names one person (email) or one team and a level")
 
 
 def _guard_table_update(body: Any) -> None:
@@ -381,6 +392,7 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
     ("PUT", "/dashboards/{id}/draft-layout"): _guard_draft_layout,
     ("PUT", "/datasets/{id}/tables/{id}"): _guard_table_update,
+    ("POST", "/shares/{seg}/{id}"): _guard_share,
     ("POST", "/datasets/{id}/tables/{id}/preview"): _guard_table_preview,
     ("POST", "/dashboards/import-html/preview-calculated"): _guard_preview_calculated,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
