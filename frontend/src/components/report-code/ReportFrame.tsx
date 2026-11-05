@@ -61,6 +61,12 @@ const PARALLEL = 8;
  *  and caller): an unsaved-code preview re-renders the document, not the data. */
 const DTO_TTL_MS = 60_000;
 
+/** How long a report document may take to say "ready" before the frame says it failed. */
+const FRAME_READY_TIMEOUT_MS = 15_000;
+/** When each document started waiting for "ready" - kept OUTSIDE the component, so a host
+ *  that re-mounts the frame (a parent re-render) does not restart the wait forever. */
+const waitingSince = new Map<string, number>();
+
 export function ReportFrame({
   src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
   provenance = false, focus = null, selectedRegion = null,
@@ -71,9 +77,15 @@ export function ReportFrame({
   const loadsRef = useRef(0);
   const stateRef = useRef<FilterState>({});
   const seqRef = useRef<Record<string, number>>({});
-  const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance });
-  propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance };
+  const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src });
+  propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src };
   const [blocked, setBlocked] = useState(false);
+  // The document never said "ready": unreachable origin (a report origin pointing at the
+  // viewer's own machine), a proxy that does not route it, a crash. Said, not a blank box.
+  const [stalled, setStalled] = useState(false);
+  const readyRef = useRef(false);
+  const [attempt, setAttempt] = useState(0);
+  const attemptRef = useRef(0);
   // binding|state -> {at, dto | in-flight promise}; dropped when the fetcher, the bindings or
   // the filters change (a different revision, caller or data contract is never served from it).
   const valuesCacheRef = useRef<{ owner: unknown; map: Map<string, { at: number; p: Promise<unknown[]> }> }>({ owner: null, map: new Map() });
@@ -123,6 +135,9 @@ export function ReportFrame({
     if (!msg) return;
     switch (msg.type) {
       case 'ready':
+        readyRef.current = true;
+        waitingSince.delete(`${propsRef.current.src}#${attemptRef.current}`);
+        setStalled(false);
         p.onGuard?.({ guard: msg.guard });
         pushContext();
         if (p.provenance) postMsg({ type: 'provenance', on: true });
@@ -228,7 +243,7 @@ export function ReportFrame({
     document.body.appendChild(form);
     form.submit();
     form.remove();
-  }, [src, postKey, sandbox]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [src, postKey, sandbox, attempt, stalled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { postMsg({ type: 'selectMode', on: selectMode }); }, [selectMode, postMsg]);
   useEffect(() => { postMsg({ type: 'provenance', on: provenance }); }, [provenance, postMsg]);
@@ -245,10 +260,32 @@ export function ReportFrame({
     void loadAll();
   }, [bindingKey, filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    readyRef.current = false;
+    attemptRef.current = attempt;
+    const key = `${src}#${attempt}`;
+    if (!waitingSince.has(key)) waitingSince.set(key, Date.now());
+    const left = Math.max(0, FRAME_READY_TIMEOUT_MS - (Date.now() - (waitingSince.get(key) || Date.now())));
+    const timer = setTimeout(() => { if (!readyRef.current) setStalled(true); }, left);
+    return () => clearTimeout(timer);
+  }, [src, attempt]);
+
   if (!sandbox) {
     return (
       <div className={`flex items-center justify-center bg-surface-1 p-6 text-center text-sm text-red-600 ${className || ''}`} data-testid="report-frame-refused">
         Không mở báo cáo: tài liệu báo cáo phải được phục vụ từ một origin riêng, khác origin của AppBI.
+      </div>
+    );
+  }
+  if (stalled) {
+    let where = src;
+    try { where = new URL(src, appOrigin).origin; } catch { /* relative */ }
+    return (
+      <div className={`flex flex-col items-center justify-center gap-2 bg-surface-1 p-6 text-center text-sm text-text-secondary ${className || ''}`} data-testid="report-frame-stalled" role="alert">
+        <div className="font-medium text-red-600">Không tải được khung báo cáo.</div>
+        <div className="max-w-md text-xs">Tài liệu báo cáo được phục vụ từ <code className="rounded bg-surface-2 px-1">{where}</code> nhưng không phản hồi. Nếu địa chỉ này là 127.0.0.1/localhost trên máy chủ, cần cấu hình REPORT_ARTIFACT_ORIGIN.</div>
+        <button type="button" className="mt-1 rounded-md border border-stroke-strong px-3 py-1 text-xs hover:bg-surface-2" data-testid="report-frame-retry"
+          onClick={() => { readyRef.current = false; loadsRef.current = 0; portRef.current?.close(); portRef.current = null; setStalled(false); setAttempt((n) => n + 1); }}>Thử lại</button>
       </div>
     );
   }
@@ -261,7 +298,7 @@ export function ReportFrame({
   }
   return (
     <iframe
-      key={src + (post ? ':post' : '')}
+      key={src + (post ? ':post' : '') + ':' + attempt}
       ref={frameRef}
       name={`rac-frame-${frameName}`}
       src={post ? undefined : src}
