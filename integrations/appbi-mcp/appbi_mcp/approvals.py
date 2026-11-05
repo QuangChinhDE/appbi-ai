@@ -119,12 +119,16 @@ def build_approval_routes(ctx: AppContext) -> list[Route]:
         from .ratelimit import client_ip
 
         ip = client_ip({k.lower(): v for k, v in request.headers.items()}, request.client.host if request.client else None)
-        allowed, _ = ctx.auth_limiter.allow(f"approve:{ip}")
-        if not allowed:
-            return message("Too many requests", "Wait a minute and try again.", status=429, tone="err")
         plan_id = request.path_params["plan_id"]
         session = request.cookies.get(SESSION_COOKIE, "")
         user_id = browser_session_user(ctx, request)
+        # Signed-in approvers are limited per USER (people behind one NAT/proxy do not
+        # share a bucket); anything without a valid session stays limited per IP.
+        allowed, retry = ctx.auth_limiter.allow(f"approve:user:{user_id}" if user_id else f"approve:ip:{ip}")
+        if not allowed:
+            resp = message("Too many requests", "Wait a moment and try again.", status=429, tone="err")
+            resp.headers["Retry-After"] = str(max(1, int(retry + 0.999)))
+            return resp
         if not user_id:
             if request.method == "GET":
                 return start_verify_flow(ctx, f"/mcp-oauth/approve/{plan_id}")

@@ -160,14 +160,25 @@ class Person:
             except Exception:
                 self.events.append(f"after consent: {page.url} :: {(await page.inner_text('body'))[:300]}")
                 if attempt == 2 or self.consent_choice == "deny" or "/connect/mcp/" not in page.url:
-                    raise
+                    body = ""
+                    try:
+                        body = (await page.inner_text("body"))[:600]
+                    except Exception:  # noqa: BLE001 - diagnostics only
+                        pass
+                    raise AssertionError(f"OAuth consent did not reach the client callback; at {page.url}: {body!r}; events={self.events[-4:]}")
                 await page.wait_for_timeout(62_000)
                 await page.get_by_role("button", name="Allow").click()
         await page.close()
 
     async def approve(self, approval_url: str, decision: str = "Approve") -> str:
         page = await self.browser_context.new_page()
-        await page.goto(approval_url)
+        for _ in range(3):
+            resp = await page.goto(approval_url)
+            if resp is None or resp.status != 429:
+                break
+            # The approval pages are rate-limited per signed-in user; a person who
+            # approves faster than that waits as the page says (Retry-After).
+            await page.wait_for_timeout(1000 * (int(resp.headers.get("retry-after") or "5") + 1))
         await page.get_by_role("button", name=decision).click()
         await page.wait_for_load_state("domcontentloaded")
         heading = await page.locator("h1").first.inner_text()
