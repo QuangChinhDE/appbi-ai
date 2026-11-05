@@ -16,5 +16,6 @@ export default function CodeReportPage() {
   // `?revision=N` opens the studio on that saved revision (a link from a review, e.g. an
   // MCP approval page): the same renderer and data path as picking it under Versions.
   const rev = Number(search?.get('revision') || '');
-  return <ReportStudio reportId={Number(id)} initialRevision={Number.isInteger(rev) && rev > 0 ? rev : null} />;
+  return <ReportStudio reportId={Number(id)} initialRevision={Number.isInteger(rev) && rev > 0 ? rev : null}
+    proposalId={(search?.get('proposal') || '').replace(/[^a-f0-9]/g, '') || null} />;
 }

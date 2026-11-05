@@ -31,6 +31,8 @@ class Studio:
         self.job: dict[str, Any] | None = None
         self.calls: list[tuple[str, str, Any]] = []
         self.ai_fails = False
+        self.proposal: dict[str, Any] | None = None
+        self._pid = 0
         self._add("<h1>v1</h1>", "", "", "manual")
 
     def _add(self, html: str, css: str, js: str, source: str) -> dict[str, Any]:
@@ -41,6 +43,11 @@ class Studio:
         self.revs.append(rev)
         self.draft = n
         return rev
+
+    def _stage(self, html: str, css: str, js: str, notes: list[str] | None = None) -> None:
+        self._pid += 1
+        self.proposal = {"proposal_id": f"p{self._pid:08d}", "base_number": self.draft, "html": html, "css": css, "js": js,
+                         "notes": notes or []}
 
     def _detail(self) -> dict[str, Any]:
         return {"id": 7, "name": "Sales vibe", "dataset_id": 3, "owner_id": "u1", "draft_number": self.draft,
@@ -67,11 +74,22 @@ class Studio:
             return dict(self.revs[int(path.rsplit("/", 1)[1]) - 1], is_draft=False, is_published=False)
         if template == "/report-artifacts/{id}/revisions":
             return [{"number": r["number"]} for r in reversed(self.revs)]
-        if template == "/report-artifacts/{id}/source":
+        if template == "/report-artifacts/{id}/proposal":
+            if method == "GET":
+                if not self.proposal:
+                    raise AppbiError(404, "not_found", "none")
+                return dict(self.proposal)
             if body["base_number"] != self.draft:
                 raise AppbiError(409, "conflict", "Bản nháp đã đổi")
-            rev = self._add(body["html"], body["css"], body["js"], "manual")
-            return {"revision": rev, "warnings": []}
+            self._stage(body["html"], body["css"], body["js"])
+            return {"proposal_id": self.proposal["proposal_id"], "warnings": []}
+        if template == "/report-artifacts/{id}/proposal/apply":
+            if not self.proposal or self.proposal["proposal_id"] != body["proposal_id"]:
+                raise AppbiError(410, "not_found", "Đề xuất không còn")
+            if body["base_number"] != self.draft or self.proposal["base_number"] != self.draft:
+                raise AppbiError(409, "conflict", "Bản nháp đã đổi")
+            p, self.proposal = self.proposal, None
+            return {"revision": self._add(p["html"], p["css"], p["js"], "ai"), "warnings": []}
         if template == "/report-artifacts/{id}/ai-edit":
             if self.job and self.job.get("state") == "running":
                 raise AppbiError(409, "conflict", "busy")
@@ -80,7 +98,7 @@ class Studio:
             else:
                 self.job = {"state": "done", "notes": ["changed kpis"]}
                 base = self.revs[self.draft - 1]
-                self._add(base["html"] + "<p>ai</p>", base["css"], base["js"], "ai_edit")
+                self._stage(base["html"] + "<p>ai</p>", base["css"], base["js"], notes=["changed kpis"])
             return {"job": self.job}
         if template == "/report-artifacts/{id}/job":
             return {"job": self.job, "draft_number": self.draft}
@@ -138,10 +156,12 @@ async def test_planning_writes_nothing_and_shows_a_real_diff(env_for):
     env = env_for(studio)
     out = await vibe.plan_vibe_source_edit(env, 7, html="<h1>v2</h1>")
     assert out["status"] == "awaiting_approval" and out["approval_url"].endswith(out["plan_id"])
-    assert studio.writes() == []
+    # Only the proposal is staged (no revision): the preview renders exactly it.
+    assert [c[1] for c in studio.writes()] == ["/report-artifacts/7/proposal"] and len(studio.revs) == 1
+    assert out["preview_url"] == "http://appbi/dashboards/code/7?proposal=p00000001"
     page = render_summary(env.plans.get(out["plan_id"], "u1").summary)
     assert "<span class=del>-&lt;h1&gt;v1&lt;/h1&gt;</span>" in page and "<span class=add>+&lt;h1&gt;v2&lt;/h1&gt;</span>" in page
-    assert "http://appbi/dashboards/code/7?revision=1" in page  # the real Studio renderer link
+    assert "http://appbi/dashboards/code/7?proposal=p00000001" in page  # the real Studio renderer, before saving
 
 
 async def test_source_edit_creates_a_new_draft_revision_and_verifies(env_for):
@@ -153,8 +173,8 @@ async def test_source_edit_creates_a_new_draft_revision_and_verifies(env_for):
     assert studio.published is None  # nothing went live
     assert set(result["diff"]["changed"]) == {"html", "css"}
     assert result["preview_url"] == "http://appbi/dashboards/code/7?revision=2"
-    puts = [c for c in studio.writes() if c[0] == "PUT"]
-    assert len(puts) == 1 and puts[0][2]["base_number"] == 1
+    applies = [c for c in studio.writes() if c[1].endswith("/apply")]
+    assert len(applies) == 1 and applies[0][2] == {"proposal_id": "p00000001", "base_number": 1}
 
 
 async def test_a_concurrent_save_makes_the_plan_stale_and_overwrites_nothing(env_for):
@@ -165,7 +185,7 @@ async def test_a_concurrent_save_makes_the_plan_stale_and_overwrites_nothing(env
     with pytest.raises(OperationError) as err:
         await _execute(env, out["plan_id"])
     assert err.value.status == "stale_plan"
-    assert studio.revs[-1]["html"] == "<h1>someone else</h1>" and not [c for c in studio.writes() if c[0] == "PUT"]
+    assert studio.revs[-1]["html"] == "<h1>someone else</h1>" and not [c for c in studio.writes() if c[1].endswith("/apply")]
 
 
 async def test_appbi_base_number_conflict_is_reported_as_conflict(env_for):
@@ -176,7 +196,7 @@ async def test_appbi_base_number_conflict_is_reported_as_conflict(env_for):
     original = studio._call
 
     async def racing(method: str, path: str, body: Any = None) -> Any:
-        if method == "PUT":  # the co-author wins the race between our check and our save
+        if path.endswith("/apply"):  # the co-author wins the race between our check and our save
             studio._add("<h1>race</h1>", "", "", "manual")
         return await original(method, path, body)
 
@@ -193,11 +213,36 @@ async def test_ai_edit_runs_once_and_is_not_repeated_on_resume(env_for):
     env = env_for(studio)
     out = await vibe.plan_vibe_ai_edit(env, 7, "Make the KPIs bigger", region="kpis")
     first = await _execute(env, out["plan_id"])
-    assert first["status"] == "draft_ready" and first["draft_number"] == 2
+    # Phase 1 saves NOTHING: the AI result is a proposal with its own preview + approval.
+    assert first["status"] == "proposal_ready" and len(studio.revs) == 1
+    assert first["preview_url"] == "http://appbi/dashboards/code/7?proposal=p00000001"
     plan = env.plans.get(out["plan_id"], "u1")
     again = await vibe.run_vibe_plan(env, Run(plans=env.plans, plan=plan, deadline=time.time() + 60))
-    assert again["draft_number"] == 2
+    assert again["apply_plan_id"] == first["apply_plan_id"]  # resume: no second follow-up plan
     assert len([c for c in studio.writes() if c[1].endswith("/ai-edit")]) == 1  # one AI run, one cost
+    page = render_summary(env.plans.get(first["apply_plan_id"], "u1").summary)
+    assert "&lt;p&gt;ai&lt;/p&gt;</span>" in page and "?proposal=p00000001" in page
+    applied = await _execute(env, first["apply_plan_id"])
+    assert applied["status"] == "draft_ready" and applied["draft_number"] == 2 and studio.revs[1]["html"].endswith("<p>ai</p>")
+
+
+async def test_rejected_ai_proposal_saves_nothing(env_for):
+    studio = Studio()
+    env = env_for(studio)
+    first = await _execute(env, (await vibe.plan_vibe_ai_edit(env, 7, "Make it red"))["plan_id"])
+    apply_plan = env.plans.get(first["apply_plan_id"], "u1")
+    assert env.plans.reject(apply_plan, "u1")
+    assert env.plans.approval_state(apply_plan) == "rejected" and len(studio.revs) == 1
+
+
+async def test_a_replaced_proposal_is_never_applied(env_for):
+    studio = Studio()
+    env = env_for(studio)
+    out = await vibe.plan_vibe_source_edit(env, 7, html="<h1>approved</h1>")
+    studio._stage("<h1>something else</h1>", "", "")  # another proposal replaces it before approval
+    with pytest.raises(OperationError) as err:
+        await _execute(env, out["plan_id"])
+    assert err.value.status == "stale_plan" and len(studio.revs) == 1
 
 
 async def test_ai_failure_is_blocked_with_appbi_reason(env_for):
@@ -284,12 +329,16 @@ async def test_ai_create_spends_one_run_and_lands_as_draft(env_for):
 
 def test_guards_refuse_unsafe_bodies():
     with pytest.raises(GuardViolation):
-        BODY_GUARDS[("PUT", "/report-artifacts/{id}/source")]({"html": "x"})
+        BODY_GUARDS[("POST", "/report-artifacts/{id}/proposal")]({"html": "x"})
+    with pytest.raises(GuardViolation):
+        BODY_GUARDS[("POST", "/report-artifacts/{id}/ai-edit")]({"instruction": "x", "propose": False})
+    with pytest.raises(GuardViolation):
+        BODY_GUARDS[("POST", "/report-artifacts/{id}/ai-edit")]({"instruction": "x", "propose": True, "allow_data": True})
     with pytest.raises(GuardViolation):
         BODY_GUARDS[("POST", "/report-artifacts/{id}/publish")]({})
     with pytest.raises(GuardViolation):
         BODY_GUARDS[("POST", "/report-artifacts")]({"dataset_id": 1, "reference_html": "<script>"})
-    for method, path in (("DELETE", "/report-artifacts/7"), ("POST", "/report-artifacts/7/public-links"),
+    for method, path in (("DELETE", "/report-artifacts/7"), ("PUT", "/report-artifacts/7/source"), ("POST", "/report-artifacts/7/public-links"),
                          ("POST", "/report-artifacts/7/document-ticket")):
         assert match_route(method, path) is None
 

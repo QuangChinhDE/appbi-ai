@@ -93,7 +93,9 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/report-artifacts/{id}/revisions/{id}"),
     ("POST", "/report-artifacts"),
     ("POST", "/report-artifacts/blank"),
-    ("PUT", "/report-artifacts/{id}/source"),
+    ("GET", "/report-artifacts/{id}/proposal"),
+    ("POST", "/report-artifacts/{id}/proposal"),
+    ("POST", "/report-artifacts/{id}/proposal/apply"),
     ("POST", "/report-artifacts/{id}/ai-edit"),
     ("POST", "/report-artifacts/{id}/revisions/{id}/restore"),
     ("POST", "/report-artifacts/{id}/publish"),
@@ -129,6 +131,8 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/import-html/fix-chart-plan"),
     # Vibe: never deletes, never touches public links, never pastes foreign code.
     ("DELETE", "/report-artifacts/{id}"),
+    # Saves code straight into a revision with no previewable proposal first.
+    ("PUT", "/report-artifacts/{id}/source"),
     ("POST", "/report-artifacts/{id}/public-links"),
     ("PATCH", "/report-artifacts/{id}/public-links/{id}"),
     ("DELETE", "/report-artifacts/{id}/public-links/{id}"),
@@ -221,9 +225,22 @@ def _guard_vibe_create(body: Any) -> None:
         raise GuardViolation("Vibe reports are created from a prompt only (no uploaded reference)")
 
 
-def _guard_vibe_source(body: Any) -> None:
+def _guard_vibe_proposal(body: Any) -> None:
     if not isinstance(body, dict) or not isinstance(body.get("base_number"), int):
-        raise GuardViolation("Vibe source saves must quote base_number (the draft they were planned on)")
+        raise GuardViolation("Vibe proposals must quote base_number (the draft they were planned on)")
+
+
+def _guard_vibe_apply(body: Any) -> None:
+    _guard_vibe_proposal(body)
+    if not str(body.get("proposal_id") or ""):
+        raise GuardViolation("apply names the exact previewed proposal_id")
+
+
+def _guard_vibe_ai_edit(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("propose") is not True or body.get("allow_data"):
+        raise GuardViolation("AI edits run as proposals (propose=true, no new data) so they are previewed before saving")
+    if body.get("reference_image"):
+        raise GuardViolation("AI edits take text instructions only")
 
 
 def _guard_vibe_publish(body: Any) -> None:
@@ -333,7 +350,9 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/datasets/"): _guard_dataset_create,
     ("POST", "/datasets/{id}/tables"): _guard_table_add,
     ("POST", "/report-artifacts"): _guard_vibe_create,
-    ("PUT", "/report-artifacts/{id}/source"): _guard_vibe_source,
+    ("POST", "/report-artifacts/{id}/proposal"): _guard_vibe_proposal,
+    ("POST", "/report-artifacts/{id}/proposal/apply"): _guard_vibe_apply,
+    ("POST", "/report-artifacts/{id}/ai-edit"): _guard_vibe_ai_edit,
     ("POST", "/report-artifacts/{id}/publish"): _guard_vibe_publish,
 }
 

@@ -55,6 +55,21 @@ class EditBody(BaseModel):
     reference_image: Optional[str] = Field(None, max_length=MAX_IMAGE_CHARS)
     # The AI may add governed data (new bindings/filters) only when the author allows it.
     allow_data: bool = False
+    #: return the AI's result as a PROPOSAL (no revision) to preview, then apply or discard
+    propose: bool = False
+
+
+class ProposalBody(BaseModel):
+    html: str = Field("", max_length=D.MAX_HTML)
+    css: str = Field("", max_length=D.MAX_CSS)
+    js: str = Field("", max_length=D.MAX_JS)
+    base_number: int
+    note: Optional[str] = Field(None, max_length=200)
+
+
+class ApplyProposalBody(BaseModel):
+    proposal_id: str = Field(..., min_length=8, max_length=64)
+    base_number: int
 
 
 class PublicLinkPreviewRequest(BaseModel):
@@ -452,6 +467,9 @@ def ai_edit(artifact_id: int, body: EditBody, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail=f"Không tìm thấy vùng '{body.region}'.")
     image, instruction, region, user_id, base_id = _image(body.reference_image), body.instruction, body.region, current_user.id, draft.id
     allow_data = body.allow_data
+    if body.propose and allow_data:
+        # New data creates saved charts; a proposal must leave nothing behind until applied.
+        raise HTTPException(status_code=400, detail="Đề xuất (xem trước) không thể thêm dữ liệu mới — tắt 'cho phép thêm dữ liệu'.")
 
     def run(job_db, job_art, progress):
         rev = L.get_revision(job_db, job_art, base_id)
@@ -462,10 +480,74 @@ def ai_edit(artifact_id: int, body: EditBody, db: Session = Depends(get_db),
         return out
 
     try:
-        job = L.start_job(db, art, kind="edit", user_id=current_user.id, run=run)
+        job = L.start_job(db, art, kind="edit", user_id=current_user.id, run=run, propose=body.propose, base_revision_id=base_id)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"job": job}
+
+
+# ── Proposals: code to review and preview BEFORE it becomes a revision ────────────
+# An AI edit with propose=true, or code staged here, is kept in the report's job slot
+# (validated, never a revision, never seen by readers). The studio renders it live with
+# real data (?proposal=<id>); apply makes it a draft revision only if the draft is still
+# the one it was made on.
+
+@router.post("/{artifact_id}/proposal", status_code=201)
+def stage_proposal(artifact_id: int, body: ProposalBody, db: Session = Depends(get_db),
+                   current_user: User = Depends(require_permission(MODULE, "edit"))):
+    art = _load(db, artifact_id, current_user, "edit")
+    draft = _draft(db, art)
+    if body.base_number != draft.number:
+        raise HTTPException(status_code=409, detail=f"Bản nháp đã đổi (phiên bản {draft.number}) — tải lại trước khi đề xuất.")
+    try:
+        job = L.stage_proposal(db, art, user_id=current_user.id, base_revision_id=draft.id, html=body.html, css=body.css,
+                               js=body.js, bindings=list(draft.bindings or []), filters=list(draft.filters or []),
+                               source="manual", note=(body.note or "Sửa mã nguồn (đề xuất)"))
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if "tác vụ AI" in str(exc) else 400, detail=str(exc))
+    db.commit()
+    return {"proposal_id": job["id"], "warnings": job.get("notes") or []}
+
+
+@router.get("/{artifact_id}/proposal")
+def get_proposal(artifact_id: int, db: Session = Depends(get_db),
+                 current_user: User = Depends(require_permission(MODULE, "edit"))):
+    art = _load(db, artifact_id, current_user, "edit")
+    job = art.job or {}
+    if not job.get("propose") or not job.get("proposal") or job.get("state") != "done":
+        raise HTTPException(status_code=404, detail="Không có đề xuất nào đang chờ.")
+    base = db.get(ReportArtifactRevision, job.get("base_revision_id")) if job.get("base_revision_id") else None
+    p = job["proposal"]
+    return {"proposal_id": job["id"], "kind": job.get("kind"), "base_number": base.number if base else None,
+            "html": p["html"], "css": p["css"], "js": p["js"],
+            "bindings": [{k: b.get(k) for k in ("id", "chart_id", "title", "kind")} for b in p.get("bindings") or []],
+            "filters": [{k: f.get(k) for k in ("key", "label", "kind", "fieldKey")} for f in p.get("filters") or []],
+            "regions": D.list_regions(p["html"]), "notes": job.get("notes") or [], "summary": job.get("summary"),
+            "note": p.get("note")}
+
+
+@router.post("/{artifact_id}/proposal/apply")
+def apply_proposal(artifact_id: int, body: ApplyProposalBody, db: Session = Depends(get_db),
+                   current_user: User = Depends(require_permission(MODULE, "edit"))):
+    art = _load(db, artifact_id, current_user, "edit")
+    try:
+        rev, warnings = L.apply_proposal(db, art, proposal_id=body.proposal_id, base_number=body.base_number,
+                                         user_id=current_user.id)
+    except L.ProposalStale as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=410 if "không còn" in str(exc) else 400, detail=str(exc))
+    db.commit()
+    return {"revision": L.revision_view(rev, with_source=False), "warnings": warnings}
+
+
+@router.post("/{artifact_id}/proposal/discard")
+def discard_proposal(artifact_id: int, body: ApplyProposalBody, db: Session = Depends(get_db),
+                     current_user: User = Depends(require_permission(MODULE, "edit"))):
+    art = _load(db, artifact_id, current_user, "edit")
+    discarded = L.discard_proposal(art, body.proposal_id)
+    db.commit()
+    return {"discarded": discarded}
 
 
 @router.get("/{artifact_id}/revisions")

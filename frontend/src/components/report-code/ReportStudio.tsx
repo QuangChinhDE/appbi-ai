@@ -32,7 +32,7 @@ type Tab = 'code' | 'data' | 'ai';
 const WIDTH_KEY = 'rac.studio.panelWidth';
 const readWidth = () => { try { const v = Number(window.localStorage.getItem(WIDTH_KEY)); return v >= 300 && v <= 1400 ? v : null; } catch { return null; } };
 
-export function ReportStudio({ reportId, initialRevision = null }: { reportId: number; initialRevision?: number | null }) {
+export function ReportStudio({ reportId, initialRevision = null, proposalId = null }: { reportId: number; initialRevision?: number | null; proposalId?: string | null }) {
   const { t } = useI18n();
   const [detail, setDetail] = useState<ReportDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -87,6 +87,24 @@ export function ReportStudio({ reportId, initialRevision = null }: { reportId: n
   }, [reportId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // `?proposal=<id>`: render code proposed for review (not saved) through the same live
+  // preview as unsaved editor code - real renderer, real data, the viewer's own rights.
+  const [proposal, setProposal] = useState<{ id: string; base: number | null } | null>(null);
+  const [proposalError, setProposalError] = useState<string | null>(null);
+  const loadedOnce = !!detail;
+  useEffect(() => {
+    if (!proposalId || !loadedOnce) return;
+    let alive = true;
+    reportCodeApi.proposal(reportId).then((p) => {
+      if (!alive) return;
+      if (p.proposal_id !== proposalId) { setProposalError('gone'); return; }
+      setLive(false);
+      setPreviewSource({ html: p.html, css: p.css, js: p.js });
+      setProposal({ id: p.proposal_id, base: p.base_number });
+    }).catch(() => { if (alive) setProposalError('gone'); });
+    return () => { alive = false; };
+  }, [proposalId, loadedOnce, reportId]);
 
   // Poll the AI job while it runs; any API worker can answer (state is in the DB).
   useEffect(() => {
@@ -402,6 +420,11 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
           {postFields && (
             <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 shadow-sm ring-1 ring-inset ring-amber-200" data-testid="studio-preview-unsaved">
               {t('reportCode.code.previewUnsavedBadge')}
+            </div>
+          )}
+          {proposalId && (proposal || proposalError) && (
+            <div className="absolute left-1/2 top-12 z-20 -translate-x-1/2 rounded-full bg-sky-100 px-3 py-1 text-xs text-sky-900 shadow" data-testid="studio-preview-proposal">
+              {proposal ? t('reportCode.proposal.viewing', { n: proposal.base ?? '-' }) : t('reportCode.proposal.gone')}
             </div>
           )}
           {previewNumber && (

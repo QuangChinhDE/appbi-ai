@@ -49,6 +49,32 @@ def studio_link(env: Env, report_id: int, number: int | None = None) -> str:
     return f"{base}?revision={number}" if number else base
 
 
+def proposal_link(env: Env, report_id: int, proposal_id: str) -> str:
+    """The proposed (unsaved) code rendered by the real Studio renderer with real data."""
+    return env.link(f"/dashboards/code/{report_id}?proposal={proposal_id}")
+
+
+def _apply_summary(env: Env, d: dict[str, Any], report_id: int, proposal_id: str, diff: dict[str, Any], origin: str,
+                   extra: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    draft = d.get("draft") or {}
+    return {
+        "sections": [
+            {"title": "Report", "items": [{"name": d.get("name"), "id": report_id, "current draft": f"revision {draft.get('number')}",
+                                           "published": d.get("published_number") or "never", "proposed by": origin}]},
+            *(extra or []),
+            {"title": "Preview BEFORE anything is saved (real Report Studio renderer, real data)",
+             "links": [proposal_link(env, report_id, proposal_id), studio_link(env, report_id, draft.get("number"))]},
+            *_diff_section("Proposed change vs current draft", diff),
+            {"title": "What happens if you approve", "items": [
+                "AppBI saves exactly the previewed code as a NEW draft revision; earlier revisions stay restorable.",
+                "Readers keep seeing the published revision until you approve a separate publish.",
+                "If the draft changed after this preview, AppBI refuses and nothing is overwritten.",
+            ]},
+        ],
+        "warnings": [],
+    }
+
+
 def source_diff(before: dict[str, Any] | None, after: dict[str, Any], *, limit: int = MAX_DIFF_LINES) -> dict[str, Any]:
     """A unified diff per part (html/css/js) plus binding/filter changes. Text only."""
     before = before or {}
@@ -229,10 +255,11 @@ async def plan_vibe_source_edit(
     js: Annotated[str, Field(max_length=MAX_SOURCE_CHARS["js"])] = "",
     note: Annotated[str, Field(max_length=200)] = "",
 ) -> dict[str, Any]:
-    """Plan replacing the draft's HTML/CSS/JS (bindings and filters are kept). Saves nothing.
+    """Plan replacing the draft's HTML/CSS/JS (bindings and filters are kept). Saves no revision.
 
-    Send the COMPLETE new source (read the draft with get_vibe_revision first). The
-    approval page shows the exact diff against the current draft.
+    Send the COMPLETE new source (read the draft with get_vibe_revision first). AppBI
+    validates it and holds it as a proposal; the approval page shows the exact diff and
+    a link that renders the proposal in Report Studio with real data before approval.
     """
     d = await _report(env, report_id)
     refusal = _editable(d)
@@ -243,25 +270,19 @@ async def plan_vibe_source_edit(
     diff = source_diff(draft, after)
     if not diff["changed"]:
         return {"status": "nothing_to_change", "message": "The proposed source is identical to the current draft."}
-    summary = {
-        "sections": [
-            {"title": "Report", "items": [{"name": d.get("name"), "id": report_id, "current draft": f"revision {draft.get('number')}",
-                                           "published": d.get("published_number") or "never"}]},
-            {"title": "Current draft (live preview with data)", "links": [studio_link(env, report_id, draft.get("number"))]},
-            *_diff_section("Proposed change", diff),
-            {"title": "What happens", "items": [
-                "AppBI validates the code and saves it as a NEW draft revision; earlier revisions stay restorable.",
-                "Readers keep seeing the published revision until you approve a separate publish.",
-                "If someone saved the draft after this plan, AppBI refuses and nothing is overwritten.",
-            ]},
-        ],
-        "warnings": [],
-    }
-    body = {"report_id": report_id, "base_number": draft.get("number"), "html": html, "css": css, "js": js,
-            "note": note.strip()}
+    # Stage the code in AppBI as a PROPOSAL (validated, never a revision) so the approval
+    # page can link the real renderer to exactly what would be saved.
+    staged = await env.appbi.post(f"/report-artifacts/{report_id}/proposal",
+                                  {"html": html, "css": css, "js": js, "base_number": draft.get("number"), "note": note.strip() or None})
+    summary = _apply_summary(env, d, report_id, staged["proposal_id"], diff, "Claude (code)")
+    summary["warnings"] = [str(w) for w in staged.get("warnings") or []]
+    stored = await env.appbi.get(f"/report-artifacts/{report_id}/proposal")  # AppBI's validated form of the code
+    body = {"report_id": report_id, "base_number": draft.get("number"), "proposal_id": staged["proposal_id"],
+            "content": source_hash(stored)}
     plan = env.plans.create(user_id=env.principal.user_id, grant_id=env.principal.grant_id, kind="vibe_source",
                             body=body, summary=summary, fingerprint=_fingerprint(d))
-    return _plan_out(env, plan, summary, diff_stats={p: {k: v[k] for k in ("added", "removed")} for p, v in diff["parts"].items()})
+    return _plan_out(env, plan, summary, preview_url=proposal_link(env, report_id, staged["proposal_id"]),
+                     diff_stats={p: {k: v[k] for k in ("added", "removed")} for p, v in diff["parts"].items()})
 
 
 @tool(scope=sc.READ, title="Plan an AI edit of a Vibe report", read_only=True)
@@ -270,9 +291,13 @@ async def plan_vibe_ai_edit(
     report_id: int,
     instruction: Annotated[str, Field(min_length=2, max_length=4000)],
     region: Annotated[str | None, Field(max_length=80, description="Limit the edit to one data-rac-region")] = None,
-    allow_data: Annotated[bool, Field(description="Let the AI add governed data bindings/filters")] = False,
 ) -> dict[str, Any]:
-    """Plan asking AppBI's Report Studio AI to edit the draft. Runs nothing; returns an approval link."""
+    """Plan asking AppBI's Report Studio AI to edit the draft. Runs nothing; returns an approval link.
+
+    Two approvals: (1) running the AI once, which yields a PROPOSAL and saves nothing;
+    (2) after the user previews that proposal in Report Studio with real data, applying it.
+    The AI cannot add new data here (that creates charts); bind data in Report Studio.
+    """
     d = await _report(env, report_id)
     refusal = _editable(d)
     if refusal:
@@ -285,19 +310,19 @@ async def plan_vibe_ai_edit(
     summary = {
         "sections": [
             {"title": "Report", "items": [{"name": d.get("name"), "id": report_id, "edits draft": f"revision {draft.get('number')}",
-                                           "region": region or "whole report", "may add data": "yes" if allow_data else "no"}]},
+                                           "region": region or "whole report"}]},
             {"title": "Instruction sent to AppBI's AI", "text": instruction},
             {"title": "Current draft (live preview with data)", "links": [studio_link(env, report_id, draft.get("number"))]},
             {"title": "What happens", "items": [
                 "AppBI runs its Report Studio AI once (it uses your AppBI AI quota).",
-                "The result is a NEW draft revision; Claude then shows you its diff and preview link.",
-                "Nothing is published. If you dislike the result, restore the previous revision.",
+                "The result is only a PROPOSAL: nothing in the report changes.",
+                "You then get a second approval page with the diff and a real preview of the proposal; only that approval saves it.",
             ]},
         ],
         "warnings": [],
     }
     body = {"report_id": report_id, "base_number": draft.get("number"), "instruction": instruction.strip(),
-            "region": region, "allow_data": bool(allow_data)}
+            "region": region}
     plan = env.plans.create(user_id=env.principal.user_id, grant_id=env.principal.grant_id, kind="vibe_ai_edit",
                             body=body, summary=summary, fingerprint=_fingerprint(d))
     return _plan_out(env, plan, summary)
@@ -412,28 +437,7 @@ async def run_vibe_plan(env: Env, run: Run) -> dict[str, Any]:
 
     report_id = int(body["report_id"])
     if kind == "vibe_source":
-        await _check_fresh(env, run)
-
-        async def save() -> dict[str, Any]:
-            try:
-                return await env.appbi.put(f"/report-artifacts/{report_id}/source",
-                                           {"html": body["html"], "css": body["css"], "js": body["js"], "base_number": body["base_number"]})
-            except AppbiError as exc:
-                if exc.status == 409:
-                    raise OperationError("conflict", f"AppBI refused: {exc.message}", step="save") from exc
-                raise
-
-        async def find_saved(_since: float) -> dict[str, Any] | None:
-            d = await _report(env, report_id)
-            draft = d.get("draft") or {}
-            if all(draft.get(p, "") == body[p] for p in ("html", "css", "js")) and (draft.get("number") or 0) > (body["base_number"] or 0):
-                return {"revision": {"number": draft.get("number")}}
-            return None
-
-        saved = await run.write("save", save, reconcile=find_saved)
-        if saved.get("warnings"):
-            run.notes.extend(str(w) for w in saved["warnings"])
-        return await _verified(env, run, report_id, body["base_number"], "save")
+        return await _apply(env, run, report_id, body)
 
     if kind == "vibe_restore":
         await _check_fresh(env, run)
@@ -446,7 +450,7 @@ async def run_vibe_plan(env: Env, run: Run) -> dict[str, Any]:
             await _check_fresh(env, run)
         try:
             await run.write("ai_edit", lambda: env.appbi.post(f"/report-artifacts/{report_id}/ai-edit", {
-                "instruction": body["instruction"], "region": body.get("region"), "allow_data": body["allow_data"]}))
+                "instruction": body["instruction"], "region": body.get("region"), "allow_data": False, "propose": True}))
         except AppbiError as exc:
             if exc.status == 409:
                 raise OperationError("conflict", f"AppBI refused: {exc.message}", step="ai_edit") from exc
@@ -456,14 +460,81 @@ async def run_vibe_plan(env: Env, run: Run) -> dict[str, Any]:
             raise OperationError("blocked", f"AppBI's AI could not apply the edit: {st['job'].get('error')}", step="ai")
         if st["job"].get("state") != "done":
             raise OperationError("partially_failed", "The AI is still working; call execute_plan again to follow it.", step="ai")
-        if st["job"].get("notes"):
-            run.notes.extend(str(n) for n in st["job"]["notes"][:5])
-        return await _verified(env, run, report_id, body["base_number"], "AI edit")
+        proposal = await env.appbi.get(f"/report-artifacts/{report_id}/proposal")
+        if proposal.get("base_number") != body["base_number"]:
+            raise OperationError("stale_plan", "The draft changed while the AI worked; plan the edit again.", step="ai")
+
+        async def follow_up() -> dict[str, Any]:
+            d = await _report(env, report_id)
+            diff = source_diff(d.get("draft") or {}, proposal)
+            summary = _apply_summary(env, d, report_id, proposal["proposal_id"], diff, "AppBI Report Studio AI",
+                                     extra=[{"title": "Instruction", "text": body["instruction"]},
+                                            *([{"title": "AI notes", "items": proposal["notes"][:8]}] if proposal.get("notes") else [])])
+            nxt = env.plans.create(user_id=env.principal.user_id, grant_id=env.principal.grant_id, kind="vibe_source",
+                                   body={"report_id": report_id, "base_number": body["base_number"],
+                                         "proposal_id": proposal["proposal_id"], "content": source_hash(proposal)},
+                                   summary=summary, fingerprint=_fingerprint(d))
+            return {"plan_id": nxt.id, "changed": diff["changed"],
+                    "parts": {p: {k: v[k] for k in ("added", "removed")} for p, v in diff["parts"].items()}}
+
+        nxt = await run.write("apply_plan", follow_up)
+        return {"status": "proposal_ready", "report_id": report_id, "base_number": body["base_number"],
+                "preview_url": proposal_link(env, report_id, proposal["proposal_id"]),
+                "apply_plan_id": nxt["plan_id"], "approval_url": env.approval_url(nxt["plan_id"]),
+                "changed": nxt["changed"], "diff_stats": nxt["parts"],
+                "next": "Nothing is saved yet. Ask the user to open the preview, then approve or reject on the approval page; "
+                        "after approval call execute_plan(apply_plan_id)."}
 
     raise OperationError("blocked", f"Unknown Vibe plan kind {kind}")
 
 
 VIBE_KINDS = ("vibe_create", "vibe_source", "vibe_ai_edit", "vibe_restore")
+
+
+def source_hash(src: dict[str, Any]) -> str:
+    import hashlib
+
+    return hashlib.sha256("\x00".join(str(src.get(p) or "") for p in ("html", "css", "js")).encode()).hexdigest()
+
+
+async def _apply(env: Env, run: Run, report_id: int, body: dict[str, Any]) -> dict[str, Any]:
+    """Save the approved proposal - exactly the code that was previewed - as a new draft revision."""
+    if (env.plans.step(run.plan.id, "apply") or {}).get("status") != "done":
+        await _check_fresh(env, run)
+
+    async def apply() -> dict[str, Any]:
+        try:
+            current = await env.appbi.get(f"/report-artifacts/{report_id}/proposal")
+        except AppbiError as exc:
+            if exc.status == 404:
+                raise OperationError("stale_plan", "The previewed proposal is gone (replaced or discarded); plan again.", step="apply") from exc
+            raise
+        if current.get("proposal_id") != body["proposal_id"] or source_hash(current) != body["content"]:
+            raise OperationError("stale_plan", "The proposal in AppBI is not the one that was previewed and approved; plan again.", step="apply")
+        try:
+            return await env.appbi.post(f"/report-artifacts/{report_id}/proposal/apply",
+                                        {"proposal_id": body["proposal_id"], "base_number": body["base_number"]})
+        except AppbiError as exc:
+            if exc.status == 409:
+                raise OperationError("conflict", f"AppBI refused: {exc.message}", step="apply") from exc
+            if exc.status == 410:
+                raise OperationError("stale_plan", f"AppBI: {exc.message}", step="apply") from exc
+            raise
+
+    async def find_applied(_since: float) -> dict[str, Any] | None:
+        d = await _report(env, report_id)
+        draft = d.get("draft") or {}
+        if (draft.get("number") or 0) > (body["base_number"] or 0) and source_hash(draft) == body["content"]:
+            return {"revision": {"number": draft.get("number")}}
+        return None
+
+    saved = await run.write("apply", apply, reconcile=find_applied)
+    if saved.get("warnings"):
+        run.notes.extend(str(w) for w in saved["warnings"])
+    out = await _verified(env, run, report_id, body["base_number"], "apply")
+    if source_hash((await _report(env, report_id)).get("draft") or {}) != body["content"]:
+        raise OperationError("partially_failed", "The saved draft differs from the approved proposal.", step="verify")
+    return out
 
 
 # ── publish (approved separately) ───────────────────────────────────────────────
