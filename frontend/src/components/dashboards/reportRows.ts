@@ -14,7 +14,11 @@ import type { Dashboard } from '@/types/api';
 
 export type ReportKind = 'manual' | 'vibe';
 export type ReportTypeFilter = 'all' | ReportKind;
-export type ReportStatus = { label: 'published' | 'changes' | 'draft'; version?: number | null };
+export type ReportStatus = {
+  label: 'published' | 'changes' | 'draft'; version?: number | null;
+  /** places that show "not bound" to a reader (the version a link serves, else the draft) */
+  unbound?: number;
+};
 
 interface RowBase {
   key: string;
@@ -61,8 +65,9 @@ export function vibeRow(r: ReportSummary): ReportRow {
     kind: 'vibe', vibe: r, key: `vibe-${r.id}`, id: r.id, name: r.name, description: r.description,
     ownerEmail: r.owner_email, updatedAt: r.updated_at || '', perms, access: accessTier(level, null),
     status: !r.published_number
-      ? { label: 'draft', version: r.draft_number }
-      : { label: r.has_unpublished_changes ? 'changes' : 'published', version: r.published_number },
+      ? { label: 'draft', version: r.draft_number, unbound: r.unbound?.draft ?? 0 }
+      : { label: r.has_unpublished_changes ? 'changes' : 'published', version: r.published_number,
+          unbound: r.unbound?.published ?? 0 },
     content: { count: r.binding_count ?? 0, unit: 'data' },
     publicLinks: r.public_link_count ?? (r.public_enabled ? 1 : 0),
     datasetIds: r.dataset_id ? [r.dataset_id] : [], href: `/dashboards/code/${r.id}`,

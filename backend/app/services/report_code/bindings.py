@@ -673,6 +673,18 @@ def _humanize(db: Session, text: str) -> str:
         return text[:400]
 
 
+UNBOUND_CODE = "BINDING_UNBOUND"
+
+
+def unbound_dto(binding_id: Any) -> Dict[str, Any]:
+    """/data for a place whose binding this revision does not have ("missing" left by an
+    import, a deleted binding): its own status, so a viewer sees "not bound" - never the
+    404 of a revoked link nor the 403/404 of lost rights or a deleted chart."""
+    return {"bindingId": str(binding_id or "")[:80], "status": "unbound", "code": UNBOUND_CODE,
+            "error": "Chưa gắn dữ liệu — vị trí này chưa được nối với dữ liệu BI Core.",
+            "rows": [], "fields": []}
+
+
 def public_bindings(bindings: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """What a viewer (and the sandbox) may know about a binding."""
     return [{"id": b["id"], "title": b.get("title") or "", "kind": b.get("kind") or ""} for b in bindings]

@@ -47,6 +47,16 @@ export function BuildMethodBadge({ kind }: { kind: ReportKind }) {
 export function ReportStatusChip({ status }: { status: ReportStatus }) {
   const { t } = useI18n();
   const v = status.version ? ` v${status.version}` : '';
+  const unbound = status.unbound ? (
+    <Badge variant="warning" size="sm" pill data-testid="report-unbound" title={t('reportList.unboundHint')}>
+      {t('reportList.unbound', { n: status.unbound })}
+    </Badge>
+  ) : null;
+  return <span className="inline-flex flex-wrap items-center gap-1"><StatusOnly status={status} v={v} />{unbound}</span>;
+}
+
+function StatusOnly({ status, v }: { status: ReportStatus; v: string }) {
+  const { t } = useI18n();
   if (status.label === 'draft') return <Badge variant="neutral" size="sm" pill dot data-testid="report-status">{t('reportList.status.draft')}{v}</Badge>;
   if (status.label === 'changes') return <Badge variant="warning" size="sm" pill dot data-testid="report-status">{t('reportList.status.changes')}{v}</Badge>;
   return <Badge variant="success" size="sm" pill dot data-testid="report-status">{t('reportList.status.published')}{v}</Badge>;

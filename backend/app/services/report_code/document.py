@@ -387,6 +387,8 @@ main{min-width:0}
 .rac-guide{stroke:var(--rac-muted);stroke-dasharray:3 3}
 .rac-state{display:flex;align-items:center;justify-content:center;min-height:90px;color:var(--rac-muted);font-size:13px;text-align:center;padding:12px}
 .rac-error{color:var(--rac-neg)}
+.rac-unbound{color:#92400e;background:repeating-linear-gradient(135deg,#fffbeb,#fffbeb 8px,#fef3c7 8px,#fef3c7 16px);border:1px dashed #f59e0b;border-radius:8px;font-weight:600}
+.rac-unbound-chip{display:inline-block;padding:1px 8px;border:1px dashed #f59e0b;border-radius:999px;background:#fffbeb;color:#92400e;font-size:12px;font-weight:600;white-space:nowrap}
 .rac-skel{height:100%;min-height:90px;border-radius:10px;background:linear-gradient(90deg,var(--rac-grid) 25%,#f8fafc 50%,var(--rac-grid) 75%);background-size:200% 100%;animation:rac-sh 1.2s infinite}
 @keyframes rac-sh{to{background-position:-200% 0}}
 .rac-kpi{display:flex;flex-direction:column;gap:6px}

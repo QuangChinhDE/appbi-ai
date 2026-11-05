@@ -1066,3 +1066,19 @@ def test_the_context_pack_frees_the_design_and_binds_every_figure_to_the_bi_core
         assert rule in pack, rule
     assert 'data-rac-value=\\"@c' not in pack and 'data-rac-value="@c' in pack, "a copyable, valid example"
     assert "sidebar" not in pack.lower().split("## 6.")[0], "no imposed layout"
+
+
+def test_the_summary_counts_unbound_places_of_the_published_version_too():
+    """Backfill by reading: a version published before the publish guard (artifact 1
+    rev 1: three tables bound to "missing") is flagged on every summary - no stored mark."""
+    from types import SimpleNamespace
+    from app.services.report_code import lifecycle as L
+
+    pub = SimpleNamespace(number=1, html='<div data-rac-viz="table" data-rac-bind="missing"></div>' * 3
+                          + '<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[], content_hash="a")
+    draft = SimpleNamespace(number=2, html='<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[],
+                            content_hash="b")
+    art = SimpleNamespace(id=1, name="r", description=None, dataset_id=1, owner_id=None, job=None,
+                          updated_at=None, last_published_at=None)
+    s = L._summary(art, draft, pub, 0)
+    assert s["unbound"] == {"draft": 0, "published": 3}
