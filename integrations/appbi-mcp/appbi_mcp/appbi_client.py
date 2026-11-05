@@ -85,6 +85,18 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/import-html/validate-plans"),
     ("POST", "/dashboards/import-html/dry-run-build"),
     ("POST", "/dashboards/import-html/build"),
+    # AI Vibe / Report-as-Code -- every write makes a NEW DRAFT revision (guards below)
+    ("GET", "/report-artifacts"),
+    ("GET", "/report-artifacts/{id}"),
+    ("GET", "/report-artifacts/{id}/job"),
+    ("GET", "/report-artifacts/{id}/revisions"),
+    ("GET", "/report-artifacts/{id}/revisions/{id}"),
+    ("POST", "/report-artifacts"),
+    ("POST", "/report-artifacts/blank"),
+    ("PUT", "/report-artifacts/{id}/source"),
+    ("POST", "/report-artifacts/{id}/ai-edit"),
+    ("POST", "/report-artifacts/{id}/revisions/{id}/restore"),
+    ("POST", "/report-artifacts/{id}/publish"),
 )
 
 # Never reachable. Kept as data so the contract test can assert none of these is
@@ -115,6 +127,12 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/import-html/build-batch"),
     ("POST", "/dashboards/import-html/prepare-draft"),
     ("POST", "/dashboards/import-html/fix-chart-plan"),
+    # Vibe: never deletes, never touches public links, never pastes foreign code.
+    ("DELETE", "/report-artifacts/{id}"),
+    ("POST", "/report-artifacts/{id}/public-links"),
+    ("PATCH", "/report-artifacts/{id}/public-links/{id}"),
+    ("DELETE", "/report-artifacts/{id}/public-links/{id}"),
+    ("POST", "/report-artifacts/{id}/document-ticket"),
 )
 
 _COMPILED = [(m, _route(t), t) for m, t in ALLOWED_ROUTES]
@@ -194,6 +212,23 @@ def _guard_dataset_create(body: Any) -> None:
 def _guard_table_add(body: Any) -> None:
     if not isinstance(body, dict) or body.get("source_kind") != "physical_table":
         raise GuardViolation("only physical tables are added (no SQL tables)")
+
+
+def _guard_vibe_create(body: Any) -> None:
+    if not isinstance(body, dict) or not body.get("dataset_id"):
+        raise GuardViolation("a Vibe report is created on a dataset")
+    if body.get("reference_html") or body.get("reference_image"):
+        raise GuardViolation("Vibe reports are created from a prompt only (no uploaded reference)")
+
+
+def _guard_vibe_source(body: Any) -> None:
+    if not isinstance(body, dict) or not isinstance(body.get("base_number"), int):
+        raise GuardViolation("Vibe source saves must quote base_number (the draft they were planned on)")
+
+
+def _guard_vibe_publish(body: Any) -> None:
+    if not isinstance(body, dict) or not isinstance(body.get("revision_id"), int):
+        raise GuardViolation("a Vibe publish names the exact approved revision_id")
 
 
 # ── HTML report import (W4) ─────────────────────────────────────────────────────
@@ -297,6 +332,9 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("PUT", "/datasets/{id}/model/views/{id}"): _guard_view_put,
     ("POST", "/datasets/"): _guard_dataset_create,
     ("POST", "/datasets/{id}/tables"): _guard_table_add,
+    ("POST", "/report-artifacts"): _guard_vibe_create,
+    ("PUT", "/report-artifacts/{id}/source"): _guard_vibe_source,
+    ("POST", "/report-artifacts/{id}/publish"): _guard_vibe_publish,
 }
 
 # Query parameters forbidden on otherwise-allowed routes.

@@ -16,10 +16,13 @@ from .dataset import run_dataset_plan
 from .discovery import model_digest
 from .html_import import run_dashboard_html_plan
 from .runtime import Env, tool
+from .vibe import VIBE_KINDS, run_vibe_plan, run_vibe_publish, vibe_publish_is_stale, vibe_publish_request
 
 log = logging.getLogger("appbi_mcp.tools.publish")
 
-RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan, "dashboard_html": run_dashboard_html_plan}
+RUNNERS = {"dataset": run_dataset_plan, "dashboard": run_dashboard_plan, "dashboard_html": run_dashboard_html_plan,
+           **{k: run_vibe_plan for k in VIBE_KINDS}}
+PUBLISH_KINDS = ("dataset_publish", "dashboard_publish", "vibe_publish")
 PUBLISH_TERMINAL = {"published", "sync_failed"}
 
 
@@ -75,7 +78,7 @@ async def _run(env: Env, plan: Plan, body_fn: Any) -> dict[str, Any]:
 
 @tool(scope=sc.AUTHOR, title="Execute an approved plan", read_only=False, destructive=False, idempotent=True)
 async def execute_plan(env: Env, plan_id: str) -> dict[str, Any]:
-    """Build an approved Dataset or Dashboard plan as drafts the user owns.
+    """Build an approved plan (Dataset, Dashboard, AI Vibe report change) as drafts the user owns.
 
     Requires that the user approved this exact plan in the browser. Calling it
     again resumes from where it stopped and never creates anything twice.
@@ -154,15 +157,19 @@ async def _dashboard_state(env: Env, dashboard_id: int) -> tuple[dict[str, Any],
 @tool(scope=sc.READ, title="Request a publish", read_only=True)
 async def request_publish(
     env: Env,
-    resource_type: Literal["dataset", "dashboard"],
+    resource_type: Literal["dataset", "dashboard", "vibe_report"],
     resource_id: int,
+    revision_number: Annotated[int | None, Field(description="vibe_report only: publish (or roll back to) this revision; default = the draft")] = None,
+    allow_samples: Annotated[bool, Field(description="vibe_report only: publish although design sample numbers remain (labelled for readers)")] = False,
 ) -> dict[str, Any]:
-    """Prepare publishing a dataset or dashboard and return a browser approval link. Publishes nothing.
+    """Prepare publishing a dataset, dashboard or AI Vibe report; returns a browser approval link. Publishes nothing.
 
     Dataset: Sync & Publish materializes a complete snapshot that dashboards read.
     Dashboard: makes YOUR draft changes live; co-authors' unpublished work is left
     as it is.
     """
+    if resource_type == "vibe_report":
+        return await vibe_publish_request(env, resource_id, revision_number, allow_samples)
     if resource_type == "dataset":
         ds, digest, fp = await _dataset_fingerprint(env, resource_id)
         status = await env.appbi.get(f"/datasets/{resource_id}/publish-status")
@@ -259,11 +266,11 @@ async def _wait_dataset(env: Env, dataset_id: int, seconds: int) -> dict[str, An
 
 @tool(scope=sc.PUBLISH, title="Publish (approved)", read_only=False, destructive=False, idempotent=True)
 async def publish(env: Env, plan_id: str) -> dict[str, Any]:
-    """Publish a dataset or dashboard the user approved in the browser (from request_publish)."""
+    """Publish a dataset, dashboard or AI Vibe report the user approved in the browser (from request_publish)."""
     plan = env.plans.get(plan_id, env.principal.user_id)
     if plan is None:
         return _not_found()
-    if plan.kind not in ("dataset_publish", "dashboard_publish"):
+    if plan.kind not in PUBLISH_KINDS:
         return {"status": "error", "message": "This is a build plan; use execute_plan(plan_id)."}
     op = env.plans.operation(plan.id)
     if op is None:
@@ -276,6 +283,8 @@ async def publish(env: Env, plan_id: str) -> dict[str, Any]:
         if plan.kind == "dataset_publish":
             _, _, fp = await _dataset_fingerprint(env, plan.body["dataset_id"])
             stale = fp != plan.fingerprint
+        elif plan.kind == "vibe_publish":
+            stale = await vibe_publish_is_stale(env, plan)
         else:
             _, st = await _dashboard_state(env, plan.body["dashboard_id"])
             stale = st["rev"] != plan.fingerprint.get("rev") or st["tile_base_v"] != plan.fingerprint.get("tile_base_v")
@@ -291,6 +300,8 @@ async def publish(env: Env, plan_id: str) -> dict[str, Any]:
         return {**st, "plan_id": plan.id}
 
     async def body(env: Env, run: Run) -> dict[str, Any]:
+        if plan.kind == "vibe_publish":
+            return await run_vibe_publish(env, run)
         if plan.kind == "dataset_publish":
             dataset_id = plan.body["dataset_id"]
             res = await run.write("publish", lambda: env.appbi.post(f"/datasets/{dataset_id}/publish", {"timezone": "UTC"}))

@@ -32,7 +32,7 @@ type Tab = 'code' | 'data' | 'ai';
 const WIDTH_KEY = 'rac.studio.panelWidth';
 const readWidth = () => { try { const v = Number(window.localStorage.getItem(WIDTH_KEY)); return v >= 300 && v <= 1400 ? v : null; } catch { return null; } };
 
-export function ReportStudio({ reportId }: { reportId: number }) {
+export function ReportStudio({ reportId, initialRevision = null }: { reportId: number; initialRevision?: number | null }) {
   const { t } = useI18n();
   const [detail, setDetail] = useState<ReportDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -43,7 +43,7 @@ export function ReportStudio({ reportId }: { reportId: number }) {
   const [selectMode, setSelectMode] = useState(false);
   const [showProvenance, setShowProvenance] = useState(false);
   const [region, setRegion] = useState<string | null>(null);
-  const [previewNumber, setPreviewNumber] = useState<number | null>(null);
+  const [previewNumber, setPreviewNumber] = useState<number | null>(initialRevision);
   const [issues, setIssues] = useState<RuntimeIssue[]>([]);
   const [showIssues, setShowIssues] = useState(false);
   const [showVersions, setShowVersions] = useState(false);
