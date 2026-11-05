@@ -247,8 +247,12 @@ async def plan_model_edit(env: Env, dataset_id: int, operations: Annotated[list[
         ],
         "warnings": warnings,
     }
+    # The baseline is read AFTER the previews: a first preview of a table can make AppBI
+    # refresh its column cache and model (its own housekeeping, not anyone's edit).
+    ds_now, model_now, _ = await _state(env, dataset_id)
     plan = env.plans.create(user_id=env.principal.user_id, grant_id=env.principal.grant_id, kind="model_edit",
-                            body={"dataset_id": dataset_id, "steps": steps}, summary=summary, fingerprint=_fingerprint(ds, model, touched))
+                            body={"dataset_id": dataset_id, "steps": steps}, summary=summary,
+                            fingerprint=_fingerprint(ds_now, model_now, touched))
     return {"status": "awaiting_approval", "plan_id": plan.id, "plan_hash": plan.plan_hash, "approval_url": env.approval_url(plan.id),
             "changes": rows, "previews": previews, "warnings": warnings,
             "next": "Ask the user to approve in the browser, then call execute_plan(plan_id)."}
@@ -283,8 +287,11 @@ async def run_model_edit(env: Env, run: Run) -> dict[str, Any]:
     touched = {s["view"] for s in body["steps"] if s.get("view")}
     if env.plans.step(run.plan.id, "start_check") is None:
         ds, model, _ = await _state(env, did)
-        if _fingerprint(ds, model, touched) != run.plan.fingerprint:
-            raise OperationError("stale_plan", "The dataset's model changed after the plan was approved. Plan again.", step="start_check")
+        now = _fingerprint(ds, model, touched)
+        if now != run.plan.fingerprint:
+            changed = sorted(k for k in now if now.get(k) != run.plan.fingerprint.get(k))
+            raise OperationError("stale_plan", "The dataset's model changed after the plan was approved. Plan again.", step="start_check",
+                                 detail={"changed": changed, "planned": run.plan.fingerprint, "now": now})
         env.plans.mark(run.plan.id, "start_check", "done", result={"ok": True})
 
     done: list[str] = []
