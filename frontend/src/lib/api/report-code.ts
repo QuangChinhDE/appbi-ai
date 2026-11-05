@@ -49,6 +49,9 @@ export interface ReportSummary {
   last_published_at: string | null;
 }
 
+export interface ReadinessItem { code: string; message: string; place: { region: string | null; label: string | null; snippet: string }; fix?: string }
+export interface ReadinessReport { revision: number; ready: boolean; blocking: ReadinessItem[]; warnings: ReadinessItem[]; counts: Record<string, number> }
+
 export interface ReportBinding { id: string; chart_id: number; title: string; kind: string }
 export interface ReportFilter { key: string; label: string; kind: 'category' | 'date'; fieldKey?: string; grain?: 'month'; default?: 'latest'; single?: boolean; default_value?: string }
 export interface ReportRegion { id: string; tag: string; label: string }
@@ -183,6 +186,9 @@ export const reportCodeApi = {
   /** A signed, 10-minute URL for one revision's document on the isolated report origin. */
   documentTicket: async (id: number, revision?: number | null): Promise<{ url: string; isolated: boolean; revision: number }> =>
     (await apiClient.post(`${base(id)}/document-ticket`, null, { params: revision ? { revision } : {} })).data,
+  /** The server's one readiness report for a revision (what blocks publishing, per place). */
+  readiness: async (id: number, revision?: number | null): Promise<ReadinessReport> =>
+    (await apiClient.get(`/report-artifacts/${id}/readiness`, { params: revision ? { revision } : {} })).data,
   data: async (id: number, binding: string, state: FilterState, revision?: number | null): Promise<unknown> =>
     (await apiClient.post(`${base(id)}/data`, { binding, state, revision: revision ?? null })).data,
   values: async (id: number, key: string, search: string, state: FilterState, revision?: number | null): Promise<unknown[]> =>

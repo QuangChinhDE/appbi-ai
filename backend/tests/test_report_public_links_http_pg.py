@@ -534,3 +534,12 @@ def test_a_place_with_no_binding_is_said_unbound_not_a_generic_404(client, owner
     s = client.post(f"/api/v1/report-artifacts/{report.id}/data", json={"binding": "b99", "state": {}}, headers=owner.headers)
     assert s.status_code == 200 and s.json()["code"] == "BINDING_UNBOUND"
     assert client.post("/api/v1/public/reports/rpt_doesnotexist/data", json={"binding": "missing", "state": {}}).status_code == 404
+
+
+def test_the_readiness_report_is_served_to_the_author_and_never_to_an_anonymous_caller(client, owner, report):  # noqa: F811
+    r = client.get(f"/api/v1/report-artifacts/{report.id}/readiness", headers=owner.headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) >= {"revision", "ready", "blocking", "warnings", "counts"}
+    assert isinstance(body["blocking"], list) and all({"code", "message", "place"} <= set(x) for x in body["blocking"] + body["warnings"])
+    assert client.get(f"/api/v1/report-artifacts/{report.id}/readiness").status_code in (401, 403)

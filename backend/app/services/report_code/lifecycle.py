@@ -121,11 +121,18 @@ def publish(db: Session, artifact: ReportArtifact, *, revision_id: Optional[int]
     target = get_revision(db, artifact, revision_id or artifact.draft_revision_id)
     if target is None:
         raise ValueError("Báo cáo chưa có phiên bản nào để xuất bản.")
-    dangling = dangling_references(target)
-    if dangling:
+    # ONE gate (services/report_code/readiness.py): what blocks is decided there; a sample
+    # number keeps its own confirm flow below (allow_samples)
+    from app.services.report_code import readiness as R
+
+    rep = R.report(target)
+    hard = [x for x in rep["blocking"] if x["code"] != "SAMPLE"]
+    if hard:
+        dangling = dangling_references(target)
         raise DanglingReferences(
-            f"Còn {len(dangling)} vị trí trỏ tới dữ liệu hoặc bộ lọc không có trong báo cáo "
-            f"({', '.join(sorted(set(dangling))[:6])}). Gắn lại dữ liệu cho các vị trí đó rồi xuất bản.")
+            (f"Còn {len(dangling)} vị trí trỏ tới dữ liệu hoặc bộ lọc không có trong báo cáo "
+             f"({', '.join(sorted(set(dangling))[:6])}). Gắn lại dữ liệu cho các vị trí đó rồi xuất bản.")
+            if dangling else R.blocking_message({"counts": {x["code"]: 1 for x in hard}}))
     n = sample_marks(target.html)
     if n and not allow_samples:
         raise SampleNumbersRemain(
@@ -378,6 +385,7 @@ def _run_job(artifact_id: int, job_id: str, user_id, run) -> None:
         db.commit()
         _update_job(progress_db, artifact_id, job_id, state="done", step="Hoàn tất", revision=rev.number,
                     notes=(out.get("notes") or []) + warnings, summary=out.get("summary"),
+                    readiness=out.get("readiness"), ai_slots=out.get("ai_slots"),
                     design_source=out.get("design_source"), data_source=out.get("data_source"),
                     elapsed_ms=int((_now() - started).total_seconds() * 1000))
     except ValueError as exc:

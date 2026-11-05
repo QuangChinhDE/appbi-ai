@@ -369,7 +369,8 @@ def _dims_score(slot: Dict[str, Any], dim: Dict[str, Any]) -> float:
     return len(sw & dw) / len(dw) if dw else 0.0
 
 
-def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List[Dict[str, Any]], goal: str = "") -> Dict[str, Any]:
+def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List[Dict[str, Any]], goal: str = "",
+            stats: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """{slot id: {candidate, confidence, source}} and proposed filter dimensions."""
     out: Dict[str, Dict[str, Any]] = {}
     for s in slots:
@@ -385,18 +386,26 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
         if best is not None and _score(s, best) > 0 and _shares_meaning(s, best):
             out[s["id"]] = {"candidate": best["id"], "confidence": round(min(1.0, _score(s, best)), 2), "source": "rules"}
     data_slots = [s for s in slots if s["kind"] in ("value", "chart", "table")]  # lists/periods map by rules
-    if data_slots and cands:
+    # The model only for the places the rules are UNSURE about, and only with those places
+    # and a short list of candidates each - never the whole page against the whole model
+    # (every analyse used to send every slot and 160 candidates, certain or not).
+    unsure = [s for s in slots if _unsettled(s, out)]
+    if stats is not None:
+        stats["ai_slots"] = len(unsure)
+    if unsure and cands:
         try:
             from app.services.llm_client import LLMClient
 
-            from app.services.report_code.generation import _candidate_listing, _dims_listing
+            from app.services.report_code.generation import _dims_listing
 
-            brief = [{"slot": s["id"], "kind": s["kind"], "context": s["context"], "sample": s["sample"]} for s in slots]
+            brief = [{"slot": s["id"], "kind": s["kind"], "context": s["context"], "sample": s["sample"]} for s in unsure]
+            shortlist = {c["id"]: c for s in unsure if s["kind"] != "filter" for c in _shortlist(s, cands)}
+            listing = "\n".join(f"{c['id']}: {c['type']} — {c['title']}" for c in shortlist.values())
             res = LLMClient.complete_json(
                 prompt=(f"An HTML report is being connected to governed data. {('REPORT PURPOSE: ' + goal[:500]) if goal else ''}\n"
                         f"SLOTS found in the HTML (value = a printed number, chart = a chart element, table = a table, filter = a select). "
                         f"`context` is the label a reader sees next to the slot — map by THAT meaning, never by position:\n"
-                        f"{json.dumps(brief, ensure_ascii=False)}\n\nCANDIDATE DATA (governed, by id):\n{_candidate_listing(cands, 160)}\n\n"
+                        f"{json.dumps(brief, ensure_ascii=False)}\n\nCANDIDATE DATA (governed, by id):\n{listing}\n\n"
                         f"FILTER DIMENSIONS:\n{_dims_listing(dims)}\n\n"
                         "Map each slot to the candidate that MEANS the same thing (value → KPI, chart over time → TIME_SERIES, "
                         "chart/table by category → BAR). Map filter slots to a dimension id. Use null when nothing fits — never guess. "
@@ -436,6 +445,27 @@ def propose(slots: List[Dict[str, Any]], cands: List[Dict[str, Any]], dims: List
     return out
 
 
+#: a rules pick this sure, sharing meaning with the slot's own label, needs no model
+SETTLED_CONFIDENCE = 0.6
+SHORTLIST = 8
+
+
+def _unsettled(slot: Dict[str, Any], picks: Dict[str, Any]) -> bool:
+    if slot["kind"] not in ("value", "chart", "table", "filter"):
+        return False  # lists / periods map by rules only
+    pick = picks.get(slot["id"]) or {}
+    if slot["kind"] == "filter":
+        return not pick.get("dimension")
+    return not (pick.get("candidate") and float(pick.get("confidence") or 0) >= SETTLED_CONFIDENCE)
+
+
+def _shortlist(slot: Dict[str, Any], cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The candidates of the kind the slot can show, best by the rules' own score first."""
+    pool = [c for c in cands if c["kind"] in _kinds_for(slot) and compatible(slot, c)] or \
+           [c for c in cands if c["kind"] in _kinds_for(slot)]
+    return sorted(pool, key=lambda c: (-_score(slot, c), c.get("rank", 9), c["id"]))[:SHORTLIST]
+
+
 def _table_names(db: Session, ids: set) -> Dict[int, str]:
     from app.models.dataset import DatasetTable
     if not ids:
@@ -473,7 +503,9 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
         c["title"] = B._localize_title(c["title"])
     compatible = bool(_PLACEHOLDER.search(html + js)) or "data-rac-" in html
     slots = [] if compatible else shown_slots(detect_slots(html))
-    proposals = propose(slots, cands, dims, goal) if slots else {}
+    stats: Dict[str, Any] = {"ai_slots": 0}
+    proposals = propose(slots, cands, dims, goal, stats=stats) if slots else {}
+    ai_slots = int(stats["ai_slots"])
     by_id = {c["id"]: c for c in cands}
     table_names = _table_names(db, {c.get("table") for c in cands if c.get("table")})
     view = []
@@ -506,6 +538,8 @@ def analyze(db: Session, *, dataset_id: int, html: str, css: str, js: str, goal:
         view.append(row)
     return {
         "compatible": compatible, "slots": view, "warnings": warnings,
+        # how many places the model was asked about (0 for a page written to the contract)
+        "ai_slots": ai_slots,
         "placeholders": sorted(set(_PLACEHOLDER.findall(html + js))) if compatible else [],
         # `source` = the table a measure lives in: two tables can carry the same measure name
         # (group vs unit KPIs) and the picker must let the author tell them apart.
@@ -575,7 +609,8 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
         html = re.sub(r"@(f\d+)\b", lambda m: fmap.get(m.group(1), "missing"), html)
         js = re.sub(r"@(f\d+)\b", lambda m: fmap.get(m.group(1), "missing"), js)
         notes += _missing_notes(html, js)
-        return {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added, "filters": decl, "notes": notes}
+        return _finish(db, {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added,
+                            "filters": decl, "notes": notes, "ai_slots": 0})
 
     progress("Đọc các vị trí dữ liệu trong HTML")
     slots = {s["id"]: s for s in detect_slots(html)}
@@ -696,7 +731,8 @@ def apply(db: Session, *, dataset_id: int, html: str, css: str, js: str, mapping
         notes.append("Các thư viện biểu đồ ngoài (" + ", ".join(l for l in _LIB_STUBS if re.search(r"\b" + l + r"\b", js)) +
                      ") không được tải; biểu đồ của chúng đã được thay bằng biểu đồ gắn dữ liệu BI Core.")
     html = mark_loose_numbers(html)
-    return {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added, "filters": decl, "notes": notes}
+    return _finish(db, {"html": _ensure_regions(html), "css": css, "js": js, "bindings": existing + added,
+                        "filters": decl, "notes": notes})
 
 
 _UNIT_SCALE = {"tỷ": 1e9, "ty": 1e9, "tr": 1e6, "triệu": 1e6, "nghìn": 1e3, "k": 1e3, "n": 1e3}
@@ -854,6 +890,31 @@ def _list_template(html: str, tags, slot: Dict[str, Any], plan: Dict[str, Any], 
 _VIZ = {"kpi", "bar", "column", "hbar", "line", "area", "donut", "pie", "table", "heatmap", "gauge", "waterfall", "progress", "sparkline"}
 
 
+def _finish(db: Session, out: Dict[str, Any]) -> Dict[str, Any]:
+    """The certain fixes, then ONE readiness report of the result (no model involved)."""
+    from types import SimpleNamespace
+
+    from app.services.report_code import readiness as R
+    from app.services.report_code import semantics as S
+
+    dtos = None
+    if db is not None and out["bindings"]:
+        try:
+            from app.services.report_code.generation import _probe
+
+            dtos = _probe(db, out["bindings"], out["filters"])
+        except Exception:  # noqa: BLE001 - a fix the data cannot inform is skipped, never invented
+            logger.warning("report-code: probing the imported bindings failed", exc_info=True)
+    if dtos:
+        out["html"], fixed = S.check_rows(out["html"], dtos, fix=True)
+        out["notes"] = list(out["notes"]) + [f"Đã tự sửa: {n}" for n in fixed]
+    rep = R.report(SimpleNamespace(**out), dtos=dtos, with_origin=False)
+    out["readiness"] = {"ready": rep["ready"], "counts": rep["counts"]}
+    if rep["blocking"]:
+        out["notes"] = [R.blocking_message(rep).replace("Chưa xuất bản được", "Cần xử lý trước khi xuất bản")] + list(out["notes"])
+    return out
+
+
 def _referenced(bindings: List[Dict[str, Any]], html: str, js: str) -> List[Dict[str, Any]]:
     from app.services.report_code import lifecycle as L
 
@@ -999,4 +1060,13 @@ def context_pack(db: Session, *, dataset_id: int, dataset_name: str) -> str:
         "2. Every `data-rac-value` / `data-rac-bind` / `data-rac-repeat` / `data-rac-filter` uses a placeholder listed above.",
         "3. No array or object literal in the script holds business values; every chart is drawn from `dto`.",
         "4. One self-contained HTML file: `<style>`, `<script>` (no `src`), body markup.",
+        "",
+        "## 8. Self-check list (machine-readable) — the ONLY placeholders the page may use",
+        "```json",
+        json.dumps({"data": [f"@{c['id']}" for c in cands[:200]], "filters": [f"@{d['id']}" for d in dims],
+                    "attributes": ["data-rac-value", "data-rac-bind", "data-rac-viz", "data-rac-repeat", "data-rac-cell",
+                                   "data-rac-row", "data-rac-rank", "data-rac-filter", "data-rac-filter-chips",
+                                   "data-rac-title", "data-rac-asof", "data-rac-region", "data-rac-label"]},
+                   ensure_ascii=False),
+        "```",
     ])
