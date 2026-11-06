@@ -1198,3 +1198,92 @@ def test_a_page_written_to_the_contract_imports_without_any_model_call(monkeypat
     db = SimpleNamespace(query=lambda *a: _Q())
     out = I.analyze(db, dataset_id=9, html='<b data-rac-value="@c1"></b><div data-rac-filter="@f1"></div>', css="", js="")
     assert out["compatible"] is True and out["ai_slots"] == 0 and called == []
+
+
+
+# ── rc1 bundle (report-demo /dashboards/code/1): what an outside AI was told vs what runs ──
+
+def test_the_context_pack_teaches_only_what_the_runtime_does(monkeypatch):
+    """rc1: the pack taught `data-rac-cell="<column label>"` (the runtime only reads field
+    keys -> every cell "—"), gave three placeholders the same meaning, mixed `b1` examples
+    with `@c1`, and never said a category is a Top 10 or that a page holds 16 queries."""
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert "<column label>" not in pack
+    for bad in ('="b1"', "'b1'", '="f1"', "'f1'", '="c1"'):
+        assert bad not in pack, f"an example without @ teaches a placeholder that does not exist: {bad}"
+    table = [l for l in pack.split("## 3.")[1].split("## 4.")[0].splitlines() if l.startswith("| `@c")]
+    meanings = [l.split("|")[3].strip() for l in table]
+    assert len(meanings) == len(set(meanings)) > 0, "two placeholders with one meaning: the AI picks blind"
+    assert all("`m0`" in l for l in table) and any("`d0`" in l and "Top 10" in l for l in table)
+    assert f"{B.MAX_BINDINGS} distinct" in pack and f"{B.MAX_FILTERS} filters" in pack
+    check = json.loads(pack.split("```json\n")[1].split("\n```")[0])
+    assert check["cell_keys"] == ["#", "d0", "m0"] and check["limits"]["placeholders"] == B.MAX_BINDINGS
+    assert set(check["data_kinds"]) == set(check["data"])
+
+
+def test_the_runtime_reads_a_repeat_cell_by_field_key_only():
+    """The pack's cell keys are exactly the runtime's (`cellField`): # / d0 / d / m0 / m."""
+    js = D.RUNTIME_JS if hasattr(D, "RUNTIME_JS") else open(
+        __import__("pathlib").Path(B.__file__).with_name("runtime.js"), encoding="utf8").read()
+    body = js.split("function cellField(d, ref) {")[1].split("\n  }")[0]
+    assert "ref === 'dim' || ref === 'd'" in body and "ref === 'm'" in body and "return field(d, ref)" in body
+    assert "[data-rac-static]" in js.split("var TRUSTED")[1].split(";")[0], "the pack's opt-out is honoured by the audit"
+
+
+def test_an_import_says_a_query_failed_not_that_it_had_no_data(monkeypatch):
+    """rc1: 3 places were dropped with "truy vấn không trả về số liệu" while BigQuery had
+    refused the query - the author looked for empty data that was never the problem."""
+    from app.services import report_starter_service as RS
+    from app.services.chart_service import ChartService
+
+    class _Db:
+        def rollback(self): pass
+
+    cand = {"id": "c1", "type": "BAR", "table": 1, "role": {"metrics": [{"field": "v.m"}], "dimension": "v.d"}}
+    monkeypatch.setattr(ChartService, "preview_chart_data", staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("400 bad"))))
+    assert B.run_candidate(_Db(), cand) is False
+    assert "lỗi" in B.drop_note("A", B._last_why.value) and "không phải do dữ liệu rỗng" in B.drop_note("A", B._last_why.value)
+    monkeypatch.setattr(ChartService, "preview_chart_data", staticmethod(lambda *a, **k: {"data": []}))
+    assert B.run_candidate(_Db(), cand) is False
+    assert B._last_why.value == {"reason": "empty"} and "không trả về số liệu" in B.drop_note("A", B._last_why.value)
+    assert RS._runs(_Db(), cand) is None, "the starter's own callers are unchanged"
+
+
+def test_a_warehouse_error_never_reaches_the_report_page():
+    """rc1: the Studio frame printed BigQuery's 400 with its Job ID and SQL fragment."""
+    raw = ("Lỗi chạy chart query trên bigquery (dialect bigquery): 400 SELECT * expands to zero columns after "
+           "applying EXCEPT at [4:14]; reason: invalidQuery Location: us-central1 Job ID: decf06ec")
+    msg = B._author_error(None, raw, "b1")
+    for leak in ("Job ID", "SELECT", "bigquery", "EXCEPT", "us-central1"):
+        assert leak not in msg
+    assert "Dataset" in msg
+    assert B._author_error(None, "Trường 'Doanh thu' không còn trong model") == "Trường 'Doanh thu' không còn trong model"
+
+
+def test_a_hand_quoted_measure_column_is_stored_portable():
+    """rc1: `SUM("Quá hạn SLA")` is a column on Postgres/DuckDB and a STRING on BigQuery."""
+    from app.schemas.semantic import MeasureDefinition as M
+
+    assert M(name="x", type="sum", sql='"Quá hạn SLA"').sql == "Quá hạn SLA"
+    assert M(name="x", type="sum", sql="`Sản lượng`").sql == "Sản lượng"
+    assert M(name="x", type="sum", sql='"Đối tượng"').sql == '"Đối tượng"', "a name the engine cannot re-quote stays"
+    assert M(name="x", type="sum", sql="${TABLE}.price").sql == "${TABLE}.price"
+    assert M(name="x", type="sum", sql='CASE WHEN "a" > 0 THEN 1 END').sql == 'CASE WHEN "a" > 0 THEN 1 END'
+
+
+def test_a_table_whose_column_names_are_all_nonstandard_is_refused():
+    """rc1: every header of Phieu_nhap_xuat was Vietnamese; once the BigQuery snapshot was
+    built no chart of the Dataset could run. Refuse that table at creation; warn on some."""
+    from app.services import dataset_column_names as C
+
+    allbad = C.check([{"name": "Mã phiếu"}, {"name": "Sản lượng"}])
+    assert allbad["blocked"] is True and allbad["bad"] == ["Mã phiếu", "Sản lượng"]
+    detail = C.detail(allbad)
+    assert detail["code"] == "COLUMN_NAMES_NONSTANDARD" and "Mã phiếu" in detail["message"] and "ma_phieu" in detail["message"]
+    some = C.check([{"name": "ma_phieu"}, {"name": "Sản lượng"}])
+    assert some["blocked"] is False and some["bad"] == ["Sản lượng"] and "vẫn dùng được" in some["message"]
+    assert C.detail(C.check([{"name": "ma_phieu"}, {"name": "san_luong"}])) is None
+    assert C.check([])["blocked"] is False

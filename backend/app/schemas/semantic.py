@@ -2,6 +2,7 @@
 Semantic Layer Schemas
 Pydantic schemas for LookML-style semantic definitions
 """
+import re
 from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 from datetime import datetime
@@ -235,6 +236,22 @@ class MeasureDefinition(BaseModel):
     # Pure metadata (no SQL impact); the measure remains owned by its Dataset.
     glossary_terms: List[MeasureVocabRef] = Field(default_factory=list)
     tags: List[MeasureVocabRef] = Field(default_factory=list)
+
+    @field_validator("sql")
+    @classmethod
+    def _portable_column_ref(cls, value: Optional[str]) -> Optional[str]:
+        """`sql` naming ONE column is stored bare: the engine quotes it for the dialect
+        that runs it. A hand-quoted `"Quá hạn SLA"` is an identifier on Postgres/DuckDB
+        but a STRING LITERAL on BigQuery - SUM over it fails once the dataset is served
+        from its BigQuery snapshot. Only an exact single quoted name is unwrapped."""
+        if value is None:
+            return value
+        text = value.strip()
+        m = re.fullmatch(r'"([^"`]+)"|`([^"`]+)`', text)
+        bare = (m.group(1) or m.group(2)).strip() if m else ""
+        # only a name the engine re-quotes itself (semantic_query_engine auto-qualifies
+        # `[A-Za-z_][\w ]*` as ${TABLE}.<quoted>); anything else stays as written
+        return bare if bare and re.fullmatch(r"[A-Za-z_][\w ]*", bare) else value
 
     @field_validator("expression", "where_sql")
     @classmethod

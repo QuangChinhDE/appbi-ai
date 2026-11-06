@@ -3569,6 +3569,17 @@ def add_table_to_dataset(
         except Exception as e:
             logger.warning("Column inference failed for dataset table %s: %s", db_table.id, e)
 
+        # Column-name rule (services/dataset_column_names.py): a table none of whose
+        # column names is standard cannot be read back from its snapshot - refuse it.
+        from app.services import dataset_column_names as column_names
+
+        _cc = db_table.columns_cache
+        names_check = column_names.check((_cc.get("columns") if isinstance(_cc, dict) else _cc) or inferred_metadata)
+        if names_check["blocked"]:
+            DatasetCRUDService.delete_table(db, db_table.id)
+            _sync_dataset_model_safely(db, dataset_id)
+            raise HTTPException(status_code=400, detail=column_names.detail(names_check))
+
         # Queue a single AI-description pipeline to avoid duplicate generate/embed work.
         DescriptionPipelineService.enqueue_table_pipeline(
             background_tasks,
@@ -3602,6 +3613,7 @@ def add_table_to_dataset(
             "estimated_size_bytes": getattr(db_table, 'estimated_size_bytes', None),
             "created_at": db_table.created_at.isoformat() if db_table.created_at else None,
             "updated_at": db_table.updated_at.isoformat() if db_table.updated_at else None,
+            "column_name_warning": column_names.detail(names_check),
         }
     except HTTPException:
         raise

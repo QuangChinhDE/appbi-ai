@@ -1074,7 +1074,7 @@
   // runtime formats them from the DTO); the rest is checked against every formatted value.
   var auditT = null, auditSeen = {};
   var TRUSTED = '.rac-kpi,.rac-svg,.rac-table-wrap,.rac-heat,.rac-gauge,.rac-progress,.rac-donut,.rac-filter,.rac-chip,.rac-tip,[data-rac-value],[data-rac-asof],'
-    + '.rac-note,.rac-state,.rac-unbound-chip,.rac-sample-legend,[data-rac-prov],script,style,input,select,textarea,option';
+    + '.rac-note,.rac-state,.rac-unbound-chip,.rac-sample-legend,[data-rac-prov],[data-rac-static],script,style,input,select,textarea,option';
   // a date written in the text (24/08/2026, 2026-08-24) is not a figure: never split into numbers
   var DATE_RX = /\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}\b|\b\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}\b/g;
   function auditNumbers() {

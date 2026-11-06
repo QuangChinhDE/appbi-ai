@@ -17,6 +17,8 @@ import datetime as _dt
 import logging
 import time
 from decimal import Decimal
+import re
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
@@ -182,9 +184,25 @@ def make_binding(bid: str, chart, title: str, meta: Dict[str, Dict[str, Any]]) -
 
 
 def run_candidate(db: Session, cand: Dict[str, Any]) -> bool:
+    """True when the candidate returns numbers. A False leaves ``why`` ("error" | "empty")
+    for the import note (per thread: two imports never read each other's reasons)."""
     from app.services.report_starter_service import _runs
 
-    return bool(_runs(db, cand))
+    why: Dict[str, Any] = {}
+    ok = bool(_runs(db, cand, why))
+    _last_why.value = why
+    return ok
+
+
+_last_why = threading.local()
+
+
+def drop_note(title: str, why: Dict[str, Any]) -> str:
+    """Why a place got no data: a query the system could not run is not an empty result."""
+    if why.get("reason") == "error":
+        return (f"Bỏ '{title}' — truy vấn bị lỗi khi chạy qua BI Core (không phải do dữ liệu rỗng). "
+                "Kiểm tra Dataset (tên cột, measure, snapshot) rồi gắn lại.")
+    return f"Bỏ '{title}' — truy vấn chạy được nhưng không trả về số liệu."
 
 
 def create_candidate_chart(db: Session, cand: Dict[str, Any], title: str, *, owner_id, dataset_id: int, prefix: str):
@@ -294,9 +312,10 @@ def bind_candidates(db: Session, picks: List[Tuple[Dict[str, Any], str]], *, exi
         if time.time() - started > budget_s:
             notes.append("Hết thời gian chạy thử truy vấn; giữ những gì đã chạy được.")
             break
+        _last_why.value = {}
         if not run_candidate(db, cand):
             if not from_pool:
-                notes.append(f"Bỏ '{title or cand['title']}' — truy vấn không trả về số liệu.")
+                notes.append(drop_note(title or cand['title'], getattr(_last_why, "value", {}) or {}))
             continue
         kept.append((cand, title))
         kind_count[cand["kind"]] = kind_count.get(cand["kind"], 0) + 1
@@ -559,7 +578,7 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
         return {**base, "status": "refused", "error": str(exc), "rows": [], "fields": []}
     except ValueError as exc:
         db.rollback()
-        msg = "Không tải được dữ liệu cho phần này." if public else _humanize(db, str(exc))
+        msg = "Không tải được dữ liệu cho phần này." if public else _author_error(db, str(exc), bid)
         return {**base, "status": "error", "error": msg, "rows": [], "fields": []}
     except Exception:  # noqa: BLE001 - one broken binding must not take the page down
         db.rollback()
@@ -662,6 +681,20 @@ def _top_n(db: Session, binding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if n <= 0:
         return None
     return {"n": n, "direction": "bottom" if str(style.get("dataLimitDirection") or "").lower() == "bottom" else "top"}
+
+
+# A raw warehouse/driver error (BigQuery job ids, SQL fragments, dialect names) is for the
+# log, never for the page: an author gets what to check, the details stay server-side.
+_ENGINE_ERROR = re.compile(r"Job ID|Location:|invalidQuery|dialect|\bSELECT\b|\b[45]\d\d (?:POST|GET|Bad Request)|"
+                           r"googleapis|psycopg|duckdb|Traceback|EXCEPT", re.I)
+
+
+def _author_error(db: Session, text: str, bid: Any = None) -> str:
+    if _ENGINE_ERROR.search(text or ""):
+        logger.warning("report-code: binding %s engine error: %s", bid, (text or "")[:2000])
+        return ("Truy vấn của phần này bị lỗi khi chạy trên kho dữ liệu. Kiểm tra Dataset "
+                "(tên cột chuẩn, công thức measure, snapshot) — chi tiết lỗi đã ghi vào log hệ thống.")
+    return _humanize(db, text)
 
 
 def _humanize(db: Session, text: str) -> str:
