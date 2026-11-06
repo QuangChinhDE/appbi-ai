@@ -26,10 +26,13 @@ from sqlalchemy.orm import Session
 logger = logging.getLogger(__name__)
 
 MAX_ROWS = 2000
-MAX_BINDINGS = 16
-MAX_FILTERS = 6
+from app.core.config import settings as _settings
+
+# Page size limits come from settings (REPORT_MAX_*): an operator raises them in .env.
+MAX_BINDINGS = int(_settings.REPORT_MAX_BINDINGS)
+MAX_FILTERS = int(_settings.REPORT_MAX_FILTERS)
 MAX_FILTER_VALUES = 200
-PROBE_BUDGET_S = 45
+PROBE_BUDGET_S = int(_settings.REPORT_PROBE_BUDGET_S)
 
 _DATE_TYPES = {"date", "datetime", "timestamp", "time"}
 _NUMERIC_TYPES = {"number", "numeric", "integer", "int", "float", "double", "decimal", "bigint", "real"}
@@ -306,11 +309,18 @@ def bind_candidates(db: Session, picks: List[Tuple[Dict[str, Any], str]], *, exi
             continue
         if limits and kind_count.get(cand["kind"], 0) >= limits.get(cand["kind"], 99):
             continue
-        if len(kept) >= room:
-            notes.append("Đã đạt giới hạn số nguồn dữ liệu của một báo cáo.")
-            break
-        if time.time() - started > budget_s:
-            notes.append("Hết thời gian chạy thử truy vấn; giữ những gì đã chạy được.")
+        if len(kept) >= room or time.time() - started > budget_s:
+            # never a silent cut: name every pick left out (each of its places stays
+            # unbound, which the readiness report lists and publishing refuses)
+            over = [t or _localize_title(c["title"]) for c, t in queue
+                    if c["id"] not in tried and c["id"] in picked_ids] + ([] if from_pool else [title or _localize_title(cand["title"])])
+            over = list(dict.fromkeys(over))
+            why = (f"vượt giới hạn {MAX_BINDINGS} nguồn dữ liệu của một báo cáo (REPORT_MAX_BINDINGS)"
+                   if len(kept) >= room else f"hết {int(budget_s)} giây chạy thử truy vấn (REPORT_PROBE_BUDGET_S)")
+            if over:
+                notes.append(f"Không gắn {len(over)} dữ liệu do {why}: " + ", ".join(f"'{t}'" for t in over[:20])
+                             + (f" và {len(over) - 20} dữ liệu khác" if len(over) > 20 else "")
+                             + ". Các vị trí đó chưa gắn dữ liệu — báo cáo chưa xuất bản được cho đến khi gắn lại.")
             break
         _last_why.value = {}
         if not run_candidate(db, cand):

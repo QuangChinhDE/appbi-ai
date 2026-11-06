@@ -27,7 +27,7 @@ from app.services.report_code import document as D
 
 logger = logging.getLogger(__name__)
 
-MAX_SLOTS = 40
+MAX_SLOTS = int(B._settings.REPORT_IMPORT_MAX_SLOTS)
 _NUM_RX = re.compile(r"(?<![\w#.,-])[-+]?\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d+)?(?:\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD))?"
                      r"|(?<![\w#.,-])[-+]?\d+(?:[.,]\d+)?\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD)(?![\w])"
                      r"|(?<![\w#.,:/-])[-+]?\d{3,}(?:[.,]\d+)?(?![\w:/-])"
@@ -35,6 +35,11 @@ _NUM_RX = re.compile(r"(?<![\w#.,-])[-+]?\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d+)?(?:\
                      r"|(?<![\w#.,:/-])[-+]?\d{1,2}[.,]\d{1,3}(?![\w:/.,-])")
 _CHART_HINT = re.compile(r"chart|graph|plot|canvas|viz|sparkline", re.I)
 _PLACEHOLDER = re.compile(r"@[cf]\d+\b")
+
+
+def has_placeholders(html: str, js: str) -> bool:
+    """Context-pack placeholders (`@c3`, `@f1`) still in the code: they must be bound."""
+    return bool(_PLACEHOLDER.search((html or "") + (js or "")))
 _LIB_STUBS = {
     "Chart": "var Chart = window.Chart || function () { return { destroy: function () {}, update: function () {} }; };",
     "echarts": "var echarts = window.echarts || { init: function () { return { setOption: function () {}, resize: function () {}, on: function () {} }; } };",

@@ -31,7 +31,7 @@ GENERATE_TIMEOUT_S = 170.0
 EDIT_TIMEOUT_S = 120.0
 LIMITS = {"kpi": 4, "time": 3, "category": 5}
 MIN_COMPOSITION = {"kpi": 3, "time": 1, "category": 2}
-MAX_CATEGORY_FILTERS = 3
+MAX_CATEGORY_FILTERS = int(B._settings.REPORT_MAX_CATEGORY_FILTERS)  # settings: REPORT_MAX_CATEGORY_FILTERS
 _VIZ_KIND = {"kpi": "kpi", "gauge": "kpi", "line": "time", "area": "time", "heatmap": "time", "waterfall": "time",
              "sparkline": "time", "bar": "category", "column": "category", "hbar": "category", "donut": "category",
              "pie": "category", "table": "category", "progress": "category"}

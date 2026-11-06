@@ -41,6 +41,8 @@ export interface ReportSummary {
   /** Places pointing at data the revision does not have ("missing" from an import, a
    *  deleted binding/filter): counted by the server on read, draft and published. */
   unbound?: { draft: number; published: number };
+  /** Page-size limits (server settings REPORT_MAX_BINDINGS / REPORT_MAX_FILTERS). */
+  limits?: { bindings: number; filters: number };
   /** Set by the list endpoint: the caller's level and the owner, as on a dashboard row. */
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   owner_email?: string | null;
