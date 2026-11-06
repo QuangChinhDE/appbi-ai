@@ -14,6 +14,7 @@ import { expect, test, type Frame, type Page } from '@playwright/test';
 const API = process.env.E2E_API_URL || 'http://localhost:3000';
 const RA = `${API}/api/v1/report-artifacts`;
 const PUB = `${API}/api/v1/public/reports`;
+const APP = process.env.E2E_BASE_URL || 'http://localhost:3000'; // pages are the frontend's; API may be the backend (CI)
 
 test.describe.configure({ mode: 'serial', timeout: 240_000 });
 
@@ -63,13 +64,13 @@ test('a code report public link: data and CSS always, the author JS exactly when
   const isolated = meta.isolated === true;
   test.info().annotations.push({ type: 'origin-mode', description: isolated ? 'isolated' : 'shared (JS off)' });
   console.log(`origin-mode: ${isolated ? 'isolated' : 'shared (JS off)'}`);
-  if (isolated) expect(new URL(meta.document_url).origin, 'an isolated document is on another origin').not.toBe(new URL(API).origin);
+  if (isolated) expect(new URL(meta.document_url).origin, 'an isolated document is on another origin').not.toBe(new URL(APP).origin);
 
   const anon = await browser.newContext(); // a viewer with no session
   const page = await anon.newPage();
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
-  await page.goto(`${API}/d/r/${token}`);
+  await page.goto(`${APP}/d/r/${token}`);
   await expect(page.getByTestId('public-report')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId('public-report-error')).toHaveCount(0);
   const frame = await reportFrame(page);
@@ -90,7 +91,7 @@ test('a code report public link: data and CSS always, the author JS exactly when
   await anon.close();
 
   // Studio: the author hears the same mode - "JS not running (report OK)", never a security error.
-  await studio.goto(`${API}/dashboards/code/${reportId}`);
+  await studio.goto(`${APP}/dashboards/code/${reportId}`);
   const pill = studio.getByTestId('studio-guard');
   await expect(pill).toBeVisible({ timeout: 60_000 });
   if (isolated) await expect(pill).toHaveText(/JS tùy biến bật|Custom JS on/);
