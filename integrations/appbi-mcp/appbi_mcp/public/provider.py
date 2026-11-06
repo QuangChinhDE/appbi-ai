@@ -46,6 +46,15 @@ class PublicOAuthProvider(AppbiOAuthProvider):
                 (client.client_id, client.model_dump_json(), time.time()),
             )
 
+    async def _get_cimd_client(self, url: str) -> OAuthClientInformationFull | None:
+        """Claude Code and claude.ai identify by a client metadata URL (CIMD). The author
+        provider registers such a client with the AUTHOR scopes; here a client may only ever
+        hold the public scope (found in the first real Claude Code run: invalid_scope)."""
+        client = await super()._get_cimd_client(url)
+        if client is not None:
+            client.scope = f"{PUBLIC_SCOPE} {OFFLINE}"
+        return client
+
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         if not self.resource_matches(params.resource):
             raise AuthorizeError("invalid_target", "resource must be this MCP server's URL: " + self.settings.resource_url)

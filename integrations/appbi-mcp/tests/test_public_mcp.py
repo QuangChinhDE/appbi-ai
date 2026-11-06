@@ -290,6 +290,24 @@ async def test_calculate_is_exact_and_closed(pc, fake):
     assert (await call(pc, tok["access_token"], "calculate", {"expression": "avg(xs)", "values": {"xs": [1, 2, 6]}}))["result"] == 3
 
 
+async def test_cimd_client_gets_the_public_scope(pc, fake, monkeypatch):
+    """Claude Code identifies by a client metadata URL (CIMD). Regression: the inherited
+    author provider registered it with AUTHOR scopes, so authorize answered invalid_scope."""
+    import appbi_mcp.oauth.provider as P
+
+    async def fake_doc(url, hosts):
+        return {"client_name": "Claude Code", "redirect_uris": ["http://localhost/callback"], "token_endpoint_auth_method": "none"}
+
+    monkeypatch.setattr(P, "fetch_client_metadata_document", fake_doc)
+    _, challenge = pkce()
+    r = await pc.get("/public-mcp-oauth/authorize", params={
+        "client_id": "https://claude.ai/oauth/claude-code-client-metadata", "response_type": "code",
+        "code_challenge": challenge, "code_challenge_method": "S256", "redirect_uri": "http://localhost:18191/callback",
+        "state": "s", "scope": f"{PUBLIC_SCOPE} offline_access", "resource": f"{PUBLIC}/public-mcp"})
+    assert r.status_code == 302, r.text
+    assert urlparse(r.headers["location"]).path == "/public-mcp-oauth/pair", r.headers["location"]
+
+
 async def test_pair_code_rate_limit_and_unauthenticated_challenge(pc, fake):
     r = await pc.post("/public-mcp", json={}, headers=PMCP_HEADERS)
     assert r.status_code == 401

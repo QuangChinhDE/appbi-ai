@@ -106,7 +106,7 @@ def _handle(db: Session, grant: Optional[str]) -> S.Handle:
         S.check_grant_against(row, claims)
         session = PLS.create_session(row, PLS.DASHBOARD) if row.password_hash else None
         dash, fcfg, name, appearance, _ = _open_dashboard(db, row.token, session)
-        return S.Handle(kind=S.DASHBOARD, link=row, sid=claims["sid"], name=str(appearance.get("headline") or name or dash.name),
+        return S.Handle(kind=S.DASHBOARD, link=row, sid=claims["sid"], name=str(appearance.get("headline") or dash.name or name),
                         appearance=dict(appearance or {}), filters_config=list(fcfg or []), dash=dash)
     from app.models.report_artifact import ReportArtifactPublicLink
     from app.services.report_code import public_links as PL
@@ -133,7 +133,7 @@ def pair(body: PairBody, request: Request, db: Session = Depends(get_db),
             dash, _, name, appearance, link = _open_dashboard(db, body.token, x_public_session)
             if link is None:
                 raise S.Refused("not_available", "Claude access is not available on this link.", 404)
-            title = str(appearance.get("headline") or name or dash.name)
+            title = str(appearance.get("headline") or dash.name or name)
         else:
             art, _, link = _open_report(db, body.token, x_public_session)
             if getattr(link, "is_preview", False):
