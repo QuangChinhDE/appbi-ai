@@ -48,6 +48,25 @@ Runs as the connected user's own PAT; audit row per call. E2E evidence = real MC
   (core/authz/registry.py) -> unreachable for any PAT client by design; owner decision needed.
 - Public Read MCP: Core reviewed, spec docs/features/public-read-mcp/spec.md, decisions D1-D5 pending.
 
+## Round 3 — real Claude Desktop E2E (2026-11-05/06)
+Client: Claude Desktop 4.16336 (MSIX) via local bridge mcp-remote 0.1.37/0.1.38, driven by typing natural language
+into its chat; every approval clicked by the user in the browser; evidence .artifacts/desktop/*.png + MCP audit logs.
+Core: parallel Core of THIS branch (69299cec, file checksums verified) on the SAME appbi-ai Postgres + BigQuery
+sources (appbi-ai's own containers are owned by another session, which overwrote them at 16:27 UTC; runs after
+that on appbi-ai are discarded).
+PASS (Desktop): read-only connection refused writes at tool level; Source read; BigQuery dataset 226 + model edit +
+dashboard 264 create/edit + dataset/dashboard publish (numbers = BigQuery SQL: 112650/98666/3095/96478;
+2016-18 = 267/43428/52783; UI shows them); calc-column preview now on the source engine (BigQuery rejections at plan
+time); AI Vibe with a REAL model: proposal only (revision count unchanged) -> Studio preview -> approval -> revision
+2, re-execute no duplicate, restore -> rev 3, publish rev 2 (DB published=2); source handoff (no credential in MCP
+logs/state); share x2; shared-chart edit; reject path (execute -> rejected, no AppBI call); version conflict (plan B
+then plan A -> stale_plan); PAT revoke -> credential_revoked + HTTP 401.
+NOT VERIFIED: Remote HTTPS via Claude connector (tunnel up, OAuth discovery correct over HTTPS, but no request from
+Claude ever reached it); viewer/editor accounts via Desktop; Workboards (module disabled on this Core: WORKBOARDS_ENABLED=false
+-> 404); Agent Flows/Chat/Govern (not PAT-eligible; policy decision pending); Public Read MCP (not implemented).
+Found + fixed: DuckDB calc preview (69299cec). Found, open: no tool returns a chart's current config (Claude had to guess
+config for plan_chart_edit); approval page Approve/Reject buttons adjacent (two mis-clicks observed).
+
 ## Open limitations
 - AI-generated Vibe proposal with a real model: NOT VERIFIED end-to-end after the proposal change (rig has no AI key;
   appbi-ai Core predates the proposal endpoints). Mechanism verified with code proposals live + AI path offline.
