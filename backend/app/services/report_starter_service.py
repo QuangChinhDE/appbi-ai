@@ -160,8 +160,9 @@ def enumerate_candidates(model: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def _runs(db: Session, cand: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Run a candidate through the chart engine; None when it has no data."""
+def _runs(db: Session, cand: Dict[str, Any], why: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Run a candidate through the chart engine; None when it has no data.
+    `why`, when given, receives ``{"reason": "error"|"empty"}`` for a None."""
     from app.services.chart_service import ChartService
 
     cfg = {"chartType": cand["type"], "queryMode": "generated", "roleConfig": cand["role"],
@@ -171,11 +172,15 @@ def _runs(db: Session, cand: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # unreachable dimension, engine refusal — not a tile
         db.rollback()
         logger.debug("report starter: candidate %s refused: %s", cand["id"], exc)
+        if why is not None:
+            why["reason"] = "error"
         return None
     rows = result.get("data") or []
     metric = cand["role"]["metrics"][0]["field"]
     numeric = [r for r in rows if isinstance(r, dict) and isinstance(r.get(metric), (int, float))]
     if not numeric:
+        if why is not None:
+            why["reason"] = "empty"
         return None
     return {"rows": len(rows), "distinct": len({str(r.get(cand['role'].get('dimension'))) for r in rows})}
 

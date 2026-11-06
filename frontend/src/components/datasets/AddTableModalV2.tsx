@@ -123,6 +123,9 @@ export function AddTableModal({
 }: AddTableModalProps) {
   const [activeSourceTab, setActiveSourceTab] = useState<SourceTab>('physical');
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Column-name rule (backend services/dataset_column_names.py): the table was added but
+  // some headers are not standard - say so before closing instead of closing silently.
+  const [nameNotice, setNameNotice] = useState<{ message: string; tables: DatasetTable | DatasetTable[] } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const addTableMutation = useAddTableToDataset();
@@ -150,12 +153,14 @@ export function AddTableModal({
     if (!isOpen) {
       setActiveSourceTab('physical');
       setSaveError(null);
+      setNameNotice(null);
       setIsSubmitting(false);
     }
   }, [isOpen]);
 
   const getErrorMessage = (error: any, fallback: string) => {
     const message = error?.response?.data?.detail ?? error?.message ?? fallback;
+    if (message && typeof message === 'object' && typeof message.message === 'string') return message.message;
     return typeof message === 'string' ? message : JSON.stringify(message);
   };
 
@@ -171,7 +176,13 @@ export function AddTableModal({
         createdTables.push(created);
       }
 
-      onSuccess?.(Array.isArray(input) ? createdTables : createdTables[0]);
+      const result = Array.isArray(input) ? createdTables : createdTables[0];
+      const warned = createdTables.map((t) => t.column_name_warning?.message).filter(Boolean) as string[];
+      if (warned.length) {
+        setNameNotice({ message: warned.join('\n'), tables: result });
+        return;
+      }
+      onSuccess?.(result);
       onClose();
     } catch (error: any) {
       const message = getErrorMessage(error, 'Could not create table.');
@@ -294,6 +305,16 @@ export function AddTableModal({
             </div>
           )}
         </div>
+
+        {nameNotice && (
+          <div className="mx-6 mt-4 flex shrink-0 flex-col gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900" data-testid="column-name-notice" role="alert">
+            <span className="whitespace-pre-line">{nameNotice.message}</span>
+            <button type="button" className="self-end rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+              onClick={() => { const t = nameNotice.tables; setNameNotice(null); onSuccess?.(t); onClose(); }}>
+              Đã hiểu
+            </button>
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {isEditMode && existingTable ? (

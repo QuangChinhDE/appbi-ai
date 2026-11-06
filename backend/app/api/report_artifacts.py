@@ -433,14 +433,28 @@ def save_source(artifact_id: int, body: SourceBody, db: Session = Depends(get_db
     draft = _draft(db, art)
     if body.base_number is not None and body.base_number != draft.number:
         raise HTTPException(status_code=409, detail=f"Bản nháp đã đổi (phiên bản {draft.number}) — tải lại trước khi lưu.")
+    html, css, js = body.html, body.css, body.js
+    bindings, filters, notes, note = list(draft.bindings or []), list(draft.filters or []), [], "Sửa mã nguồn"
+    from app.services.report_code import importer as I
+
+    if I.has_placeholders(html, js):
+        # `@cN` / `@fN` typed in the editor mean what they mean in an import: bind them the
+        # same way (same rules, same reuse of existing bindings), never save them raw.
+        try:
+            out = I.apply(db, dataset_id=art.dataset_id, html=html, css=css, js=js, mapping=[], filters=[],
+                          owner_id=current_user.id, report_name=art.name, existing=bindings,
+                          existing_filters=filters, progress=lambda *_: None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        html, css, js, bindings, filters = out["html"], out["css"], out["js"], out["bindings"], out["filters"]
+        notes, note = list(out.get("notes") or []), "Sửa mã nguồn (gắn dữ liệu @c/@f)"
     try:
-        rev, warnings = L.add_revision(db, art, user_id=current_user.id, html=body.html, css=body.css, js=body.js,
-                                       bindings=list(draft.bindings or []), filters=list(draft.filters or []),
-                                       source="manual", note="Sửa mã nguồn")
+        rev, warnings = L.add_revision(db, art, user_id=current_user.id, html=html, css=css, js=js,
+                                       bindings=bindings, filters=filters, source="manual", note=note)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
-    return {"revision": L.revision_view(rev, with_source=True), "warnings": warnings}
+    return {"revision": L.revision_view(rev, with_source=True), "warnings": notes + list(warnings)}
 
 
 @router.post("/{artifact_id}/ai-edit", status_code=202)

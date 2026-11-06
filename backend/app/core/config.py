@@ -157,6 +157,15 @@ class Settings(BaseSettings):
     # derived for a localhost app (localhost → 127.0.0.1); otherwise reports run in
     # an opaque frame and their custom JavaScript is not executed (fail closed).
     REPORT_ARTIFACT_ORIGIN: str = ""
+    # Size of one report page. Performance is bounded where it is spent - the frame
+    # fetches at most a few bindings at a time (ReportFrame PARALLEL) and every /data
+    # goes through the chart cache - so these only stop a runaway page; an operational
+    # report with 9 KPIs + 10 charts must fit. The Context Pack states the live values.
+    REPORT_MAX_BINDINGS: int = 40           # distinct data sources (@c / bN) per page
+    REPORT_MAX_FILTERS: int = 12            # declared viewer filters per page
+    REPORT_MAX_CATEGORY_FILTERS: int = 3    # list filters an AI-GENERATED page proposes
+    REPORT_IMPORT_MAX_SLOTS: int = 60       # places the importer reads from free HTML
+    REPORT_PROBE_BUDGET_S: int = 90         # seconds an import may spend test-running data
 
     # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──
     # The Data Core answers every Chat turn through the Governed Query Service under

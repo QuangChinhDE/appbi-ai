@@ -262,6 +262,12 @@ def _active_links(db: Session, art: ReportArtifact) -> int:
         ReportArtifactPublicLink.artifact_id == art.id, ReportArtifactPublicLink.is_active.is_(True)).count()
 
 
+def _limits():
+    from app.services.report_code import bindings as B
+
+    return B.MAX_BINDINGS, B.MAX_FILTERS
+
+
 def summary(db: Session, art: ReportArtifact) -> Dict[str, Any]:
     return _summary(art, get_revision(db, art, art.draft_revision_id),
                     get_revision(db, art, art.published_revision_id), _active_links(db, art))
@@ -290,6 +296,8 @@ def _summary(art: ReportArtifact, draft, pub, active_links: int, *, unbound: Opt
         # deleted binding/filter): counted on READ, so a version published before the
         # publish guard existed is flagged too - nothing to backfill, nothing to go stale
         "unbound": {"draft": places(draft), "published": places(pub)},
+        # the page-size limits (settings REPORT_MAX_*) so Studio shows "x/N" before the ceiling
+        "limits": {"bindings": _limits()[0], "filters": _limits()[1]},
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.
         "public_enabled": active_links > 0, "public_link_count": active_links,

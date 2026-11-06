@@ -339,6 +339,17 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
       </div>
 
       <ReadinessPanel reportId={reportId} revision={draft?.number} />
+      {detail.limits && draft && (() => {
+        const b = (draft.bindings || []).length, f = (draft.filters || []).length;
+        const near = b >= detail.limits.bindings * 0.9 || f >= detail.limits.filters * 0.9;
+        return (
+          <div className={`mx-4 mb-2 text-[11px] sm:mx-5 ${near ? 'text-amber-700' : 'text-text-tertiary'}`} data-testid="studio-limits"
+            data-bindings={b} data-bindings-max={detail.limits.bindings} data-filters={f} data-filters-max={detail.limits.filters}>
+            {t('reportCode.limits.usage', { b, bm: detail.limits.bindings, f, fm: detail.limits.filters })}
+            {near ? ` · ${t('reportCode.limits.near')}` : ''}
+          </div>
+        );
+      })()}
       {(detail.unbound?.draft || detail.unbound?.published) ? (
         <div className="mx-4 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:mx-5"
           role="status" data-testid="studio-unbound">

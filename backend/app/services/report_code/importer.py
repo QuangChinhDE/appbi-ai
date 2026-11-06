@@ -27,7 +27,7 @@ from app.services.report_code import document as D
 
 logger = logging.getLogger(__name__)
 
-MAX_SLOTS = 40
+MAX_SLOTS = int(B._settings.REPORT_IMPORT_MAX_SLOTS)
 _NUM_RX = re.compile(r"(?<![\w#.,-])[-+]?\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d+)?(?:\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD))?"
                      r"|(?<![\w#.,-])[-+]?\d+(?:[.,]\d+)?\s?(?:tỷ|Tỷ|tr|Tr|triệu|N|K|M|B|%|₫|đ|VND|USD)(?![\w])"
                      r"|(?<![\w#.,:/-])[-+]?\d{3,}(?:[.,]\d+)?(?![\w:/-])"
@@ -35,6 +35,11 @@ _NUM_RX = re.compile(r"(?<![\w#.,-])[-+]?\d{1,3}(?:[.,\s]\d{3})+(?:[.,]\d+)?(?:\
                      r"|(?<![\w#.,:/-])[-+]?\d{1,2}[.,]\d{1,3}(?![\w:/.,-])")
 _CHART_HINT = re.compile(r"chart|graph|plot|canvas|viz|sparkline", re.I)
 _PLACEHOLDER = re.compile(r"@[cf]\d+\b")
+
+
+def has_placeholders(html: str, js: str) -> bool:
+    """Context-pack placeholders (`@c3`, `@f1`) still in the code: they must be bound."""
+    return bool(_PLACEHOLDER.search((html or "") + (js or "")))
 _LIB_STUBS = {
     "Chart": "var Chart = window.Chart || function () { return { destroy: function () {}, update: function () {} }; };",
     "echarts": "var echarts = window.echarts || { init: function () { return { setOption: function () {}, resize: function () {}, on: function () {} }; } };",
@@ -976,97 +981,270 @@ def _ensure_regions(html: str) -> str:
 
 # ── AI Design Context Pack ────────────────────────────────────────────────────
 
-def context_pack(db: Session, *, dataset_id: int, dataset_name: str) -> str:
-    """Everything an outside AI needs to write an AppBI-compatible report — and nothing
-    else: no data values, no SQL, no table/view/column names, no ids of the platform."""
-    from app.services.report_code.generation import SDK_REFERENCE
-
-    model = B.load_model(db, dataset_id)
-    cands, dims = B.candidates(model), B.filter_dimensions(model, dataset_id)
-    meta = B.field_meta(model)
-    rows = []
+def _pack_rows(cands: List[Dict[str, Any]], meta: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per candidate as an outside AI must see it: a meaning that is UNIQUE in the
+    pack (two date axes and a text "month" column used to give three identical titles),
+    the shape of the rows it returns and the field keys a page addresses."""
+    out = []
     for c in sorted(cands, key=lambda c: (c.get("rank", 9), c["id"]))[:200]:
         mref = c["role"]["metrics"][0]["field"]
         m = meta.get(mref, {})
         fmt = (m.get("format") or {}).get("kind", "number")
+        measure = m.get("label") or c.get("measure") or B._localize_title(c["title"])
         axis_ref = c["role"].get("timeField") or c["role"].get("dimension")
         axis = (meta.get(axis_ref) or {}).get("label", "") if axis_ref else ""
-        rows.append(f"| `@{c['id']}` | {c['kind']} | {B._localize_title(c['title'])} | {axis or '—'} | {m.get('aggregation') or ''} | {fmt} |")
-    drows = [f"| `@{d['id']}` | {d['kind']} | {d['label']} |" for d in dims]
-    example_kpi = next((c["id"] for c in cands if c["kind"] == "kpi"), "c1")
-    example_viz = next((c["id"] for c in cands if c["kind"] in ("time", "category")), example_kpi)
-    example_f = dims[0]["id"] if dims else "f1"
+        if c["kind"] == "kpi":
+            meaning, rows, fields = f"{measure} — one total for the whole filtered scope", "1 row", "`m0`"
+        elif c["kind"] == "time":
+            meaning = f"{measure} per month of «{axis}»"
+            rows, fields = "1 row per month, oldest → newest", "`d0` month (date) · `m0`"
+        else:
+            meaning = f"{measure} by «{axis}» — Top 10"
+            rows, fields = "≤ 10 rows, largest `m0` first", "`d0` text · `m0`"
+        out.append({"id": c["id"], "kind": c["kind"], "meaning": meaning, "rows": rows, "fields": fields,
+                    "aggregation": m.get("aggregation") or "", "format": fmt})
+    return out
+
+
+def context_pack(db: Session, *, dataset_id: int, dataset_name: str) -> str:
+    """Everything an outside AI needs to write an AppBI-compatible report — and nothing
+    else: no data values, no SQL, no table/view/column names, no ids of the platform.
+
+    Every rule written here is what the platform actually does (runtime.js, readiness.py,
+    bindings.MAX_*): a pack that promises a feature the runtime lacks (`data-rac-cell` by
+    column LABEL, a 25-row list from a Top-10 candidate) produced pages that looked right
+    in the AI's head and showed "—" in AppBI.
+    """
+    model = B.load_model(db, dataset_id)
+    cands, dims = B.candidates(model), B.filter_dimensions(model, dataset_id)
+    meta = B.field_meta(model)
+    prow = _pack_rows(cands, meta)
+    rows = [f"| `@{r['id']}` | {r['kind']} | {r['meaning']} | {r['rows']} | {r['fields']} | {r['aggregation']} | {r['format']} |"
+            for r in prow]
+    drows = [f"| `@{d['id']}` | {d['kind']} | {d['label']} | "
+             + ("date range picker (from – to)" if d["kind"] == "date" else "multi-select list of the column's values") + " |"
+             for d in dims]
+    k1 = next((c["id"] for c in cands if c["kind"] == "kpi"), "c1")
+    kt = next((c["id"] for c in cands if c["kind"] == "time"), k1)
+    kc = next((c["id"] for c in cands if c["kind"] == "category"), kt)
+    f1 = dims[0]["id"] if dims else "f1"
+    fd = next((d["id"] for d in dims if d["kind"] == "date"), f1)
+    L = B.MAX_BINDINGS
     return "\n".join([
         f"# AppBI AI Design Context Pack — {dataset_name}",
         "",
-        "You are designing a report page that AppBI will connect to its governed data. Read the two halves of",
-        "this brief: **what is yours** (the whole design) and **the data contract** (the only thing you must not",
-        "improvise). Paste the result into AppBI › AI Vibe Report › *Dán mã*. AppBI then runs every placeholder",
-        "through its BI Core — the semantic model, the viewer's permissions, the link's locked filters — and the",
-        "numbers on screen are the Dataset's real, current figures. The page itself never holds or fetches data.",
+        "You are writing ONE report page (HTML + CSS + JS) that AppBI connects to its governed data.",
+        "Paste the result into AppBI › AI Vibe Report › *Dán mã*. AppBI runs every placeholder through its",
+        "BI Core — the semantic model, the viewer's permissions, the link's locked filters — so the numbers",
+        "on screen are the Dataset's real, current figures. The page itself never holds or fetches data.",
+        "",
+        "Read the brief in this order: what is yours (§1), the data contract (§2), the data you may use (§3–4),",
+        "how to put data on the page (§5), the sandbox (§6), the JS SDK (§7), formatting (§8), what AppBI",
+        "checks (§9), hard limits (§10), then run the checklist (§11). Write the page's words in the language",
+        "of the labels below.",
         "",
         "## 1. What is yours — design freely",
         "- Layout, typography, colours, spacing, icons drawn in CSS/SVG, animation, dark mode, responsive behaviour.",
-        "- Any HTML structure, any CSS (grid, flex, custom properties, keyframes, media queries).",
+        "- Any HTML structure, any CSS (grid, flex, custom properties, keyframes, media queries, container queries).",
         "- Any JavaScript for the page's behaviour: tabs, accordions, menus, scroll effects, sorting a table the user",
-        "  clicks, your own charts drawn on SVG/canvas FROM the dto rows `rac.bind` hands you.",
-        "- Words: titles, section intros, explanations of what a section shows.",
+        "  clicks, your own charts drawn on SVG/canvas FROM the dto rows `rac.bind` hands you (§7).",
+        "- Words: titles, section intros, explanations of what a section shows — never a sentence that states a figure.",
+        "- AppBI's own visuals and controls follow your theme through CSS variables (§8): set them, do not fight them.",
         "",
         "## 2. The data contract — the only rules that are not negotiable",
         "Every business figure (a number, a total, a percentage, a ranking, a trend, a date range of the data)",
-        "comes from AppBI at run time, through a placeholder below. Concretely:",
-        f"- A headline number: `<b data-rac-value=\"@{example_kpi}\"></b>` — leave the element EMPTY; AppBI fills it,",
-        "  formatted. For one row of a breakdown add `data-rac-row=\"<the row's label>\"` (or `data-rac-rank=\"1\"`).",
-        f"- A visual: `<div data-rac-viz=\"bar\" data-rac-bind=\"@{example_viz}\" style=\"height:280px\"></div>`",
-        "  (kinds: kpi, line, area, bar, hbar, column, donut, table, heatmap, gauge, progress, sparkline, waterfall).",
-        "- A repeated list / your own table: one template row `<tr data-rac-repeat=\"@cN\">` with",
-        "  `<td data-rac-cell=\"<column label>\"></td>` cells — AppBI repeats it per row of the data.",
-        f"- A viewer filter: `<div data-rac-filter=\"@{example_f}\"></div>` (AppBI draws the control) and",
+        "comes from AppBI at run time, through a placeholder from §3/§4. Concretely:",
+        f"- A headline number: `<b data-rac-value=\"@{k1}\"></b>` — leave the element EMPTY; AppBI fills it, formatted.",
+        f"- A visual: `<div data-rac-viz=\"bar\" data-rac-bind=\"@{kc}\" style=\"height:280px\"></div>` (kinds in §5.2).",
+        f"- A list / your own table: one template row `<tr data-rac-repeat=\"@{kc}\">` with `<td data-rac-cell=\"d0\"></td>`",
+        "  `<td data-rac-cell=\"m0\"></td>` — AppBI clones it once per row (§5.3). Cells take FIELD KEYS, not labels.",
+        f"- A viewer filter: `<div data-rac-filter=\"@{f1}\"></div>` (AppBI draws the control) and",
         "  `<div data-rac-filter-chips></div>` for the active filters.",
-        "- In JS: `rac.bind('@cN', function (dto) { … dto.rows, dto.fields … })` — draw from `dto`, nothing else.",
+        f"- In JS: `rac.bind('@{kt}', function (dto) {{ … dto.rows, dto.fields … }})` — draw from `dto`, nothing else.",
         "",
-        "**Never** (AppBI flags each of these, and refuses to publish the page until they are fixed):",
+        "**Never** (AppBI flags each of these; the ones marked ⛔ block publishing until fixed):",
         "- type a figure into the markup or the script (`<b>12.345</b>`, `const data = [120, 98, …]`, `labels: ['T1', …]`);",
-        "- ship sample / mock / demo data, or a sentence that states a figure (\"Doanh thu tăng 12%\", \"tính tới 24/08\");",
+        "- ship sample / mock / demo data, or a sentence that states a figure or the data's date",
+        "  (\"Doanh thu tăng 12%\", \"Dữ liệu tĩnh, tính tới 24/08\") — the data is live and filterable;",
         "- add up, average or compare rows in JS to make a new total or a period change — ask for the candidate",
-        "  that already IS that figure (the table below); if none exists, leave the place out;",
-        "- invent a placeholder: use only `@c…` / `@f…` from the tables below, exactly as written;",
-        "- load anything: no `<script src>`, `<link>`, web fonts, images from the web, CDN chart libraries, fetch/XHR.",
+        "  that already IS that figure (§3); if none exists, leave the place out;",
+        "- invent a placeholder ⛔: use only `@c…` / `@f…` from §3/§4, exactly as written — never `b1`, `f1`, `c1`",
+        "  without `@`, a column name, or `missing`;",
+        "- load anything: no `<script src>`, `<link>`, `<iframe>`, web fonts, images from the web, CDN chart",
+        "  libraries, fetch/XHR (§6).",
         "",
         "## 3. Data you may use (governed candidates — meanings, not values)",
-        "| Placeholder | Kind | Meaning | Axis / breakdown | Aggregation | Format |",
-        "|---|---|---|---|---|---|",
+        "Each placeholder is one query AppBI runs. The *Rows* and *Fields* columns are exactly what `dto.rows`",
+        "holds: `d0` is the breakdown value, `m0` the measure. Pick by *Meaning*; two meanings are never the same.",
+        "",
+        "| Placeholder | Kind | Meaning | Rows | Fields | Aggregation | Format |",
+        "|---|---|---|---|---|---|---|",
         *rows,
         "",
-        "Format `percent` means the value is a ratio that AppBI shows ×100 — never multiply it yourself.",
+        "- **kpi** — the one number for the whole page scope. Use it for every total / headline.",
+        "- **time** — a monthly series. Its headline (`data-rac-value`) is the LATEST month, not a total.",
+        "- **category** — the 10 largest values of a breakdown. It is never the full list: do not promise",
+        "  \"all\" items, do not ask for more rows (`limit` only shortens), do not compute shares of a total from it.",
+        "- Format `percent` means the value is a ratio that AppBI shows ×100 — never multiply it yourself.",
         "",
-        "## 4. Dimensions a viewer may filter by",
-        "| Placeholder | Kind | Label |",
-        "|---|---|---|",
+        "## 4. Filters a viewer may use",
+        "| Placeholder | Kind | Label | Control AppBI draws |",
+        "|---|---|---|---|",
         *drows,
         "",
-        "## 5. Runtime SDK (`window.rac`, already loaded in the AppBI sandbox)",
-        SDK_REFERENCE.strip(),
+        f"A filter applies to every placeholder on the page. At most {B.MAX_FILTERS} filters per page; a list control",
+        f"offers at most {B.MAX_FILTER_VALUES} values (searchable). A link can lock a filter for its viewers: the page must",
+        "work whatever is selected, including an empty result.",
+        "",
+        "## 5. Putting data on the page — recipes",
+        "### 5.1 Numbers",
+        "```html",
+        f"<b data-rac-value=\"@{k1}\"></b>                                   <!-- the kpi total -->",
+        f"<b data-rac-value=\"@{kt}\"></b>                                   <!-- a time series: its latest month -->",
+        f"<b data-rac-value=\"@{kc}\" data-rac-rank=\"0\"></b>                <!-- row 1 (0-based) of a breakdown: its m0 -->",
+        f"<span data-rac-value=\"@{kc}\" data-rac-rank=\"0\" data-rac-field=\"d0\"></span>  <!-- row 1's label -->",
+        f"<span data-rac-title=\"@{k1}\"></span>  <span data-rac-asof=\"@{k1}\"></span>  <!-- title / data timestamp -->",
+        f"<span data-rac-filter-text=\"@{fd}\" data-rac-opts='{{\"prefix\":\"Kỳ: \",\"empty\":\"Tất cả\"}}'></span>  <!-- current selection as text -->",
+        "```",
+        "- A bare `data-rac-value` on a **category** placeholder shows `—` (many rows, no single value): add",
+        "  `data-rac-rank` or use the kpi candidate. `data-rac-row=\"<value>\"` also exists, but you do not know the",
+        "  data's values — prefer `data-rac-rank` or a repeat (§5.3).",
+        "- Values arrive formatted WITH their unit (%, compact Tr/N/Tỷ, currency): never write a unit next to them.",
+        "",
+        "### 5.2 AppBI visuals (`data-rac-viz` + `data-rac-bind`, options in `data-rac-opts` as JSON)",
+        "| Kind | Use with | Options |",
+        "|---|---|---|",
+        "| `kpi` | kpi, time | `label`, `goal:'up'/'down'` (colours the change), `compare:'none'`, `sparkline:false` |",
+        "| `line` / `area` | time | `color`; needs a CSS height |",
+        "| `bar` (= `column`) / `hbar` | category, time | `top` (≤ rows returned), `color`; bar needs a CSS height |",
+        "| `donut` (= `pie`) | category | `top` |",
+        "| `table` | any | `limit` (default 50), `bars:false`; headers sort on click |",
+        "| `heatmap` | time (year × month) | — |",
+        "| `gauge` | kpi | `max`, `target` — a target you type is YOUR number: AppBI labels it as such |",
+        "| `progress` | category | `top` |",
+        "| `sparkline` | time | `color`, `height` |",
+        "| `waterfall` | time (period-over-period change), category | `top` |",
+        "",
+        "A `kpi` on a **time** placeholder shows ▲/▼ % between the two latest months, labelled \"tính trong báo cáo\"",
+        "(a report calculation, not an official metric) and skipped for an incomplete month. Never type a %, delta",
+        "or target yourself. Clicking a bar, slice or table row cross-filters the page when its breakdown is also",
+        "a filter in §4.",
+        "",
+        "### 5.3 Your own list or table (repeat)",
+        "```html",
+        "<table class=\"my-table\"><thead><tr><th>#</th><th>Tên</th><th>Giá trị</th></tr></thead><tbody>",
+        f"  <tr data-rac-repeat=\"@{kc}\" data-rac-opts='{{\"limit\":5}}'>",
+        "    <td data-rac-cell=\"#\"></td>        <!-- 1, 2, 3 … -->",
+        "    <td data-rac-cell=\"d0\"></td>       <!-- the breakdown value -->",
+        "    <td data-rac-cell=\"m0\"></td>       <!-- the measure, formatted -->",
+        "    <td><i data-rac-bar=\"m0\"></i></td> <!-- AppBI sets width: 0–100 % of the largest row -->",
+        "  </tr></tbody></table>",
+        "```",
+        "- `data-rac-cell` takes ONLY `#`, `d0`/`d`, `m0`/`m` — a column label or any other key renders `—`.",
+        "- Repeat options: `limit`, `sort` (`\"m0\"` ascending, `\"-m0\"` descending), `empty` (text when no row),",
+        "  `cutNote:false` (hide AppBI's \"Top 10\" note — keep it unless your heading already says Top 10),",
+        "  `bands` with `data-rac-tone=\"m0\"`: `[[100,'low'],[500,'mid'],[null,'high']]` sets `data-rac-tone-v` for CSS.",
+        "- The template element is hidden and cloned; style it as one normal row. Works on any element, not only `<tr>`.",
+        "",
+        "### 5.4 Filters",
+        "```html",
+        f"<div data-rac-filter=\"@{f1}\"></div>   <div data-rac-filter=\"@{fd}\"></div>   <div data-rac-filter-chips></div>",
+        "```",
+        "AppBI draws, styles and wires the control. A custom control is allowed: call `rac.setFilter` (§7).",
+        "",
+        "### 5.5 States you do not draw",
+        "AppBI shows loading, empty (\"Không có dữ liệu cho bộ lọc đang chọn\"), error, refused (a locked filter",
+        "cannot apply) and \"Chưa gắn dữ liệu\" (a placeholder that is not bound) inside the element. Leave room for a",
+        "one-line message in every data element; do not hide data elements until data arrives.",
         "",
         "## 6. Sandbox facts",
-        "- The page runs in an isolated frame: no network, storage, cookies, popups, forms or navigation away from the page.",
-        "- `#anchor` links work; inline `on*=` handlers do not (use addEventListener); eval/new Function are blocked.",
+        "- The page runs in an isolated frame with a strict CSP: no network (`fetch`, XHR, WebSocket, EventSource,",
+        "  `sendBeacon`, workers are removed), no storage (localStorage, sessionStorage, IndexedDB, cookies), no",
+        "  popups (`window.open`), forms, or navigation away from the page.",
+        "- `<iframe>`, `<object>`, `<embed>`, `<link>`, `<meta>`, `<base>` are removed. `<script src>` never loads.",
+        "- Images and fonts only as `data:` / `blob:` URIs (inline SVG is best). No web fonts: use a system font stack.",
+        "- `#anchor` links and `scrollIntoView` work; inline `on*=` handlers do not (use addEventListener);",
+        "  eval / new Function are blocked. Your script runs after the runtime: `window.rac` is always defined.",
+        "- If the viewer's browser cannot lock navigation, AppBI does not run your script at all (the declarative",
+        "  places of §5 still render): every figure must work WITHOUT your JS. Use JS for behaviour and extra visuals.",
         "- Give each top-level section `data-rac-region=\"kebab-id\" data-rac-label=\"Human label\"` so authors can",
         "  edit a section with AI later (the only structural requirement).",
+        "- The page is shown at any width (phone to wide screen): AppBI reports horizontal overflow as an error.",
         "",
-        "## 7. Before you hand the file back — check",
-        "1. Search your output for digits: every one is in a CSS value, a placeholder id, a label like \"Top\" /",
-        "   a year in a heading, or your JS logic — none is a business figure.",
-        "2. Every `data-rac-value` / `data-rac-bind` / `data-rac-repeat` / `data-rac-filter` uses a placeholder listed above.",
-        "3. No array or object literal in the script holds business values; every chart is drawn from `dto`.",
-        "4. One self-contained HTML file: `<style>`, `<script>` (no `src`), body markup.",
+        "## 7. JavaScript SDK (`window.rac`)",
+        "```js",
+        f"rac.bind('@{kt}', function (dto) {{ /* called on data and after EVERY filter change */ }});",
+        "// dto = { status: 'loading'|'ready'|'empty'|'error'|'refused'|'unbound', title, rows: [{d0, m0}],",
+        "//         fields: [{key:'d0'|'m0', label, role:'dimension'|'measure', kind:'date'|'string'|'number',",
+        "//                   grain, aggregation, format, filterKey}],",
+        "//         topN: {n, direction} | undefined, truncated, partial: [months not yet complete],",
+        "//         notApplied: [filters this data could not apply], provenance: {asOf}, error }",
+        f"rac.data('@{kt}')                 // the last dto (or null)",
+        f"rac.viz.bar(el, '@{kc}', {{top: 5}})  // any §5.2 kind, re-renders by itself on new data",
+        "rac.fmt(value, field, {compact: true, decimals: 1})   rac.fmtDate(value, 'month')   rac.label(value, field)",
+        f"rac.primary('@{kt}')              // {{value, prev, field, note}} — the same headline data-rac-value shows",
+        f"rac.filters()  rac.filterState()  rac.onFilters(fn)  rac.values('@{f1}', 'search') → Promise<values>",
+        f"rac.setFilter('@{f1}', ['A', 'B'])  rac.setFilter('@{fd}', ['2025-01-01', '2025-12-31'])  rac.clearFilter('@{f1}')",
+        f"rac.clearFilters()  rac.drill('@{f1}', value)  rac.ready(fn)  rac.icon('chart', 18) → svg string",
+        "```",
+        "- Always branch on `dto.status`; draw only when `'ready'`. Read values by `field.key`, label them by `field.label`.",
+        "- Format every number with `rac.fmt(value, field)` so the unit and the percent convention stay right.",
+        "- `<span data-rac-icon=\"NAME\"></span>` draws an icon. NAME: home chart trend users cart money truck star box",
+        "  layers filter calendar map target table pie menu up down alert.",
         "",
-        "## 8. Self-check list (machine-readable) — the ONLY placeholders the page may use",
+        "## 8. Theme and formatting",
+        "AppBI visuals read these CSS variables — set them on `:root` (or a section) to match your design:",
+        "`--rac-accent` `--rac-c1`…`--rac-c8` (series palette) `--rac-text` `--rac-muted` `--rac-bg` `--rac-surface`",
+        "`--rac-border` `--rac-grid` `--rac-pos` `--rac-neg` `--rac-warn` `--rac-font`.",
+        "Number options on a `data-rac-value` / cell (`data-rac-opts`): `compact` (true/false), `decimals`,",
+        "`scale` + `suffix` (e.g. `{\"scale\":1e9,\"suffix\":\" tỷ\"}` shows the same number in billions).",
+        "Large numbers are compact by default (9,2 Tr); a `table` shows full numbers.",
+        "",
+        "## 9. What AppBI checks after import (and what you see in Studio)",
+        "Blocking ⛔ — publishing is refused until fixed:",
+        "- `UNBOUND` a placeholder / filter that is not in §3/§4, or could not be bound;",
+        "- `SAMPLE` a design sample number still on the page.",
+        "Warnings — shown next to the place:",
+        "- `STATIC_FIGURE` a number typed outside every data place (it never follows the data or a filter);",
+        "- `STALE_TEXT` text that calls itself static / sample / demo data;",
+        "- `CARD_LABEL` a card titled after one metric that shows another placeholder's value;",
+        "- `ROW_ADDRESS` a value in a hand-built row that is not addressed to its row (use §5.3 or `data-rac-rank`).",
+        "In the live Studio preview: values in the wrong card, numbers matching no bound data, horizontal",
+        "overflow, script errors and blocked APIs are listed too. Ranks (\"Top 10\"), months, years and dates in",
+        "your text are not treated as figures. Mark a number that is deliberately not data (a phone number, a",
+        "version) with `data-rac-static`.",
+        "",
+        "## 10. Hard limits",
+        f"- At most {L} distinct `@c…` placeholders per page — one placeholder may be used in many places, it counts once.",
+        f"  Beyond {L} the extra ones are left unbound (⛔). Plan the page around ≤ {L} queries.",
+        f"- At most {B.MAX_FILTERS} filters; at most {B.MAX_ROWS} rows reach a dto; category placeholders return ≤ 10 rows.",
+        f"- Sizes: HTML ≤ {D.MAX_HTML // 1000} KB, CSS ≤ {D.MAX_CSS // 1000} KB, JS ≤ {D.MAX_JS // 1000} KB.",
+        "- Only the data in §3 exists. A figure not listed (a target, a forecast, a ratio of two candidates, last",
+        "  year's value) cannot be shown — leave it out rather than computing or typing it.",
+        "",
+        "## 11. Before you hand the file back — check",
+        "1. Search your output for digits: every one is in a CSS value, a placeholder id, `data-rac-opts`, a",
+        "   label like \"Top\" / a year in a heading, or your JS logic — none is a business figure.",
+        "2. Every `data-rac-value` / `data-rac-bind` / `data-rac-repeat` / `data-rac-filter` / `rac.bind` / `rac.setFilter`",
+        "   uses a placeholder from §12's JSON list below, written with its `@`.",
+        f"3. ≤ {L} distinct `@c…`, ≤ {B.MAX_FILTERS} distinct `@f…`. Every total is a **kpi** placeholder.",
+        "4. Every `data-rac-cell` is `#`, `d0` or `m0`. No bare `data-rac-value` on a category placeholder.",
+        "5. No array or object literal in the script holds business values; every chart is drawn from `dto`.",
+        "6. No sentence states a figure, a data date, or that the data is static / sample / demo.",
+        "7. One self-contained HTML file: `<style>`, `<script>` (no `src`), body markup; it reads well at 375 px.",
+        "",
+        "## 12. Self-check list (machine-readable) — the ONLY placeholders the page may use",
         "```json",
-        json.dumps({"data": [f"@{c['id']}" for c in cands[:200]], "filters": [f"@{d['id']}" for d in dims],
-                    "attributes": ["data-rac-value", "data-rac-bind", "data-rac-viz", "data-rac-repeat", "data-rac-cell",
-                                   "data-rac-row", "data-rac-rank", "data-rac-filter", "data-rac-filter-chips",
-                                   "data-rac-title", "data-rac-asof", "data-rac-region", "data-rac-label"]},
+        json.dumps({"data": [f"@{r['id']}" for r in prow],
+                    "data_kinds": {f"@{r['id']}": r["kind"] for r in prow},
+                    "filters": [f"@{d['id']}" for d in dims],
+                    "limits": {"placeholders": L, "filters": B.MAX_FILTERS, "category_rows": 10},
+                    "cell_keys": ["#", "d0", "m0"],
+                    "attributes": ["data-rac-value", "data-rac-bind", "data-rac-viz", "data-rac-opts", "data-rac-repeat",
+                                   "data-rac-cell", "data-rac-bar", "data-rac-tone", "data-rac-row", "data-rac-rank",
+                                   "data-rac-field", "data-rac-filter", "data-rac-filter-chips", "data-rac-filter-text",
+                                   "data-rac-title", "data-rac-asof", "data-rac-icon", "data-rac-static",
+                                   "data-rac-region", "data-rac-label"]},
                    ensure_ascii=False),
         "```",
     ])

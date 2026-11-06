@@ -101,6 +101,8 @@ services:
       # (e.g. https://reports.example.com). Empty: derived for a localhost app;
       # otherwise reports run without their custom JavaScript (fail closed).
       REPORT_ARTIFACT_ORIGIN: ${REPORT_ARTIFACT_ORIGIN:-}
+      REPORT_MAX_BINDINGS: ${REPORT_MAX_BINDINGS:-40}
+      REPORT_MAX_FILTERS: ${REPORT_MAX_FILTERS:-12}
       SOURCE_QUERY_MAX_ROWS: ${SOURCE_QUERY_MAX_ROWS:-10000}
       BQ_MAX_BYTES_BILLED: ${BQ_MAX_BYTES_BILLED:-64424509440}
       PLATFORM_GCP_ALLOWED_PROJECTS: ${PLATFORM_GCP_ALLOWED_PROJECTS:-}

@@ -127,6 +127,8 @@ export interface Transformation {
 
 export interface DatasetTable {
   id: number;
+  /** Set on create when some column names are not standard (backend dataset_column_names). */
+  column_name_warning?: { code: string; message: string; columns: string[]; blocked: boolean } | null;
   dataset_id: number;
   datasource_id?: number | null;
   source_kind: "physical_table" | "sql_query" | "derived_table" | "generated_calendar";
