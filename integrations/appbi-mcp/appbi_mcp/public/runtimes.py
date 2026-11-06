@@ -63,9 +63,15 @@ class RuntimePool:
     def enabled(self) -> bool:
         return bool(self.urls and self.secret)
 
+    def secret_for(self, index: int) -> str:
+        """Each runtime has its OWN secret (comma-separated, in pool order): a viewer who reads
+        their runtime's secret from inside it can only act on that same runtime."""
+        parts = [p.strip() for p in self.secret.split(",") if p.strip()]
+        return parts[index - 1] if len(parts) >= index else (parts[0] if parts else "")
+
     async def _agent(self, index: int, method: str, path: str, body: dict | None = None) -> dict:
         async with httpx2.AsyncClient(base_url=self.urls[index - 1], transport=self.transport, timeout=10) as c:
-            r = await c.request(method, path, json=body, headers={"X-Runtime-Secret": self.secret})
+            r = await c.request(method, path, json=body, headers={"X-Runtime-Secret": self.secret_for(index)})
             r.raise_for_status()
             return r.json()
 

@@ -35,8 +35,8 @@ INDEX = os.environ.get("RUNTIME_INDEX", "1")
 STATE = {"lease": None, "ttyd": None}
 LOCK = threading.Lock()
 
-DENY = ["Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "LS", "WebFetch",
-        "WebSearch", "Task", "Agent", "TodoWrite", "KillShell", "BashOutput", "Skill", "SlashCommand"]
+DENY = ["Bash", "Read", "Write", "Edit", "NotebookEdit", "Glob", "Grep", "WebFetch",
+        "WebSearch", "Task", "Agent", "TodoWrite", "KillShell", "BashOutput", "Skill"]
 
 SYSTEM_NOTE = (
     "You are helping a viewer of ONE AppBI public report through the appbi-report tools. "
@@ -58,29 +58,30 @@ def configure(mcp_url: str, mcp_token: str) -> None:
     # Claude Code's own config: onboarding done, folder trusted, the report's MCP with this
     # viewer session's token (an AppBI token for ONE view session — never a Claude credential).
     _write(os.path.join(HOME, ".claude.json"), {
-        "hasCompletedOnboarding": True,
+        # NOT hasCompletedOnboarding: the first-run flow is where the viewer signs in to their
+        # Claude subscription (Claude Code's own login). Only the colour theme is pre-set.
         "theme": "light",
         "projects": {WORK: {"hasTrustDialogAccepted": True, "hasCompletedProjectOnboarding": True, "allowedTools": []}},
         "mcpServers": {"appbi-report": {"type": "http", "url": mcp_url,
                                         "headers": {"Authorization": f"Bearer {mcp_token}"}}},
     })
     _write(os.path.join(HOME, ".claude", "settings.json"), {
-        "permissions": {"allow": ["mcp__appbi-report"], "deny": DENY, "defaultMode": "default"},
+        "permissions": {"allow": ["mcp__appbi-report"], "deny": DENY, "defaultMode": "auto"},
         "enableAllProjectMcpServers": False,
         "env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "false", "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1"},
     })
-    with open(os.path.join(WORK, "CLAUDE.md"), "w", encoding="utf-8") as f:
-        f.write(SYSTEM_NOTE + "\n")
 
 
 def start_ttyd() -> subprocess.Popen:
-    env = dict(os.environ, ENABLE_CLAUDEAI_MCP_SERVERS="false", DISABLE_AUTOUPDATER="1")
+    env = dict(os.environ, ENABLE_CLAUDEAI_MCP_SERVERS="false", DISABLE_AUTOUPDATER="1", APPBI_NOTE=SYSTEM_NOTE)
     env.pop("RUNTIME_SECRET", None)
-    # When Claude Code exits, the lease is over: recycle (no shell is ever offered).
-    cmd = ["ttyd", "-p", "7681", "-b", f"/claude-rt/{INDEX}", "-W", "-o", "-t", "fontSize=15",
+    # One viewer connection at a time (-m 1). The command is Claude Code only - no shell is
+    # offered; a reload reconnects to a new Claude process with the same sign-in. The lease ends
+    # through the public MCP (End session, tab closed, idle, revoke), never from in here.
+    cmd = ["ttyd", "-p", "7681", "-b", f"/claude-rt/{INDEX}", "-W", "-m", "1", "-t", "fontSize=15",
            "-t", "titleFixed=Claude", "-t", 'theme={"background":"#ffffff","foreground":"#1f2937","cursor":"#1f2937","selectionBackground":"#c7d2fe"}',
            "-t", "disableLeaveAlert=true",
-           "bash", "-c", f"cd {WORK} && claude --permission-mode default; curl -s -X POST -H 'X-Runtime-Secret: {SECRET}' http://127.0.0.1:8099/recycle >/dev/null"]
+           "claude", "--append-system-prompt", SYSTEM_NOTE]
     return subprocess.Popen(cmd, env=env, cwd=WORK)
 
 

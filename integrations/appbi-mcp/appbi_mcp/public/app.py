@@ -305,7 +305,7 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
     async def runtime_pool(request: Request) -> Response:
         import secrets as _s
 
-        if not pool.enabled or not _s.compare_digest(request.headers.get("x-runtime-secret", ""), settings.runtime_secret):
+        if not pool.enabled or not _s.compare_digest(request.headers.get("x-runtime-secret", ""), pool.secret_for(1)):
             return _bridge_json({"error": "not_found"}, 404)
         return _bridge_json({"runtimes": await pool.status()})
 

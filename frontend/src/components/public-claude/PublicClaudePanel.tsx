@@ -51,6 +51,8 @@ export function PublicClaudePanel({ kind, token, sessionToken, viewState, apply,
   const [detail, setDetail] = useState('');
   const [session, setSession] = useState<BridgeSession | null>(null);
   const [panelPath, setPanelPath] = useState<string | null>(null);
+  // the runtime's own failure: kept apart from the bridge status, which its poll keeps updating
+  const [rtError, setRtError] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState(true);
   const [now, setNow] = useState(Date.now());
   const [log, setLog] = useState<Array<{ at: number; text: string; ok: boolean }>>([]);
@@ -82,18 +84,18 @@ export function PublicClaudePanel({ kind, token, sessionToken, viewState, apply,
 
   const startRuntime = useCallback(async () => {
     setMode('runtime');
+    setRtError(null);
     try {
       const b = await openBridge();
       const r = await b.runtime();
       if ('error' in r) {
-        setStatus('error');
-        setDetail(r.error === 'pool_busy' ? t('publicClaude.rt.busy') : (r.message || r.error));
+        setRtError(r.error === 'pool_busy' ? t('publicClaude.rt.busy') : (r.message || r.error));
+        void b.stop();
         return;
       }
       setPanelPath(r.panelPath);
     } catch (e: any) {
-      setStatus('error');
-      setDetail(e?.response?.data?.message || e?.message || '');
+      setRtError(e?.response?.data?.message || e?.message || t('publicClaude.rt.failed'));
     }
   }, [openBridge, t]);
 
@@ -114,6 +116,7 @@ export function PublicClaudePanel({ kind, token, sessionToken, viewState, apply,
   const end = async () => {
     await bridgeRef.current?.stop();
     setPanelPath(null);
+    setRtError(null);
     setMode('intro');
     setSession(null);
     setStatus('idle');
@@ -164,8 +167,13 @@ export function PublicClaudePanel({ kind, token, sessionToken, viewState, apply,
 
       {mode === 'runtime' && (
         <div className="flex min-h-0 flex-1 flex-col">
-          {status === 'error' && <div className="m-4 rounded-md bg-red-50 px-3 py-2 text-red-700" data-testid="public-claude-error">{detail}</div>}
-          {!panelPath && status !== 'error' && (
+          {rtError && (
+            <div className="m-4 space-y-2 rounded-md bg-red-50 px-3 py-2 text-red-700" data-testid="public-claude-error">
+              <div>{rtError}</div>
+              <button type="button" className="text-[12px] underline" onClick={() => void startRuntime()}>{t('publicClaude.rt.retry')}</button>
+            </div>
+          )}
+          {!panelPath && !rtError && (
             <div className="flex items-center gap-2 px-4 py-6 text-slate-500"><Loader2 className="h-4 w-4 animate-spin" />{t('publicClaude.rt.starting')}</div>
           )}
           {panelPath && (
