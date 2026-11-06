@@ -16,6 +16,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, Send, Square } from 'lucide-react';
 
+import { ClaudeSignIn } from '@/components/public-claude/ClaudeSignIn';
 import { renderMarkdown } from '@/lib/dashboard-markdown';
 import { ReportBridge, type ApplyResult, type BridgeCommand } from '@/lib/public-mcp/bridge';
 import { useI18n } from '@/providers/LanguageProvider';
@@ -203,19 +204,7 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
           </Bubble>
         )}
         {phase === 'signin' && base && (
-          <Bubble side="assistant">
-            <div data-testid="claude-signin">
-              <p className="font-emphasis text-text-primary">{t('publicClaude.chat.signinTitle')}</p>
-              <ol className="mt-1 list-decimal space-y-0.5 pl-4 text-tiny text-text-secondary">
-                <li>{t('publicClaude.chat.s1')}</li>
-                <li>{t('publicClaude.chat.s2')}</li>
-                <li>{t('publicClaude.chat.s3')}</li>
-              </ol>
-              <iframe src={base} title="Claude sign-in" data-testid="claude-signin-frame"
-                className="mt-2 h-[230px] w-full rounded-lg border border-[rgb(var(--border-line))] bg-white" />
-              <p className="mt-1.5 text-micro text-text-quaternary">{t('publicClaude.chat.signinNote')}</p>
-            </div>
-          </Bubble>
+          <Bubble side="assistant"><ClaudeSignIn base={base} onSignedIn={() => setPhase('ready')} /></Bubble>
         )}
         {phase === 'ready' && turns.length === 0 && (
           <Bubble side="assistant">

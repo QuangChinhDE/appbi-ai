@@ -28,6 +28,8 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import re
+import select
 import signal
 import socket
 import subprocess
@@ -40,7 +42,7 @@ HOME = os.path.expanduser("~")
 WORK = os.path.join(HOME, "report")
 SECRET = os.environ.get("RUNTIME_SECRET", "")
 INDEX = os.environ.get("RUNTIME_INDEX", "1")
-STATE = {"lease": None, "ttyd": None, "session": None}
+STATE = {"lease": None, "session": None, "login": None}
 LOCK = threading.Lock()
 CHAT = threading.Lock()
 MAX_MESSAGE = 4000
@@ -87,6 +89,58 @@ def configure(mcp_url: str, mcp_token: str) -> None:
         "enableAllProjectMcpServers": False,
         "env": {"ENABLE_CLAUDEAI_MCP_SERVERS": "false", "DISABLE_AUTOUPDATER": "1", "DISABLE_TELEMETRY": "1"},
     })
+
+
+URL_RX = re.compile(r"https://\S+/oauth/authorize\S+")
+
+
+def signin_start() -> dict:
+    """Claude Code's own `claude auth login --claudeai`: returns the Anthropic sign-in URL it
+    prints (an authorize URL with Claude Code's PKCE challenge - no secret). The process stays
+    waiting for the code Anthropic shows the viewer."""
+    old = STATE.get("login")
+    if old and old.poll() is None:
+        old.kill()
+    p = subprocess.Popen(["claude", "auth", "login", "--claudeai"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.STDOUT, env=dict(_env(), BROWSER="true"), cwd=WORK)
+    out, end = "", time.time() + 25
+    while time.time() < end:
+        r, _, _ = select.select([p.stdout], [], [], 1)
+        if r:
+            chunk = os.read(p.stdout.fileno(), 4096).decode(errors="ignore")  # type: ignore[union-attr]
+            if not chunk:
+                break
+            out += chunk
+            m = URL_RX.search(out)
+            if m and "Paste code" in out:
+                STATE["login"] = p
+                return {"url": m.group(0)}
+    p.kill()
+    return {"error": "no_url"}
+
+
+def signin_code(code: str) -> dict:
+    """Hand the code the viewer copied from Anthropic to the waiting `claude auth login`
+    (its stdin). Nothing is kept: not logged, not stored; Claude Code exchanges it itself."""
+    p = STATE.get("login")
+    if not p or p.poll() is not None:
+        return {"ok": False, "error": "no_signin", "message": "Start the sign-in again."}
+    try:
+        p.stdin.write((code.strip() + "\n").encode())  # type: ignore[union-attr]
+        p.stdin.flush()  # type: ignore[union-attr]
+        p.wait(30)
+    except (OSError, subprocess.TimeoutExpired):
+        p.kill()
+    tail = ""
+    try:
+        tail = (p.stdout.read() or b"").decode(errors="ignore")[-300:]  # type: ignore[union-attr]
+    except OSError:
+        pass
+    STATE["login"] = None
+    if signed_in():
+        return {"ok": True}
+    msg = "That code was not accepted. Sign in again to get a new code." if "accepted" in tail or "failed" in tail.lower() else "Sign-in did not complete."
+    return {"ok": False, "error": "code_rejected", "message": msg}
 
 
 def start_signin_terminal() -> subprocess.Popen:
@@ -165,9 +219,7 @@ class Handler(BaseHTTPRequestHandler):
                 if STATE["lease"]:
                     return self._send(409, {"error": "busy", "lease": STATE["lease"]})
                 configure(str(body["mcp_url"]), str(body["mcp_token"]))
-                STATE["ttyd"] = start_signin_terminal()
                 STATE["lease"] = str(body["lease_id"])
-                wait_for_port(7681)
             return self._send(200, {"ok": True, "panel_path": f"/claude-rt/{INDEX}/"})
         if self.path == "/recycle":
             self._send(200, {"ok": True})
@@ -182,6 +234,16 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.endswith("/api/reset"):
             STATE["session"] = None
             return self._send(200, {"ok": True})
+        if self.path.endswith("/api/signin/start"):
+            return self._send(200, signin_start())
+        if self.path.endswith("/api/signin/code"):
+            try:
+                code = str(self._body().get("code") or "")
+            except ValueError:
+                return self._send(400, {"error": "bad_request"})
+            if not code or len(code) > 512:
+                return self._send(400, {"ok": False, "error": "bad_code", "message": "Paste the whole code."})
+            return self._send(200, signin_code(code))
         if not self.path.endswith("/api/chat"):
             return self._send(404, {"error": "not_found"})
         try:
