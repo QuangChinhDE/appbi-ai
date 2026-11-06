@@ -18,6 +18,10 @@ Service names below are the ones `docker compose` creates in this project:
   so start from the commit you intend to serve.
 - `.env`. `run.sh` syncs it against `.env.example` and generates missing secrets
   on the way up; you do not hand-write it.
+- Code reports with custom JavaScript need a dedicated report subdomain
+  (`REPORT_ARTIFACT_ORIGIN`): DNS, TLS, nginx for the two document paths. See
+  [deploy/report-artifact-origin.md](deploy/report-artifact-origin.md). Without it,
+  reports still work but their JS does not run.
 
 ---
 

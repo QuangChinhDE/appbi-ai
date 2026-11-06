@@ -1030,8 +1030,22 @@ def context_pack(db: Session, *, dataset_id: int, dataset_name: str) -> str:
     f1 = dims[0]["id"] if dims else "f1"
     fd = next((d["id"] for d in dims if d["kind"] == "date"), f1)
     L = B.MAX_BINDINGS
+    from app.services.report_code import lifecycle as _LC
+
+    js_on = _LC.report_origin() is not None
+    js_env = ([
+        "**This environment: custom JavaScript RUNS** (reports are served from a dedicated report origin).",
+        "Still make every figure work without your JS (a viewer's browser may lack the Navigation API, §6).",
+    ] if js_on else [
+        "**This environment: custom JavaScript is OFF.** AppBI serves reports from the app's own domain here,",
+        "so your `<script>` will NOT run (data, charts, filters and CSS still do). Build the page with HTML + CSS",
+        "and the declarative places of §5 only: tabs/accordions with `<details>` or `:target`/`:checked` CSS, charts",
+        "with `data-rac-viz`, lists with `data-rac-repeat`. Do not draw charts in JS, do not depend on `rac.bind`.",
+    ])
     return "\n".join([
         f"# AppBI AI Design Context Pack — {dataset_name}",
+        "",
+        *js_env,
         "",
         "You are writing ONE report page (HTML + CSS + JS) that AppBI connects to its governed data.",
         "Paste the result into AppBI › AI Vibe Report › *Dán mã*. AppBI runs every placeholder through its",
@@ -1239,6 +1253,7 @@ def context_pack(db: Session, *, dataset_id: int, dataset_name: str) -> str:
                     "data_kinds": {f"@{r['id']}": r["kind"] for r in prow},
                     "filters": [f"@{d['id']}" for d in dims],
                     "limits": {"placeholders": L, "filters": B.MAX_FILTERS, "category_rows": 10},
+                    "custom_js": js_on,
                     "cell_keys": ["#", "d0", "m0"],
                     "attributes": ["data-rac-value", "data-rac-bind", "data-rac-viz", "data-rac-opts", "data-rac-repeat",
                                    "data-rac-cell", "data-rac-bar", "data-rac-tone", "data-rac-row", "data-rac-rank",

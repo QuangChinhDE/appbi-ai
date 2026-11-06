@@ -208,6 +208,7 @@ export function ReportStudio({ reportId }: { reportId: number }) {
   const onIssue = useCallback((issue: RuntimeIssue) => {
     setIssues((prev) => (prev.some((p) => p.message === issue.message) ? prev : [...prev.slice(-19), issue]));
     if (issue.kind === 'security') toast.error(issue.message);
+    else if (issue.kind === 'js_off') toast.warning(issue.message);
   }, []);
 
   const submitAi = async (instruction: string, image?: string, allowData = false): Promise<boolean> => {
@@ -403,7 +404,7 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
         {/* Preview */}
         <div className={`relative h-[640px] min-w-0 shrink-0 overflow-hidden rounded-xl border border-stroke-strong bg-surface-1 shadow-linear-sm lg:h-auto lg:flex-1 lg:shrink ${maximized ? 'hidden' : ''}`} data-testid="studio-preview">
           <div className="pointer-events-none absolute bottom-3 left-3 z-20 flex flex-col items-start gap-1.5">
-            {guardState && (
+            {guardState && (guardState.guard || guardState.authorScript === 'refused') && (
               <span data-testid="studio-guard" title={guardState.guard ? t('reportCode.guard.onHint') : t('reportCode.guard.offHint')}
                 className={`pointer-events-auto inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium shadow-sm ring-1 ring-inset ${guardState.guard ? 'bg-emerald-50 text-emerald-800 ring-emerald-200' : 'bg-amber-50 text-amber-800 ring-amber-200'}`}>
                 <ShieldCheck className="h-3.5 w-3.5" />{guardState.guard ? t('reportCode.guard.on') : t('reportCode.guard.off')}
@@ -492,7 +493,7 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
                 <div className="mb-2 max-h-64 overflow-y-auto rounded-xl border border-stroke-strong bg-surface-1 p-3 text-[11px] shadow-popover">
                   {realIssues.map((i, n) => (
                     <div key={n} className="mb-1.5 flex gap-2">
-                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${i.kind === 'semantic' || i.kind === 'provenance' ? 'bg-amber-50 text-amber-800' : i.kind === 'layout' ? 'bg-brand-container text-brand-on-container' : 'bg-red-50 text-red-700'}`}>{t(`reportCode.issues.kind.${i.kind}`) || i.kind}</span>
+                      <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold ${i.kind === 'semantic' || i.kind === 'provenance' || i.kind === 'js_off' ? 'bg-amber-50 text-amber-800' : i.kind === 'layout' ? 'bg-brand-container text-brand-on-container' : 'bg-red-50 text-red-700'}`}>{t(`reportCode.issues.kind.${i.kind}`) || i.kind}</span>
                       <span className="text-text-secondary">{i.message}</span>
                     </div>
                   ))}
