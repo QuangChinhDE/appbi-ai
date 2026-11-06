@@ -854,6 +854,7 @@ jobs:
             tests/test_intelligence_gqs_mysql_fullpath_pg.py \
             tests/test_intelligence_gqs_ledger_schema_pg.py \
             tests/test_report_public_links_http_pg.py \
+            tests/test_public_mcp_http_pg.py \
             --junitxml=/tmp/authz-pg.xml
 
       # A KNOWN-DEFECT LEDGER ON POSTGRES, RUN ON ITS OWN SO IT IS READ.

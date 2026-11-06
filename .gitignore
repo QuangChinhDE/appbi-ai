@@ -403,6 +403,7 @@ backend/_verify_gate.db
 !backend/tests/test_report_starter.py
 !backend/tests/test_report_code_contract.py
 !backend/tests/test_report_public_links_http_pg.py
+!backend/tests/test_public_mcp_http_pg.py
 !backend/tests/test_unified_grid_contract.py
 !backend/tests/test_dashboard_draft_removal_lifecycle.py
 !backend/tests/test_public_link_filter_disclosure.py

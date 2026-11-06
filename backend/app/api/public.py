@@ -1982,6 +1982,9 @@ def get_public_dashboard(
         safe_appearance.pop("ai_bot_key_configured", None)
     safe_appearance.pop("ai_bot_report_context_note", None)
     safe_appearance.pop("ai_bot_guide", None)  # the publisher's structured guide: never served
+    # Claude access (Public Read MCP): the viewer learns only whether it is on, never its settings.
+    from app.services.public_mcp import access as _mcp_access
+    safe_appearance = _mcp_access.for_viewer(safe_appearance, preview=token.startswith("emb_"))
     dash.public_link_appearance = safe_appearance
     # Published device layouts as a viewer gets them: the served pages, published
     # tiles only, no author identity or revision. Shaped on the served copy only
