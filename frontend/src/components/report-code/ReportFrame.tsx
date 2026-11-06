@@ -138,7 +138,7 @@ export function ReportFrame({
         readyRef.current = true;
         waitingSince.delete(`${propsRef.current.src}#${attemptRef.current}`);
         setStalled(false);
-        p.onGuard?.({ guard: msg.guard });
+        p.onGuard?.({ guard: msg.guard, authorScript: msg.authorScript });
         pushContext();
         if (p.provenance) postMsg({ type: 'provenance', on: true });
         void loadAll();

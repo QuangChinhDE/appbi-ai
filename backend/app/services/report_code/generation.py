@@ -121,6 +121,18 @@ HTML is the BODY CONTENT only (no <html>/<head>/<body>/<script>/<link>/<meta>). 
 8. Write UI text in the language of the request (Vietnamese by default). Never leave placeholder or lorem text.
 """
 
+JS_OFF_RULE = ("9. THIS ENVIRONMENT DOES NOT RUN CUSTOM JS (no dedicated report origin): leave \"js\" empty. "
+               "Do everything in HTML + CSS + the declarative data-rac-* places: tabs/toggles with <details> or "
+               ":target/:checked CSS, active nav with :target, charts ONLY with data-rac-viz, lists with data-rac-repeat.")
+
+
+def design_rules() -> str:
+    """DESIGN_RULES plus what this deployment allows (custom JS needs REPORT_ARTIFACT_ORIGIN)."""
+    from app.services.report_code import lifecycle as _LC
+
+    return DESIGN_RULES if _LC.report_origin() is not None else DESIGN_RULES + JS_OFF_RULE + "\n"
+
+
 SKELETON = """
 CSS: .app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}
      .side{position:sticky;top:0;height:100vh}  .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;align-items:start}
@@ -301,7 +313,7 @@ def design_page(*, goal: str, name: str, bindings: List[Dict[str, Any]], decl: L
     if preserve and reference:
         parts.append(PRESERVE_RULES)
     else:
-        parts += [DESIGN_RULES, "STRUCTURE EXAMPLE (adapt freely, this is not a template to copy):" + SKELETON,
+        parts += [design_rules(), "STRUCTURE EXAMPLE (adapt freely, this is not a template to copy):" + SKELETON,
                   "DESIGN KIT — a polished starting stylesheet. Copy it into your css and ADAPT it to the request "
                   "(colours, density, typography, components); add rules for every new component you create (badges, gauges, "
                   "alert tables, chips, floating buttons, tabs…). Every class used in your HTML must be styled; the result should "
@@ -591,7 +603,7 @@ def edit(db: Session, *, artifact, revision, instruction: str, region: Optional[
     else:
         prompt = (
             f"EDIT AN AppBI REPORT PAGE. REQUEST: {instruction.strip()[:2000]}\n\nCURRENT HTML:\n{html[:40000]}\n\nCURRENT CSS:\n{css[:20000]}\n\n"
-            f"CURRENT JS:\n{js[:12000]}\n\n{common}\n{DESIGN_RULES}\n"
+            f"CURRENT JS:\n{js[:12000]}\n\n{common}\n{design_rules()}\n"
             "SCOPE: change ONLY what the request asks for. Everything the request does not mention (layout, sections, other CSS rules, JS, bindings) must come back exactly as it is - do not add sections, cards, navigation or new metrics that were not asked for. Keep the data-rac-region ids. Return the complete page.\n"
             'Return JSON: {"html": "...", "css": "...", "js": "...", "summary": "one sentence", "add_data": [], "add_filters": []}'
         )

@@ -199,7 +199,7 @@ export const CodeWorkspace = forwardRef<CodeWorkspaceHandle, {
                 <span className="text-text-secondary">{w}</span>
               </div>
             ))}
-            {onAskAiFix && (runtimeShown.length > 0 || syntaxCount > 0) && (
+            {onAskAiFix && (runtimeShown.some((i) => i.kind !== 'js_off') || syntaxCount > 0) && (
               <Button size="xs" variant="secondary" className="ml-1.5 mt-1" leadingIcon={<Wand2 className="h-3 w-3" />} onClick={onAskAiFix} data-testid="code-ai-fix">{t('reportCode.issues.fix')}</Button>
             )}
           </div>

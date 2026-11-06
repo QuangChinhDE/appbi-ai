@@ -19,7 +19,7 @@ export type FilterValue = string[] | [string | null, string | null];
 export type FilterState = Record<string, FilterValue>;
 
 export type SandboxMessage =
-  | { type: 'ready'; guard: boolean }
+  | { type: 'ready'; guard: boolean; authorScript?: 'ran' | 'refused' }
   | { type: 'guard'; guard: boolean; authorScript: 'ran' | 'refused' }
   | { type: 'setFilter'; key: string; value: FilterValue | null }
   | { type: 'clearFilters' }
@@ -64,7 +64,8 @@ export function parseSandboxMessage(data: unknown, filters: ReportFilterDecl[]):
   const d = data as Record<string, unknown>;
   switch (d.type) {
     case 'ready':
-      return { type: 'ready', guard: d.guard === true };
+      return { type: 'ready', guard: d.guard === true,
+        authorScript: d.authorScript === 'ran' || d.authorScript === 'refused' ? d.authorScript : undefined };
     case 'guard':
       return { type: 'guard', guard: d.guard === true, authorScript: d.authorScript === 'ran' ? 'ran' : 'refused' };
     case 'clearFilters':
