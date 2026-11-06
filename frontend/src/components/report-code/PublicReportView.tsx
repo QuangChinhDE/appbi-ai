@@ -15,7 +15,6 @@ import { Lock } from 'lucide-react';
 
 import { PasswordGate } from '@/components/common/PublicPasswordGate';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
-import { PublicClaudePanel } from '@/components/public-claude/PublicClaudePanel';
 import type { BridgeCommand } from '@/lib/public-mcp/bridge';
 import { useI18n } from '@/providers/LanguageProvider';
 import { ReportFrame } from '@/components/report-code/ReportFrame';
@@ -38,7 +37,6 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
   const [focus, setFocus] = useState<{ id?: string; region?: string; n: number } | null>(null);
   // the viewer's own Claude (Public Read MCP): the panel, and the filter state it sets
   const { t } = useI18n();
-  const [claudeOpen, setClaudeOpen] = useState(false);
   const [externalState, setExternalState] = useState<{ state: FilterState; n: number } | null>(null);
   const claudeView = useMemo(() => ({
     kind: 'report', filters: viewerState, focus: focus ? (focus.id || focus.region || null) : null,
@@ -167,12 +165,12 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           externalState={externalState}
           className="min-h-0 min-w-0 flex-1"
         />
-        {variant === 'public' && claudeOpen && meta.appearance?.mcp_enabled === true && (
-          <PublicClaudePanel kind="report" token={token} sessionToken={getPublicSession(token)}
-            viewState={claudeView} apply={applyClaude} onClose={() => setClaudeOpen(false)} />
-        )}
-        {variant === 'public' && meta.appearance?.ai_bot_enabled === true && (
+        {variant === 'public' && (meta.appearance?.ai_bot_enabled === true || meta.appearance?.mcp_enabled === true) && (
           <DashboardAiBot
+            aiBotEnabled={meta.appearance?.ai_bot_enabled === true}
+            claude={meta.appearance?.mcp_enabled === true
+              ? { kind: 'report', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude }
+              : undefined}
             surface="reports"
             token={token}
             sessionToken={getPublicSession(token)}
@@ -198,10 +196,6 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
         <div className="flex items-center justify-between border-t border-slate-200 bg-white px-4 py-1.5 text-[11px] text-slate-400">
           <span>{meta.preview ? 'Xem trước liên kết · ' : ''}Phiên bản {meta.version}{meta.published_at ? ` · xuất bản ${new Date(meta.published_at).toLocaleString('vi-VN')}` : ''}</span>
           <span className="flex items-center gap-3">
-            {meta.appearance?.mcp_enabled === true && !claudeOpen && (
-              <button type="button" className="rounded-full border border-slate-300 px-2.5 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                onClick={() => setClaudeOpen(true)} data-testid="public-claude-open">{t('publicClaude.open')}</button>
-            )}
             Dữ liệu được quản trị bởi AppBI
           </span>
         </div>

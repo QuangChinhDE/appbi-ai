@@ -42,7 +42,6 @@ import {
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
-import { PublicClaudePanel } from '@/components/public-claude/PublicClaudePanel';
 import type { ApplyResult, BridgeCommand } from '@/lib/public-mcp/bridge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -1819,7 +1818,6 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
   // What the viewer sees, reported to THEIR Claude; and the commands it sends,
   // applied through this page's own controls (the server validated each one and
   // enforces every lock on every read regardless).
-  const [claudeOpen, setClaudeOpen] = useState(false);
   const claudeView = useMemo(() => ({
     kind: 'dashboard',
     page: { id: activePageId, name: dashboardPages.find((p) => p.id === activePageId)?.name || '' },
@@ -2892,22 +2890,13 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         onExport={doExportPdf}
       />
 
-      {!isEmbed && (dashboard?.public_link_appearance as any)?.mcp_enabled === true && (
-        claudeOpen ? (
-          <div className="fixed inset-y-0 right-0 z-[60] flex shadow-2xl">
-            <PublicClaudePanel kind="dashboard" token={token} sessionToken={getPublicSession(token)}
-              viewState={claudeView} apply={applyClaude} onClose={() => setClaudeOpen(false)} />
-          </div>
-        ) : (
-          <button type="button" onClick={() => setClaudeOpen(true)} data-testid="public-claude-open"
-            className="fixed bottom-5 left-5 z-[55] rounded-full border border-slate-300 bg-white px-3.5 py-2 text-[12px] font-medium text-slate-800 shadow-lg hover:bg-slate-50">
-            {t('publicClaude.open')}
-          </button>
-        )
-      )}
-
-      {!isEmbed && dashboard?.public_link_appearance?.ai_bot_enabled === true && (
+      {!isEmbed && (dashboard?.public_link_appearance?.ai_bot_enabled === true
+        || (dashboard?.public_link_appearance as any)?.mcp_enabled === true) && (
         <DashboardAiBot
+          aiBotEnabled={dashboard?.public_link_appearance?.ai_bot_enabled === true}
+          claude={(dashboard?.public_link_appearance as any)?.mcp_enabled === true
+            ? { kind: 'dashboard', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude }
+            : undefined}
           token={token}
           sessionToken={getPublicSession(token)}
           dashboardName={presentationTitle}
