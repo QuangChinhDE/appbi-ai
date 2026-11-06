@@ -17,6 +17,8 @@ class PublicSettings(Settings):
     pair_ttl: int = 600
     session_ttl: int = 8 * 3600
     viewer_ack_timeout: float = 10.0
+    runtime_urls: tuple = ()
+    runtime_secret: str = ""
 
     @property
     def resource_url(self) -> str:
@@ -53,4 +55,8 @@ def load_public_settings() -> PublicSettings:
         grant_max_ttl=8 * 3600,
         rate_limit_per_minute=_int("PUBLIC_MCP_RATE_LIMIT_PER_MINUTE", 60, 1, 600),
     )
+    from .runtimes import parse_runtime_urls
+
+    values["runtime_urls"] = tuple(parse_runtime_urls(os.environ.get("PUBLIC_MCP_RUNTIMES", "")))
+    values["runtime_secret"] = os.environ.get("PUBLIC_MCP_RUNTIME_SECRET", "").strip()
     return PublicSettings(**values)

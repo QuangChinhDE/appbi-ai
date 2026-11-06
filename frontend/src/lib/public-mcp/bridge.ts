@@ -93,6 +93,16 @@ export class ReportBridge {
     }).catch(() => undefined);
   }
 
+  /** A Claude runtime of AppBI's pool for this session, already connected to this report. */
+  async runtime(): Promise<{ panelPath: string } | { error: string; message?: string }> {
+    const r = await fetch(`${this.root}/bridge/sessions/${this.sid}/runtime`, {
+      method: 'POST', credentials: 'include', headers: this.headers(),
+    });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) return { error: b?.error || `HTTP ${r.status}`, message: b?.message };
+    return { panelPath: b.panel_path };
+  }
+
   async newCode(): Promise<void> {
     if (!this.session) return;
     const r = await fetch(`${this.root}/bridge/sessions/${this.sid}/code`, { method: 'POST', credentials: 'omit', headers: this.headers() });

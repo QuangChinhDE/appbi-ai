@@ -91,6 +91,23 @@ class PublicOAuthProvider(AppbiOAuthProvider):
             )
         return self.active_grant(grant_id) or {}
 
+    def issue_runtime_token(self, grant: dict[str, Any]) -> str:
+        """An access token for a pool runtime's Claude Code (static MCP header, no OAuth dance):
+        same table and checks as an OAuth token, bound to the grant, so it dies with the view
+        session, a revoke, or the lease's release. No refresh token."""
+        from ..state import new_secret, sha256_hex as _h
+
+        now = time.time()
+        token = new_secret("amcp_at_")
+        with self.store.transaction() as cur:
+            cur.execute(
+                "INSERT INTO tokens(token_hash, kind, grant_id, family_id, client_id, scopes, resource, created_at, expires_at) "
+                "VALUES (?, 'access', ?, ?, ?, ?, ?, ?, ?)",
+                (_h(token), grant["id"], new_id("fam"), grant["client_id"], PUBLIC_SCOPE, self.settings.resource_url, now,
+                 float(grant["expires_at"])),
+            )
+        return token
+
     def revoke_session_grants(self, session_id: str, reason: str) -> None:
         for row in self.store.query("SELECT id FROM grants WHERE user_id = ? AND revoked_at IS NULL", (f"viewer:{session_id}",)):
             self.revoke_grant(row["id"], reason)

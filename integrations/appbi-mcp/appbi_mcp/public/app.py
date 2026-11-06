@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -42,6 +43,7 @@ from ..pages import page
 from ..ratelimit import RateLimiter, client_ip
 from ..state import sha256_hex
 from .bridge import Bridge, Refused
+from .runtimes import PoolBusy, RuntimePool
 from .provider import PublicOAuthProvider
 from .settings import PUBLIC_SCOPE, PublicSettings, load_public_settings
 from .store import PublicStore
@@ -83,12 +85,15 @@ def _pair_page(txn: dict[str, Any], *, error: str = "", status: int = 200) -> Re
     return page("Connect Claude", body, status=status)
 
 
-def create_public_app(settings: PublicSettings | None = None, *, appbi_transport: httpx2.AsyncBaseTransport | None = None) -> Starlette:
+def create_public_app(settings: PublicSettings | None = None, *, appbi_transport: httpx2.AsyncBaseTransport | None = None,
+                      runtime_transport: httpx2.AsyncBaseTransport | None = None) -> Starlette:
     settings = settings or load_public_settings()
     store = PublicStore(settings.state_dir, settings.state_key)
     provider = PublicOAuthProvider(settings, store)
     ctx = AppContext(settings=settings, store=store, provider=provider, appbi_transport=appbi_transport)
     bridge = Bridge(ctx)
+    pool = RuntimePool(ctx, list(settings.runtime_urls), settings.runtime_secret, transport=runtime_transport)
+    bridge.on_end = pool.release_session
     pair_limiter = RateLimiter(10, burst=5)
     bridge_limiter = RateLimiter(20, burst=10)
 
@@ -265,6 +270,45 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
             return _bridge_json({"error": "rate_limited"}, 429)
         return _bridge_json({"pair_code": bridge.new_code(row["id"]), "pair_expires_in": settings.pair_ttl})
 
+    async def session_runtime(request: Request) -> Response:
+        """A Claude runtime of the pool for THIS tab's session, its MCP already connected."""
+        row = _tab(request)
+        if row is None:
+            return _bridge_json({"error": "session_ended"}, 410)
+        if not pool.enabled:
+            return _bridge_json({"error": "runtime_unavailable", "message": "Claude in the report is not enabled here."}, 404)
+        ok, _ = bridge_limiter.allow(f"runtime:{row['id']}")
+        if not ok:
+            return _bridge_json({"error": "rate_limited"}, 429)
+        try:
+            lease = await pool.lease(row)
+        except PoolBusy:
+            return _bridge_json({"error": "pool_busy", "message": "All Claude seats are in use. Try again in a few minutes."}, 503)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("runtime lease failed: %s", type(exc).__name__)
+            return _bridge_json({"error": "runtime_failed", "message": "Claude could not be started. Try again."}, 502)
+        resp = _bridge_json({"panel_path": lease["panel_path"], "runtime": lease["runtime"]})
+        resp.set_cookie(f"appbi_pmcp_rt_{lease['runtime']}", lease["cookie"], path=lease["panel_path"], httponly=True,
+                        samesite="strict", secure=settings.cookie_secure, max_age=settings.session_ttl)
+        return resp
+
+    async def runtime_auth(request: Request) -> Response:
+        """nginx auth_request for /claude-rt/<n>/...: only the browser holding that lease's cookie."""
+        import re as _re
+
+        m = _re.match(r"^/claude-rt/(\d+)/", request.headers.get("x-original-uri", ""))
+        if not m:
+            return Response(status_code=403)
+        i = int(m.group(1))
+        return Response(status_code=204 if pool.authorize_panel(i, request.cookies.get(f"appbi_pmcp_rt_{i}", "")) else 403)
+
+    async def runtime_pool(request: Request) -> Response:
+        import secrets as _s
+
+        if not pool.enabled or not _s.compare_digest(request.headers.get("x-runtime-secret", ""), settings.runtime_secret):
+            return _bridge_json({"error": "not_found"}, 404)
+        return _bridge_json({"runtimes": await pool.status()})
+
     async def session_end(request: Request) -> Response:
         row = _tab(request)
         if row is not None:
@@ -281,8 +325,11 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
     @contextlib.asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         store.purge_expired()
+        reaper = asyncio.create_task(pool.reaper_loop(bridge)) if pool.enabled else None
         async with mcp.session_manager.run():
             yield
+        if reaper:
+            reaper.cancel()
         store.close()
 
     iss_path = urlparse(settings.issuer).path
@@ -306,11 +353,15 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         Route(f"{res_path}/bridge/sessions/{{sid}}/state", endpoint=bridge_cors(session_state, ["POST"]), methods=["POST", "OPTIONS"]),
         Route(f"{res_path}/bridge/sessions/{{sid}}/code", endpoint=bridge_cors(session_code, ["POST"]), methods=["POST", "OPTIONS"]),
         Route(f"{res_path}/bridge/sessions/{{sid}}/end", endpoint=bridge_cors(session_end, ["POST"]), methods=["POST", "OPTIONS"]),
+        Route(f"{res_path}/bridge/sessions/{{sid}}/runtime", endpoint=bridge_cors(session_runtime, ["POST"]), methods=["POST", "OPTIONS"]),
+        Route(f"{res_path}/runtime-auth", endpoint=runtime_auth, methods=["GET"]),
+        Route(f"{res_path}/runtime-pool", endpoint=runtime_pool, methods=["GET"]),
         Route(res_path, endpoint=gated, methods=["GET", "POST", "DELETE"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)
     app.state.ctx = ctx
     app.state.bridge = bridge
+    app.state.pool = pool
     return app
 
 

@@ -305,6 +305,8 @@ def _register(mcp: Any, app: Any, bridge: Bridge, fn: Any, ann: ToolAnnotations)
             _audit(app, principal, fn.__name__, bound, "session_ended", None, [], started)
             return {"status": "disconnected", "message": "The viewer closed this report session. Open the report and connect Claude again."}
         status_code: int | None = None
+        if not row.get("claimed_at"):
+            bridge.mark_claude(row["id"])
         try:
             result = await fn(Env(bridge, principal, row), **kwargs)
         except Refused as exc:

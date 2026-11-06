@@ -89,6 +89,7 @@ class Bridge:
         self.settings = ctx.settings
         self._wake: dict[str, asyncio.Event] = {}
         self._acks: dict[int, asyncio.Future] = {}
+        self.on_end = None  # async (session_id, reason) -> None: the runtime pool's release
 
     # ── sessions ─────────────────────────────────────────────────────────────
 
@@ -165,6 +166,11 @@ class Bridge:
                         (time.time(), sid))
         self.ctx.provider.revoke_session_grants(sid, reason)
         self._event(sid).set()
+        if self.on_end is not None:
+            try:
+                asyncio.get_running_loop().create_task(self.on_end(sid, reason))
+            except RuntimeError:
+                pass
         log.info("view session %s ended (%s)", sid, reason)
 
     # ── state reported by the tab ────────────────────────────────────────────
@@ -187,6 +193,10 @@ class Bridge:
             fut = self._acks.pop(ack["id"], None)
             if fut is not None and not fut.done():
                 fut.set_result({"ok": ack.get("ok") is True, "error": str(ack.get("error") or "")[:300]})
+
+    def mark_claude(self, sid: str) -> None:
+        """Claude actually called this session's MCP: the tab may say 'connected'."""
+        self.store.execute("UPDATE view_sessions SET claimed_at = COALESCE(claimed_at, ?) WHERE id = ?", (time.time(), sid))
 
     def touch(self, sid: str) -> None:
         self.store.execute("UPDATE view_sessions SET last_seen_at = ? WHERE id = ?", (time.time(), sid))
