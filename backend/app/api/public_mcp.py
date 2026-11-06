@@ -145,7 +145,11 @@ def pair(body: PairBody, request: Request, db: Session = Depends(get_db),
     except S.Refused as exc:
         return _refused(exc)
     log.info("public_mcp op=pair kind=%s link=%s sid=%s", body.kind, link.id, out["sid"][:10])
-    return JSONResponse({**out, "report": {"kind": body.kind, "name": title}}, headers={"Cache-Control": "no-store"})
+    from app.core.config import settings as _settings
+
+    mcp_base = (_settings.PUBLIC_MCP_URL or "").rstrip("/")
+    return JSONResponse({**out, "report": {"kind": body.kind, "name": title}, "mcp_base": mcp_base},
+                        headers={"Cache-Control": "no-store"})
 
 
 # ── the Public MCP reads ──────────────────────────────────────────────────────

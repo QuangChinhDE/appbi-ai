@@ -340,6 +340,7 @@ import { publicCatalog } from './catalog/public';
 import { settingsCatalog } from './catalog/settings';
 import { sharedCatalog } from './catalog/shared';
 import { reportCodeCatalog } from './catalog/report-code';
+import { publicClaudeCatalog } from './catalog/public-claude';
 
 const moduleCatalogs: ModuleCatalog[] = [
   dashboardsCatalog,
@@ -362,6 +363,7 @@ const moduleCatalogs: ModuleCatalog[] = [
   settingsCatalog,
   sharedCatalog,
   reportCodeCatalog,
+  publicClaudeCatalog,
 ];
 
 function mergeCatalogs(base: MessageCatalog, pick: (c: ModuleCatalog) => MessageCatalog): MessageCatalog {

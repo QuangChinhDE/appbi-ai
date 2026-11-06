@@ -742,6 +742,11 @@ export interface PublicLinkAiCatalog {
 }
 
 export interface PublicLinkAppearanceConfig {
+  /** Public Read MCP — the viewer's own Claude on this link. Off unless the publisher turns it on.
+   *  `epoch` bumped = every connected Claude is disconnected. Never served to viewers. */
+  mcp_access?: { enabled?: boolean; share_guide?: boolean; epoch?: number };
+  /** Viewer payload only: whether the link offers "Ask your Claude". */
+  mcp_enabled?: boolean;
   /** @deprecated Retired — only a label in the link list; the report follows the dashboard theme. */
   preset?: 'briefing' | 'editorial' | 'minimal';
   /** @deprecated Retired — the report accent follows the dashboard theme. */

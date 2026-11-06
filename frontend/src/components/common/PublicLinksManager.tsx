@@ -17,6 +17,7 @@ import {
 } from '@/lib/public-link-appearance';
 import { PublicLinkAppearanceEditor } from '@/components/common/PublicLinkAppearanceEditor';
 import { PublicLinkAiBotEditor } from '@/components/common/PublicLinkAiBotEditor';
+import { PublicLinkClaudeAccess } from '@/components/public-claude/PublicLinkClaudeAccess';
 import {
   getFilterDisplayLabel,
   inferColumnTypeFromData,
@@ -1006,6 +1007,7 @@ export function PublicLinksManager({
       ai_bot_key_hint: link.appearance_config?.ai_bot_key_hint,
       ai_bot_budget_usd_per_day: link.appearance_config?.ai_bot_budget_usd_per_day,
       ai_bot_turns_per_hour: link.appearance_config?.ai_bot_turns_per_hour,
+      mcp_access: link.appearance_config?.mcp_access,
     });
     setFormPassword('');
     setFormExpiresAt(link.expires_at ? toLocalInputValue(link.expires_at) : '');
@@ -1699,6 +1701,9 @@ export function PublicLinksManager({
                   />
                 )}
 
+                {formTab === 'aibot' && (
+                  <PublicLinkClaudeAccess value={formAppearance} onChange={setFormAppearance} />
+                )}
                 {formTab === 'aibot' && (
                   <PublicLinkAiBotEditor
                     value={formAppearance}

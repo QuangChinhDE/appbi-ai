@@ -46,7 +46,9 @@ export interface ReportFrameProps {
   /** Studio: outline what the BI Core supplies vs numbers the code writes itself. */
   provenance?: boolean;
   /** Bring a binding's block into view (n changes per request, so the same id can be asked twice). */
-  focus?: { id: string; n: number } | null;
+  focus?: { id?: string; region?: string; n: number } | null;
+  /** The host sets the whole filter state (the viewer's Claude, through the public bridge). `n` bumps per change. */
+  externalState?: { state: FilterState; n: number } | null;
   selectedRegion?: string | null;
   onRegionSelected?: (region: string) => void;
   onIssue?: (issue: RuntimeIssue) => void;
@@ -69,7 +71,7 @@ const waitingSince = new Map<string, number>();
 
 export function ReportFrame({
   src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
-  provenance = false, focus = null, selectedRegion = null,
+  provenance = false, focus = null, selectedRegion = null, externalState = null,
   onRegionSelected, onIssue, onStateChange, className, title,
 }: ReportFrameProps) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
@@ -247,7 +249,18 @@ export function ReportFrame({
 
   useEffect(() => { postMsg({ type: 'selectMode', on: selectMode }); }, [selectMode, postMsg]);
   useEffect(() => { postMsg({ type: 'provenance', on: provenance }); }, [provenance, postMsg]);
-  useEffect(() => { if (focus) postMsg({ type: 'focus', id: focus.id }); }, [focus, postMsg]);
+  useEffect(() => { if (focus) postMsg({ type: 'focus', id: focus.id, region: focus.region }); }, [focus, postMsg]);
+  useEffect(() => {
+    if (!externalState) return;
+    // only declared filters; everything else is dropped (the server validates and enforces locks anyway)
+    const keys = new Set(propsRef.current.filters.map((f) => f.key));
+    const next: FilterState = {};
+    Object.entries(externalState.state || {}).forEach(([k, v]) => { if (keys.has(k) && v != null) next[k] = v as FilterState[string]; });
+    stateRef.current = next;
+    propsRef.current.onStateChange?.(stateRef.current);
+    pushContext();
+    void loadAll();
+  }, [externalState, loadAll, pushContext]);
   useEffect(() => { postMsg({ type: 'highlight', region: selectedRegion }); }, [selectedRegion, postMsg]);
 
   const bindingKey = bindings.map((b) => `${b.id}:${b.kind}`).join(',');

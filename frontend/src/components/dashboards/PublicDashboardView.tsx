@@ -42,6 +42,8 @@ import {
 import { parsePrintRenderOptions, type PrintRenderOptions } from '@/lib/print-render';
 import { toast } from '@/lib/toast';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
+import { PublicClaudePanel } from '@/components/public-claude/PublicClaudePanel';
+import type { ApplyResult, BridgeCommand } from '@/lib/public-mcp/bridge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import {
@@ -1813,6 +1815,84 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
     return () => { if (timer) clearTimeout(timer); };
   }, [chartFocus]);
 
+  // ── The viewer's own Claude (Public Read MCP) ───────────────────────────
+  // What the viewer sees, reported to THEIR Claude; and the commands it sends,
+  // applied through this page's own controls (the server validated each one and
+  // enforces every lock on every read regardless).
+  const [claudeOpen, setClaudeOpen] = useState(false);
+  const claudeView = useMemo(() => ({
+    kind: 'dashboard',
+    page: { id: activePageId, name: dashboardPages.find((p) => p.id === activePageId)?.name || '' },
+    pages: dashboardPages.map((p) => ({ id: p.id, name: p.name })),
+    viewer_filters: appliedViewerFilters,
+    controls: viewerFiltersEnabled ? placedViewerFilters.map((f) => ({
+      key: String(f.id ?? ''), field: (f as any).semanticField || (f as any).fieldKey || f.field,
+      operator: f.operator, label: (f as any).label || f.field, value: f.value,
+    })) : [],
+    viewer_filters_allowed: viewerFiltersEnabled,
+    drill: crossFilterState ? { chart_id: crossFilterState.sourceChartId,
+      field: (crossFilterState.filter as any).semanticField || crossFilterState.filter.field,
+      value: crossFilterState.filter.value } : null,
+    focus: chartFocus ? { tile_id: chartFocus.tileId } : null,
+    visible_chart_ids: Array.from(new Set(visibleDashboardCharts.map((dc) => dc.chart_id).filter(Boolean))),
+  }), [activePageId, dashboardPages, appliedViewerFilters, viewerFiltersEnabled, placedViewerFilters, crossFilterState,
+    chartFocus, visibleDashboardCharts]);
+  const applyClaude = useCallback((cmd: BridgeCommand): ApplyResult => {
+    const charts = dashboard?.dashboard_charts || [];
+    switch (cmd.type) {
+      case 'set_filters': {
+        if (!viewerFiltersEnabled) return { ok: false, error: 'viewer filters are off on this link' };
+        const next = (cmd.viewer_filters || []) as unknown as BaseFilter[];
+        setDraftViewerFilters(next);
+        setIsApplyingFilters(true);
+        setAppliedViewerFilters(next);
+        return { ok: true };
+      }
+      case 'reset_filters': {
+        if (!dashboard) return { ok: false, error: 'not loaded' };
+        const { controlSeed } = resolvePublicPageFilterContext(dashboard as unknown as Record<string, unknown>, dashboardPages, activePageId);
+        const seed = mergeSeedWithViewerSelections(controlSeed, []);
+        setDraftViewerFilters(seed);
+        setAppliedViewerFilters(seed);
+        setCrossFilterState(null);
+        return { ok: true };
+      }
+      case 'go_to_page':
+        if (!dashboardPages.some((p) => p.id === cmd.page)) return { ok: false, error: `no page ${cmd.page}` };
+        handlePageSelect(cmd.page);
+        return { ok: true };
+      case 'focus': {
+        const cid = Number(cmd.chart);
+        const pageIds = [activePageId, ...dashboardPages.map((p) => p.id).filter((id) => id !== activePageId)];
+        for (const pid of pageIds) {
+          const hit = getDashboardChartsForPage(charts, pid).find((dc) => dc.chart_id === cid || dc.id === cid);
+          if (!hit) continue;
+          if (pid !== activePageId) handlePageSelect(pid);
+          setChartFocus({ tileId: hit.id, nonce: Date.now() });
+          return { ok: true };
+        }
+        return { ok: false, error: `chart ${cmd.chart} is not on this report` };
+      }
+      case 'drill': {
+        const dc = charts.find((c) => c.chart_id === cmd.chart_id);
+        if (!dc) return { ok: false, error: `chart ${cmd.chart_id} is not on this report` };
+        const binding = ((dc as any).chart?.config?.semanticBinding || {}) as { datasetId?: number };
+        const isNum = typeof cmd.value === 'number';
+        setCrossFilterState({ sourceChartId: cmd.chart_id, filter: {
+          id: `cross-${cmd.chart_id}-${cmd.field}-${String(cmd.value)}`, field: cmd.field, fieldKey: cmd.field,
+          semanticField: cmd.field, datasetId: binding.datasetId, type: isNum ? 'number' : 'text',
+          operator: 'eq', value: cmd.value as any, label: cmd.field,
+        } as unknown as BaseFilter });
+        return { ok: true };
+      }
+      case 'clear_drill':
+        setCrossFilterState(null);
+        return { ok: true };
+      default:
+        return { ok: false, error: 'unsupported command' };
+    }
+  }, [dashboard, dashboardPages, activePageId, viewerFiltersEnabled, handlePageSelect]);
+
   if (!mounted || pageState === 'unknown' || loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-surface-0 px-4">
@@ -2811,6 +2891,20 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         onEnsurePageData={ensurePageDataForArranger}
         onExport={doExportPdf}
       />
+
+      {!isEmbed && (dashboard?.public_link_appearance as any)?.mcp_enabled === true && (
+        claudeOpen ? (
+          <div className="fixed inset-y-0 right-0 z-[60] flex shadow-2xl">
+            <PublicClaudePanel kind="dashboard" token={token} sessionToken={getPublicSession(token)}
+              viewState={claudeView} apply={applyClaude} onClose={() => setClaudeOpen(false)} />
+          </div>
+        ) : (
+          <button type="button" onClick={() => setClaudeOpen(true)} data-testid="public-claude-open"
+            className="fixed bottom-5 left-5 z-[55] rounded-full border border-slate-300 bg-white px-3.5 py-2 text-[12px] font-medium text-slate-800 shadow-lg hover:bg-slate-50">
+            {t('publicClaude.open')}
+          </button>
+        )
+      )}
 
       {!isEmbed && dashboard?.public_link_appearance?.ai_bot_enabled === true && (
         <DashboardAiBot
