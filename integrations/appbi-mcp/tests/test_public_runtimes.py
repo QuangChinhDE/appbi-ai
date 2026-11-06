@@ -202,3 +202,15 @@ async def test_pool_status_needs_the_runtime_secret(rc):
     assert (await rc.get("/public-mcp/runtime-pool")).status_code == 404
     r = await rc.get("/public-mcp/runtime-pool", headers={"X-Runtime-Secret": SECRET})
     assert r.status_code == 200 and len(r.json()["runtimes"]) == 2
+
+
+async def test_a_runtime_restarted_under_a_lease_is_reconciled(rc, agents):
+    a = await tab(rc, "A")
+    ra = await lease(rc, a)
+    i = ra.json()["runtime"]
+    tok = agents.state[i]["token"]
+    agents.state[i] = {"lease": None, "token": None}  # the container restarted (clean)
+    again = await lease(rc, a)
+    assert again.status_code == 200
+    assert (await mcp(rc, tok)).status_code == 401, "the old lease's token is revoked"
+    assert agents.state[again.json()["runtime"]]["token"] != tok

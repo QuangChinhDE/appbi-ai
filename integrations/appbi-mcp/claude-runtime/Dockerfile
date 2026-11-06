@@ -4,20 +4,22 @@
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      curl ca-certificates ttyd socat locales tini python3-minimal \
+      curl ca-certificates ttyd socat locales tini python3 \
     && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen && rm -rf /var/lib/apt/lists/*
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color
 RUN useradd -m -s /bin/bash viewer
 # Install Claude Code into an image path (the home is a tmpfs at run time).
 USER viewer
 RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && mkdir -p /home/viewer/.local/share \
     && cp -aL /home/viewer/.local/bin/claude /tmp/claude-bin
 USER root
 RUN install -m 0755 /tmp/claude-bin /usr/local/bin/claude && rm -f /tmp/claude-bin
 COPY agent.py /opt/runtime/agent.py
 COPY start.sh /opt/runtime/start.sh
-RUN chmod 0755 /opt/runtime/start.sh
+# a Windows checkout may carry CRLF line ends: normalise them inside the image
+RUN tr -d '\015' < /opt/runtime/start.sh > /opt/runtime/s && mv /opt/runtime/s /opt/runtime/start.sh \
+    && tr -d '\015' < /opt/runtime/agent.py > /opt/runtime/a && mv /opt/runtime/a /opt/runtime/agent.py \
+    && chmod 0755 /opt/runtime/start.sh
 USER viewer
 WORKDIR /home/viewer
 ENTRYPOINT ["/usr/bin/tini", "--"]

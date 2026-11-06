@@ -21,6 +21,8 @@ import hmac
 import json
 import os
 import signal
+import socket
+import time
 import subprocess
 import sys
 import threading
@@ -82,6 +84,16 @@ def start_ttyd() -> subprocess.Popen:
     return subprocess.Popen(cmd, env=env, cwd=WORK)
 
 
+def wait_for_port(port: int, timeout: float = 8.0) -> None:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.3):
+                return
+        except OSError:
+            time.sleep(0.1)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # no request logging (the token travels in a body)
         pass
@@ -115,6 +127,7 @@ class Handler(BaseHTTPRequestHandler):
                 configure(str(body["mcp_url"]), str(body["mcp_token"]))
                 STATE["ttyd"] = start_ttyd()
                 STATE["lease"] = str(body["lease_id"])
+                wait_for_port(7681)  # the panel opens right after this answer
             return self._send(200, {"ok": True, "panel_path": f"/claude-rt/{INDEX}/"})
         if self.path == "/recycle":
             self._send(200, {"ok": True})

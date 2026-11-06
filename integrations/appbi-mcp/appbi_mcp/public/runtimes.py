@@ -88,6 +88,9 @@ class RuntimePool:
         """One runtime for this view session (the same one again if it already holds one)."""
         async with self._lock:
             mine = self.live_lease(session["id"])
+            if mine and not await self._holds(mine):
+                self._end_stale(mine)
+                mine = None
             if mine:
                 cookie = new_secret("rtc_")
                 self.store.execute("UPDATE runtime_leases SET cookie_hash = ?, last_seen_at = ? WHERE id = ?",
@@ -126,6 +129,19 @@ class RuntimePool:
         log.info("runtime %s leased to session %s (%s)", index, session["id"], lease_id)
         return {"runtime": index, "cookie": cookie, "panel_path": f"/claude-rt/{index}/"}
 
+    async def _holds(self, lease: dict) -> bool:
+        """The runtime still runs THIS lease (it may have restarted under it: then it is clean)."""
+        try:
+            h = await self._agent(int(lease["runtime"]), "GET", "/health")
+        except Exception:  # noqa: BLE001 - unreachable now: keep the lease, the reaper retries
+            return True
+        return h.get("lease") == lease["id"]
+
+    def _end_stale(self, lease: dict) -> None:
+        self._close(lease["id"], "runtime_restarted")
+        self.ctx.provider.revoke_grant(lease["grant_id"], "runtime_restarted")
+        log.info("runtime %s no longer holds lease %s: closed", lease["runtime"], lease["id"])
+
     def _close(self, lease_id: str, reason: str) -> None:
         self.store.execute("UPDATE runtime_leases SET ended_at = ?, end_reason = ? WHERE id = ? AND ended_at IS NULL",
                            (time.time(), reason, lease_id))
@@ -155,6 +171,9 @@ class RuntimePool:
         """Leases whose session ended or that sat idle; runtimes left 'leased' with no lease."""
         now = time.time()
         for row in self.store.query("SELECT * FROM runtime_leases WHERE ended_at IS NULL"):
+            if not await self._holds(dict(row)):
+                self._end_stale(dict(row))
+                continue
             sess = bridge.session(row["session_id"])
             seen = max(float(row["last_seen_at"]), float((sess or {}).get("last_seen_at") or 0))
             if sess is None:
