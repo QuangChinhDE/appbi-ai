@@ -1101,3 +1101,330 @@ def test_publish_refuses_a_page_with_anchors_to_data_the_report_does_not_have():
         assert L.publish(None, art) is rev and art.published_revision_id == 2
     finally:
         L.get_revision = L_get
+
+
+def test_a_server_never_gets_the_loopback_report_origin_and_a_misconfiguration_is_said(monkeypatch):
+    """Live (/dashboards/code/1 on the server): a dev "localhost" among the CORS origins of
+    the real domain made report_origin() guess 127.0.0.1 - every viewer's browser loaded the
+    report from ITS OWN machine: a blank Studio. The loopback twin is a local install's only."""
+    from app.core.config import settings
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "")
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "http://localhost:3000,https://bi.example.com")
+    assert L.report_origin() is None, "a real domain is served: never the viewer's loopback"
+    assert "REPORT_ARTIFACT_ORIGIN is not set" in (L.origin_warning() or "")
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "http://127.0.0.1:3000")
+    assert "loopback" in (L.origin_warning() or ""), "a configured loopback origin on a server is said"
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://report-docs.example.com")
+    assert L.origin_warning() is None and L.report_origin() == "https://report-docs.example.com"
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "")
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "http://localhost:3000,http://localhost:3001")
+    assert L.report_origin() == "http://127.0.0.1:3000" and L.origin_warning() is None, "a local install keeps its twin"
+
+
+def test_the_context_pack_frees_the_design_and_binds_every_figure_to_the_bi_core(monkeypatch):
+    """PO 2026-11-05: an outside AI may design freely (layout, CSS, any JS) - ONLY the data
+    connection is a contract, so the page always runs against the Dataset through the BI
+    Core instead of fake numbers typed into the HTML."""
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert "What is yours" in pack and "Any JavaScript" in pack, "the design is the author's"
+    assert "data contract" in pack and "**Never**" in pack
+    for rule in ("const data = [", "sample / mock / demo data", "add up, average or compare rows", "invent a placeholder"):
+        assert rule in pack, rule
+    assert 'data-rac-value=\\"@c' not in pack and 'data-rac-value="@c' in pack, "a copyable, valid example"
+    assert "sidebar" not in pack.lower().split("## 6.")[0], "no imposed layout"
+    import json as _json
+
+    check = _json.loads(pack.split("```json\n")[1].split("\n```")[0])
+    assert "@c1" in check["data"] and "@f1" in check["filters"] and "data-rac-value" in check["attributes"]
+
+
+def test_the_summary_counts_unbound_places_of_the_published_version_too():
+    """Backfill by reading: a version published before the publish guard (artifact 1
+    rev 1: three tables bound to "missing") is flagged on every summary - no stored mark."""
+    from types import SimpleNamespace
+    from app.services.report_code import lifecycle as L
+
+    pub = SimpleNamespace(number=1, html='<div data-rac-viz="table" data-rac-bind="missing"></div>' * 3
+                          + '<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[], content_hash="a")
+    draft = SimpleNamespace(number=2, html='<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[],
+                            content_hash="b")
+    art = SimpleNamespace(id=1, name="r", description=None, dataset_id=1, owner_id=None, job=None,
+                          updated_at=None, last_published_at=None)
+    s = L._summary(art, draft, pub, 0)
+    assert s["unbound"] == {"draft": 0, "published": 3}
+
+
+# ── Readiness: one report, per place; AI only where the rules are unsure ─────────────
+
+_READY_HTML = (
+    '<section data-rac-region="kpis" data-rac-label="Chỉ số">'
+    '<div class="card"><h3>Doanh thu</h3><b data-rac-value="b1"></b></div>'
+    '<div class="card"><h3>Số đơn</h3><b data-rac-value="b1"></b></div>'
+    '<div class="card"><h3>Tồn kho</h3><b data-rac-value="missing"></b></div>'
+    '<p>Top 10 theo tháng 8, năm 2026. Cập nhật 24/08/2026.</p>'
+    '<p>Tăng 12,5% so với cùng kỳ, đạt 1.234 đơn.</p>'
+    '<p class="note">Dữ liệu tĩnh — số liệu mẫu cho bản thiết kế.</p>'
+    '<span data-rac-sample>9.999</span>'
+    '<div data-rac-filter="f9"></div>'
+    '</section>')
+_READY_BINDINGS = [{"id": "b1", "title": "Doanh thu"}, {"id": "b2", "title": "Số đơn"}]
+
+
+def test_the_readiness_report_names_each_problem_at_its_place():
+    from types import SimpleNamespace
+    from app.services.report_code import readiness as R
+
+    rev = SimpleNamespace(html=_READY_HTML, js="rac.bind('b7', function(){});", bindings=_READY_BINDINGS,
+                          filters=[{"key": "f1"}])
+    rep = R.report(rev, with_origin=False)
+    assert rep["ready"] is False
+    codes = [x["code"] for x in rep["blocking"]]
+    assert codes.count("UNBOUND") == 3, rep["blocking"]  # "missing", filter f9, rac.bind('b7')
+    assert codes.count("SAMPLE") == 1
+    unbound = next(x for x in rep["blocking"] if "missing" in x["message"])
+    assert unbound["place"] == {"region": "kpis", "label": "Chỉ số", "snippet": '<b data-rac-value="missing">'}
+    assert unbound["fix"]
+    w = {x["code"]: x for x in rep["warnings"]}
+    # a rank, a month, a year, a date are not figures; a typed growth and a count are
+    static = [x for x in rep["warnings"] if x["code"] == "STATIC_FIGURE"]
+    assert len(static) == 1 and "12,5%" in static[0]["message"] and "1.234" in static[0]["message"]
+    assert "STALE_TEXT" in w
+    assert "Số đơn" in w["CARD_LABEL"]["message"] and "b1" in w["CARD_LABEL"]["message"]
+    assert rep["counts"]["UNBOUND"] == 3
+
+
+def test_a_clean_page_written_to_the_contract_is_ready():
+    from types import SimpleNamespace
+    from app.services.report_code import readiness as R
+
+    html = ('<section data-rac-region="kpis" data-rac-label="Chỉ số"><div class="card"><h3>Doanh thu</h3>'
+            '<b data-rac-value="b1"></b></div><div data-rac-filter="f1"></div><p>Báo cáo năm 2026.</p></section>')
+    rep = R.report(SimpleNamespace(html=html, js="", bindings=_READY_BINDINGS, filters=[{"key": "f1"}]), with_origin=False)
+    assert rep == {"ready": True, "blocking": [], "warnings": [], "counts": {}}
+
+
+def test_publish_refuses_a_loopback_report_origin_on_a_server(monkeypatch):
+    from types import SimpleNamespace
+    from app.core.config import settings
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "https://bi.example.com")
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "http://127.0.0.1:3000")
+    rev = SimpleNamespace(id=2, html='<b data-rac-value="b1"></b>', js="", bindings=[{"id": "b1"}], filters=[])
+    art = SimpleNamespace(id=1, draft_revision_id=2, published_revision_id=None, last_published_at=None)
+    monkeypatch.setattr(L, "get_revision", lambda db, a, rid: rev)
+    with pytest.raises(L.DanglingReferences) as ex:
+        L.publish(None, art)
+    assert "REPORT_ARTIFACT_ORIGIN" in str(ex.value) and art.published_revision_id is None
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://report-docs.example.com")
+    assert L.publish(None, art) is rev
+
+
+def test_the_model_is_asked_only_about_the_places_the_rules_are_unsure_of(monkeypatch):
+    """Every analyse used to send EVERY slot and 160 candidates to the model, certain or not.
+    A slot the rules settle never reaches it; an unsure one goes with a short candidate list."""
+    from app.services import llm_client
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    cands = B.candidates(_MODEL)
+    for c in cands:
+        c["title"] = B._localize_title(c["title"])
+    sent = []
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(lambda **kw: sent.append(kw["prompt"]) or {"map": []}))
+    sure = {"id": "s1", "kind": "chart", "context": "Doanh thu theo tháng", "sample": ""}
+    unsure = {"id": "s2", "kind": "value", "context": "Chỉ số X", "sample": "42"}
+    stats = {}
+    out = I.propose([sure, unsure], cands, [], stats=stats)
+    assert out["s1"]["source"] == "rules" and stats["ai_slots"] == 1
+    brief = sent[0].split("never by position:\n")[1].split("\n\nCANDIDATE DATA")[0] if sent else ""
+    assert len(sent) == 1 and '"s2"' in brief and '"s1"' not in brief, "only the unsure place is sent"
+    listed = [l for l in sent[0].split("CANDIDATE DATA (governed, by id):\n")[1].split("\n\n")[0].splitlines() if l.strip()]
+    assert 0 < len(listed) <= I.SHORTLIST
+    sent.clear()
+    stats = {}
+    I.propose([sure], cands, [], stats=stats)
+    assert sent == [] and stats["ai_slots"] == 0, "nothing unsure: no model call at all"
+
+
+def test_a_page_written_to_the_contract_imports_without_any_model_call(monkeypatch):
+    from app.services import llm_client
+    from app.services.report_code import bindings as B
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    called = []
+    monkeypatch.setattr(llm_client.LLMClient, "complete_json", staticmethod(lambda **kw: called.append(1) or {}))
+    from types import SimpleNamespace
+
+    class _Q:
+        def filter(self, *a): return self
+        def __iter__(self): return iter([])
+
+    db = SimpleNamespace(query=lambda *a: _Q())
+    out = I.analyze(db, dataset_id=9, html='<b data-rac-value="@c1"></b><div data-rac-filter="@f1"></div>', css="", js="")
+    assert out["compatible"] is True and out["ai_slots"] == 0 and called == []
+
+
+
+# ── rc1 bundle (report-demo /dashboards/code/1): what an outside AI was told vs what runs ──
+
+def test_the_context_pack_teaches_only_what_the_runtime_does(monkeypatch):
+    """rc1: the pack taught `data-rac-cell="<column label>"` (the runtime only reads field
+    keys -> every cell "—"), gave three placeholders the same meaning, mixed `b1` examples
+    with `@c1`, and never said a category is a Top 10 or that a page holds 16 queries."""
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert "<column label>" not in pack
+    for bad in ('="b1"', "'b1'", '="f1"', "'f1'", '="c1"'):
+        assert bad not in pack, f"an example without @ teaches a placeholder that does not exist: {bad}"
+    table = [l for l in pack.split("## 3.")[1].split("## 4.")[0].splitlines() if l.startswith("| `@c")]
+    meanings = [l.split("|")[3].strip() for l in table]
+    assert len(meanings) == len(set(meanings)) > 0, "two placeholders with one meaning: the AI picks blind"
+    assert all("`m0`" in l for l in table) and any("`d0`" in l and "Top 10" in l for l in table)
+    assert f"{B.MAX_BINDINGS} distinct" in pack and f"{B.MAX_FILTERS} filters" in pack
+    check = json.loads(pack.split("```json\n")[1].split("\n```")[0])
+    assert check["cell_keys"] == ["#", "d0", "m0"] and check["limits"]["placeholders"] == B.MAX_BINDINGS
+    assert set(check["data_kinds"]) == set(check["data"])
+
+
+def test_the_runtime_reads_a_repeat_cell_by_field_key_only():
+    """The pack's cell keys are exactly the runtime's (`cellField`): # / d0 / d / m0 / m."""
+    js = D.RUNTIME_JS if hasattr(D, "RUNTIME_JS") else open(
+        __import__("pathlib").Path(B.__file__).with_name("runtime.js"), encoding="utf8").read()
+    body = js.split("function cellField(d, ref) {")[1].split("\n  }")[0]
+    assert "ref === 'dim' || ref === 'd'" in body and "ref === 'm'" in body and "return field(d, ref)" in body
+    assert "[data-rac-static]" in js.split("var TRUSTED")[1].split(";")[0], "the pack's opt-out is honoured by the audit"
+
+
+def test_an_import_says_a_query_failed_not_that_it_had_no_data(monkeypatch):
+    """rc1: 3 places were dropped with "truy vấn không trả về số liệu" while BigQuery had
+    refused the query - the author looked for empty data that was never the problem."""
+    from app.services import report_starter_service as RS
+    from app.services.chart_service import ChartService
+
+    class _Db:
+        def rollback(self): pass
+
+    cand = {"id": "c1", "type": "BAR", "table": 1, "role": {"metrics": [{"field": "v.m"}], "dimension": "v.d"}}
+    monkeypatch.setattr(ChartService, "preview_chart_data", staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("400 bad"))))
+    assert B.run_candidate(_Db(), cand) is False
+    assert "lỗi" in B.drop_note("A", B._last_why.value) and "không phải do dữ liệu rỗng" in B.drop_note("A", B._last_why.value)
+    monkeypatch.setattr(ChartService, "preview_chart_data", staticmethod(lambda *a, **k: {"data": []}))
+    assert B.run_candidate(_Db(), cand) is False
+    assert B._last_why.value == {"reason": "empty"} and "không trả về số liệu" in B.drop_note("A", B._last_why.value)
+    assert RS._runs(_Db(), cand) is None, "the starter's own callers are unchanged"
+
+
+def test_a_warehouse_error_never_reaches_the_report_page():
+    """rc1: the Studio frame printed BigQuery's 400 with its Job ID and SQL fragment."""
+    raw = ("Lỗi chạy chart query trên bigquery (dialect bigquery): 400 SELECT * expands to zero columns after "
+           "applying EXCEPT at [4:14]; reason: invalidQuery Location: us-central1 Job ID: decf06ec")
+    msg = B._author_error(None, raw, "b1")
+    for leak in ("Job ID", "SELECT", "bigquery", "EXCEPT", "us-central1"):
+        assert leak not in msg
+    assert "Dataset" in msg
+    assert B._author_error(None, "Trường 'Doanh thu' không còn trong model") == "Trường 'Doanh thu' không còn trong model"
+
+
+def test_a_hand_quoted_measure_column_is_stored_portable():
+    """rc1: `SUM("Quá hạn SLA")` is a column on Postgres/DuckDB and a STRING on BigQuery."""
+    from app.schemas.semantic import MeasureDefinition as M
+
+    assert M(name="x", type="sum", sql='"Quá hạn SLA"').sql == "Quá hạn SLA"
+    assert M(name="x", type="sum", sql="`Sản lượng`").sql == "Sản lượng"
+    assert M(name="x", type="sum", sql='"Đối tượng"').sql == '"Đối tượng"', "a name the engine cannot re-quote stays"
+    assert M(name="x", type="sum", sql="${TABLE}.price").sql == "${TABLE}.price"
+    assert M(name="x", type="sum", sql='CASE WHEN "a" > 0 THEN 1 END').sql == 'CASE WHEN "a" > 0 THEN 1 END'
+
+
+def test_a_table_whose_column_names_are_all_nonstandard_is_refused():
+    """rc1: every header of Phieu_nhap_xuat was Vietnamese; once the BigQuery snapshot was
+    built no chart of the Dataset could run. Refuse that table at creation; warn on some."""
+    from app.services import dataset_column_names as C
+
+    allbad = C.check([{"name": "Mã phiếu"}, {"name": "Sản lượng"}])
+    assert allbad["blocked"] is True and allbad["bad"] == ["Mã phiếu", "Sản lượng"]
+    detail = C.detail(allbad)
+    assert detail["code"] == "COLUMN_NAMES_NONSTANDARD" and "Mã phiếu" in detail["message"] and "ma_phieu" in detail["message"]
+    some = C.check([{"name": "ma_phieu"}, {"name": "Sản lượng"}])
+    assert some["blocked"] is False and some["bad"] == ["Sản lượng"] and "vẫn dùng được" in some["message"]
+    assert C.detail(C.check([{"name": "ma_phieu"}, {"name": "san_luong"}])) is None
+    assert C.check([])["blocked"] is False
+
+
+# ── Page-size limits: configurable, stated, never a silent cut ─────────────────────
+
+def test_the_page_limits_come_from_settings_and_fit_an_operational_report():
+    """Report 10 (9 KPIs + 7 charts) hit the hard-coded 16; a multi-table dataset needs
+    more than 6 date filters. The limits are settings (REPORT_MAX_*), raised by default."""
+    from app.core.config import settings
+    from app.services.report_code import generation as G
+    from app.services.report_code import importer as I
+
+    assert B.MAX_BINDINGS == settings.REPORT_MAX_BINDINGS >= 40
+    assert B.MAX_FILTERS == settings.REPORT_MAX_FILTERS >= 12
+    assert B.PROBE_BUDGET_S == settings.REPORT_PROBE_BUDGET_S
+    assert G.MAX_CATEGORY_FILTERS == settings.REPORT_MAX_CATEGORY_FILTERS
+    assert I.MAX_SLOTS == settings.REPORT_IMPORT_MAX_SLOTS
+
+
+def test_an_import_over_the_limit_names_every_place_it_left_out(monkeypatch):
+    """Over the ceiling the import used to stop with one generic line. It names each
+    dropped data source; their places stay unbound, so publishing is refused."""
+    from types import SimpleNamespace
+    from app.services.report_code import importer as I
+    from app.services.report_code import readiness as R
+
+    db, cands, _ = _reimport_world(monkeypatch, 6)
+    monkeypatch.setattr(B, "MAX_BINDINGS", 4)
+    html = "".join(f'<div class="card"><b data-rac-value="@c{i}"></b></div>' for i in range(1, 7))
+    out = I.apply(db, dataset_id=1, html=html, css="", js="", mapping=[], filters=[], owner_id=None,
+                  report_name="R", existing=[], existing_filters=[], progress=lambda s: None)
+    assert len(out["bindings"]) == 4
+    note = next(n for n in out["notes"] if "REPORT_MAX_BINDINGS" in n)
+    assert "Không gắn 2 dữ liệu" in note and all(f"'{c['title']}'" in note for c in cands[4:]), note
+    rep = R.report(SimpleNamespace(html=out["html"], js=out["js"], bindings=out["bindings"], filters=out["filters"]),
+                   with_origin=False)
+    assert rep["ready"] is False and rep["counts"]["UNBOUND"] == 2
+
+
+def test_saving_code_with_context_pack_placeholders_binds_them_like_an_import(monkeypatch):
+    """"Sửa mã nguồn" saved `@c3` raw: the page showed "Chưa gắn dữ liệu" with no word
+    at save. Saving runs the import's placeholder binding and returns its notes."""
+    from types import SimpleNamespace
+    from app.api import report_artifacts as RA
+    from app.services.report_code import importer as I
+
+    draft = SimpleNamespace(number=3, bindings=[{"id": "b1"}], filters=[])
+    art = SimpleNamespace(id=7, dataset_id=1, name="R")
+    monkeypatch.setattr(RA, "_load", lambda db, aid, user, level="view": art)
+    monkeypatch.setattr(RA, "_draft", lambda db, a: draft)
+    seen = {}
+
+    def apply(db, **kw):
+        seen.update(kw)
+        return {"html": kw["html"].replace("@c3", "b2"), "css": kw["css"], "js": kw["js"],
+                "bindings": kw["existing"] + [{"id": "b2"}], "filters": [], "notes": ["gắn @c3 → b2"]}
+
+    saved = {}
+    monkeypatch.setattr(I, "apply", apply)
+    monkeypatch.setattr(RA.L, "add_revision", lambda db, a, **kw: (saved.update(kw) or SimpleNamespace(), []))
+    monkeypatch.setattr(RA.L, "revision_view", lambda rev, with_source=False: {})
+    db = SimpleNamespace(commit=lambda: None)
+    user = SimpleNamespace(id="u")
+    out = RA.save_source(7, RA.SourceBody(html='<b data-rac-value="b1"></b><b data-rac-value="@c3"></b>', base_number=3), db, user)
+    assert seen["existing"] == [{"id": "b1"}], "existing bindings are reused, never renumbered"
+    assert "@c3" not in saved["html"] and [b["id"] for b in saved["bindings"]] == ["b1", "b2"]
+    assert out["warnings"][0] == "gắn @c3 → b2"
+    seen.clear(); saved.clear()
+    RA.save_source(7, RA.SourceBody(html='<b data-rac-value="b1"></b>', base_number=3), db, user)
+    assert seen == {} and saved["bindings"] == [{"id": "b1"}], "code without placeholders saves as it is"

@@ -121,11 +121,18 @@ def publish(db: Session, artifact: ReportArtifact, *, revision_id: Optional[int]
     target = get_revision(db, artifact, revision_id or artifact.draft_revision_id)
     if target is None:
         raise ValueError("Báo cáo chưa có phiên bản nào để xuất bản.")
-    dangling = dangling_references(target)
-    if dangling:
+    # ONE gate (services/report_code/readiness.py): what blocks is decided there; a sample
+    # number keeps its own confirm flow below (allow_samples)
+    from app.services.report_code import readiness as R
+
+    rep = R.report(target)
+    hard = [x for x in rep["blocking"] if x["code"] != "SAMPLE"]
+    if hard:
+        dangling = dangling_references(target)
         raise DanglingReferences(
-            f"Còn {len(dangling)} vị trí trỏ tới dữ liệu hoặc bộ lọc không có trong báo cáo "
-            f"({', '.join(sorted(set(dangling))[:6])}). Gắn lại dữ liệu cho các vị trí đó rồi xuất bản.")
+            (f"Còn {len(dangling)} vị trí trỏ tới dữ liệu hoặc bộ lọc không có trong báo cáo "
+             f"({', '.join(sorted(set(dangling))[:6])}). Gắn lại dữ liệu cho các vị trí đó rồi xuất bản.")
+            if dangling else R.blocking_message({"counts": {x["code"]: 1 for x in hard}}))
     n = sample_marks(target.html)
     if n and not allow_samples:
         raise SampleNumbersRemain(
@@ -216,8 +223,36 @@ def summaries(db: Session, arts: List[ReportArtifact]) -> List[Dict[str, Any]]:
                  .filter(ReportArtifactPublicLink.artifact_id.in_([a.id for a in arts]),
                          ReportArtifactPublicLink.is_active.is_(True))
                  .group_by(ReportArtifactPublicLink.artifact_id).all())
-    return [_summary(a, revs.get(a.draft_revision_id), revs.get(a.published_revision_id), int(links.get(a.id, 0)))
-            for a in arts]
+    unbound = _unbound_counts(db, revs)
+    return [_summary(a, revs.get(a.draft_revision_id), revs.get(a.published_revision_id), int(links.get(a.id, 0)),
+                     unbound=unbound) for a in arts]
+
+
+#: (revision id, content hash) -> its unbound places. A saved revision never changes (a new
+#: save is a new revision), so the list reads each revision's code once per process.
+_UNBOUND_MEMO: Dict[tuple, int] = {}
+_UNBOUND_MEMO_MAX = 4096
+
+
+def _unbound_counts(db: Session, revs: Dict[int, Any]) -> Dict[int, int]:
+    out, todo = {}, []
+    for rid, r in revs.items():
+        key = (rid, getattr(r, "content_hash", None))
+        if key in _UNBOUND_MEMO:
+            out[rid] = _UNBOUND_MEMO[key]
+        else:
+            todo.append(rid)
+    if todo:
+        rows = db.query(ReportArtifactRevision.id, ReportArtifactRevision.content_hash, ReportArtifactRevision.html,
+                        ReportArtifactRevision.js, ReportArtifactRevision.bindings, ReportArtifactRevision.filters) \
+            .filter(ReportArtifactRevision.id.in_(todo)).all()
+        if len(_UNBOUND_MEMO) > _UNBOUND_MEMO_MAX:
+            _UNBOUND_MEMO.clear()
+        for r in rows:
+            n = len(dangling_references(r))
+            _UNBOUND_MEMO[(r.id, r.content_hash)] = n
+            out[r.id] = n
+    return out
 
 
 def _active_links(db: Session, art: ReportArtifact) -> int:
@@ -227,12 +262,25 @@ def _active_links(db: Session, art: ReportArtifact) -> int:
         ReportArtifactPublicLink.artifact_id == art.id, ReportArtifactPublicLink.is_active.is_(True)).count()
 
 
+def _limits():
+    from app.services.report_code import bindings as B
+
+    return B.MAX_BINDINGS, B.MAX_FILTERS
+
+
 def summary(db: Session, art: ReportArtifact) -> Dict[str, Any]:
     return _summary(art, get_revision(db, art, art.draft_revision_id),
                     get_revision(db, art, art.published_revision_id), _active_links(db, art))
 
 
-def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, Any]:
+def _summary(art: ReportArtifact, draft, pub, active_links: int, *, unbound: Optional[Dict[int, int]] = None) -> Dict[str, Any]:
+    def places(rev) -> int:
+        if rev is None:
+            return 0
+        if unbound is not None and getattr(rev, "id", None) in unbound:
+            return unbound[rev.id]
+        return len(dangling_references(rev)) if hasattr(rev, "html") else 0
+
     return {
         "id": art.id, "name": art.name, "description": art.description, "dataset_id": art.dataset_id,
         "owner_id": str(art.owner_id) if art.owner_id else None,
@@ -244,6 +292,12 @@ def _summary(art: ReportArtifact, draft, pub, active_links: int) -> Dict[str, An
         "chart_ids": sorted({int(x["chart_id"]) for r in (draft, pub) if r is not None
                              for x in (r.bindings or []) if isinstance(x, dict) and isinstance(x.get("chart_id"), int)}),
         "has_unpublished_changes": bool(draft and (not pub or draft.content_hash != pub.content_hash)),
+        # places that point at data the revision does not have ("missing" from an import, a
+        # deleted binding/filter): counted on READ, so a version published before the
+        # publish guard existed is flagged too - nothing to backfill, nothing to go stale
+        "unbound": {"draft": places(draft), "published": places(pub)},
+        # the page-size limits (settings REPORT_MAX_*) so Studio shows "x/N" before the ceiling
+        "limits": {"bindings": _limits()[0], "filters": _limits()[1]},
         # Sharing lives in report_artifact_public_links (public_links.py); the retired
         # public_token / public_enabled columns are never read.
         "public_enabled": active_links > 0, "public_link_count": active_links,
@@ -412,6 +466,7 @@ def _run_job(artifact_id: int, job_id: str, user_id, run) -> None:
         db.commit()
         _update_job(progress_db, artifact_id, job_id, state="done", step="Hoàn tất", revision=rev.number,
                     notes=(out.get("notes") or []) + warnings, summary=out.get("summary"),
+                    readiness=out.get("readiness"), ai_slots=out.get("ai_slots"),
                     design_source=out.get("design_source"), data_source=out.get("data_source"),
                     elapsed_ms=int((_now() - started).total_seconds() * 1000))
     except ValueError as exc:
@@ -447,10 +502,40 @@ def report_origin() -> Optional[str]:
     app_origins = [o.strip().rstrip("/") for o in settings.cors_origins_list if o.strip().startswith("http")]
     if configured:
         return None if configured in app_origins else configured
+    # The 127.0.0.1 twin of localhost is a separate origin ONLY on the machine that runs the
+    # app. Guessed on a server (a dev "localhost" left among the CORS origins of a real
+    # domain), it sent every viewer's browser to ITS OWN machine: a blank report. So it is
+    # guessed only when every app origin is loopback - a local install.
+    if not app_origins or any(not _loopback(urlsplit(o).hostname) for o in app_origins):
+        return None
     for o in app_origins:
         parts = urlsplit(o)
         if parts.hostname == "localhost":
             return f"{parts.scheme}://127.0.0.1{':' + str(parts.port) if parts.port else ''}"
+    return None
+
+
+def _loopback(host: Optional[str]) -> bool:
+    return (host or "").lower() in ("localhost", "127.0.0.1", "::1", "[::1]") or (host or "").startswith("127.")
+
+
+def origin_warning() -> Optional[str]:
+    """What an operator must hear at startup about where report documents are served from."""
+    from urllib.parse import urlsplit
+
+    from app.core.config import settings
+
+    configured = (settings.REPORT_ARTIFACT_ORIGIN or "").strip().rstrip("/")
+    app_origins = [o.strip().rstrip("/") for o in settings.cors_origins_list if o.strip().startswith("http")]
+    public = [o for o in app_origins if not _loopback(urlsplit(o).hostname)]
+    if configured and _loopback(urlsplit(configured).hostname) and public:
+        return (f"REPORT_ARTIFACT_ORIGIN={configured} is a loopback address while the app is served from "
+                f"{public[0]}: every viewer's browser would load reports from its OWN machine (blank report). "
+                "Set it to a dedicated subdomain (e.g. https://report-docs.<your-domain>) routed to this backend.")
+    if report_origin() is None and public:
+        return ("REPORT_ARTIFACT_ORIGIN is not set: reports are served from the app's own origin, so the "
+                "author's report JavaScript is BLOCKED (security). Set it to a dedicated subdomain routed to "
+                "/api/v1/public/report-docs/ on this backend to run report scripts.")
     return None
 
 

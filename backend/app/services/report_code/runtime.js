@@ -362,7 +362,16 @@
       return '<div class="rac-tip-r"><span class="rac-tip-dot" style="background:' + esc(r.color || 'var(--rac-accent)') + '"></span>' + esc(r.label) + '<b>' + esc(r.value) + '</b></div>';
     }).join('');
   }
+  // A place whose binding the report does not have ("missing" left by an import, a deleted
+  // binding) or that the server says is not bound: said on the tile, never an empty box.
+  function unbound(id, d) {
+    if (d && d.status === 'unbound') return true;
+    if (!id || id === 'missing') return true;
+    return !d && ctx.bindings.length > 0 && !ctx.bindings.some(function (b) { return b.id === id; });
+  }
+  var UNBOUND_HTML = '<div class="rac-state rac-unbound" data-rac-prov="unbound" title="Vị trí này chưa được nối với dữ liệu BI Core">Chưa gắn dữ liệu</div>';
   function stateBox(el, d) {
+    if (d && d.status === 'unbound') { el.innerHTML = UNBOUND_HTML; return true; }
     if (!d || d.status === 'loading') { el.innerHTML = '<div class="rac-skel"></div>'; return true; }
     if (d.status === 'error' || d.status === 'refused') { el.innerHTML = '<div class="rac-state rac-error">' + esc(d.error || 'Không tải được dữ liệu') + '</div>'; return true; }
     if (!d.rows || !d.rows.length) { el.innerHTML = '<div class="rac-state">Không có dữ liệu cho bộ lọc hiện tại</div>'; return true; }
@@ -765,6 +774,13 @@
     for (var i = 0; i < old.length; i++) if (old[i].parentNode === parent) parent.removeChild(old[i]);
     tpl.style.display = 'none';
     tpl.setAttribute('aria-hidden', 'true');
+    if (unbound(id, d)) {
+      var note = document.createElement(tpl.tagName === 'TR' ? 'tr' : 'div');
+      note.setAttribute('data-rac-clone', id);
+      note.innerHTML = tpl.tagName === 'TR' ? '<td colspan="99">' + UNBOUND_HTML + '</td>' : UNBOUND_HTML;
+      parent.insertBefore(note, tpl.nextSibling);
+      return;
+    }
     if (!d || d.status === 'loading') { tpl.style.display = ''; return; }
     var rows = (d.rows || []).slice();
     if (o.sort) {
@@ -850,6 +866,11 @@
   }
   function mountFilter(el) {
     var key = el.getAttribute('data-rac-filter'), decl = filterDecl(key);
+    if (!decl && key === 'missing') {
+      // an import could not bind this filter: said to everyone (it is no locked filter)
+      el.innerHTML = '<span class="rac-unbound-chip" data-rac-prov="unbound">Bộ lọc chưa gắn dữ liệu</span>';
+      return;
+    }
     if (!decl) {
       // In the Studio an unknown key is the author's mistake: say so. For a viewer it is
       // a filter this link keeps to itself (locked, hidden or switched off): show nothing.
@@ -944,11 +965,15 @@
     var fn = viz[kind];
     if (!fn) { el.innerHTML = '<div class="rac-state rac-error">Không có kiểu hiển thị "' + esc(kind) + '"</div>'; return; }
     var d = cache[id];
-    if (!d && ctx.bindings.length && !ctx.bindings.some(function (b) { return b.id === id; })) { el.innerHTML = '<div class="rac-state rac-error">Chưa gắn dữ liệu "' + esc(id) + '"</div>'; return; }
+    if (unbound(id, d)) { el.innerHTML = UNBOUND_HTML; return; }
     try { fn(el, d || { status: 'loading', bindingId: id }, opts(el)); } catch (err) { el.innerHTML = '<div class="rac-state rac-error">' + esc(err.message) + '</div>'; report('render', kind + ': ' + err.message); }
   }
   function renderValue(el) {
-    var d = cache[el.getAttribute('data-rac-value')];
+    var vid = el.getAttribute('data-rac-value'), d = cache[vid];
+    if (unbound(vid, d)) {
+      el.innerHTML = '<span class="rac-unbound-chip" data-rac-prov="unbound" title="Vị trí này chưa được nối với dữ liệu BI Core">Chưa gắn dữ liệu</span>';
+      return;
+    }
     if (!d || d.status !== 'ready') { el.textContent = d && (d.status === 'error' || d.status === 'refused' || d.status === 'empty') ? '—' : '…'; if (d && d.error) el.title = d.error; return; }
     var o = opts(el), fkey = el.getAttribute('data-rac-field') || o.field;
     var rowKey = el.getAttribute('data-rac-row'), rank = el.getAttribute('data-rac-rank');
@@ -987,7 +1012,8 @@
     var vs = document.querySelectorAll('[data-rac-value]'); for (var j = 0; j < vs.length; j++) renderValue(vs[j]);
     var fs = document.querySelectorAll('[data-rac-filter]'); for (var k = 0; k < fs.length; k++) mountFilter(fs[k]);
     var cs = document.querySelectorAll('[data-rac-filter-chips]'); for (var l = 0; l < cs.length; l++) mountChips(cs[l]);
-    var rp = document.querySelectorAll('[data-rac-repeat]'); for (var r = 0; r < rp.length; r++) if (!cache[rp[r].getAttribute('data-rac-repeat')]) renderRepeat(rp[r]);
+    var rp = document.querySelectorAll('[data-rac-repeat]');
+    for (var r = 0; r < rp.length; r++) { var rid = rp[r].getAttribute('data-rac-repeat'); if (!cache[rid] || unbound(rid, cache[rid])) renderRepeat(rp[r]); }
     Object.keys(cache).forEach(renderBinding);
     renderFilterBound();
     renderSamples();
@@ -1005,6 +1031,13 @@
         else if (el.hasAttribute('data-rac-value')) renderValue(el);
         else if (el.hasAttribute('data-rac-filter')) mountFilter(el);
         else mountChips(el);
+      }
+      // a repeated row whose binding the report does not have never gets data to draw it:
+      // it says "not bound" at once (a bound one waits for its data, as before)
+      var reps = document.querySelectorAll('[data-rac-repeat]:not([data-rac-m])');
+      for (var r = 0; r < reps.length; r++) {
+        var rid = reps[r].getAttribute('data-rac-repeat');
+        if (unbound(rid, cache[rid])) { reps[r].setAttribute('data-rac-m', '1'); renderRepeat(reps[r]); }
       }
     }, 30);
   }
@@ -1040,7 +1073,10 @@
   // value of its bound data. Numbers drawn by rac.viz / data-rac-value are trusted (the
   // runtime formats them from the DTO); the rest is checked against every formatted value.
   var auditT = null, auditSeen = {};
-  var TRUSTED = '.rac-kpi,.rac-svg,.rac-table-wrap,.rac-heat,.rac-gauge,.rac-progress,.rac-donut,.rac-filter,.rac-chip,.rac-tip,[data-rac-value],[data-rac-asof],script,style,input,select,textarea,option';
+  var TRUSTED = '.rac-kpi,.rac-svg,.rac-table-wrap,.rac-heat,.rac-gauge,.rac-progress,.rac-donut,.rac-filter,.rac-chip,.rac-tip,[data-rac-value],[data-rac-asof],'
+    + '.rac-note,.rac-state,.rac-unbound-chip,.rac-sample-legend,[data-rac-prov],[data-rac-static],script,style,input,select,textarea,option';
+  // a date written in the text (24/08/2026, 2026-08-24) is not a figure: never split into numbers
+  var DATE_RX = /\b\d{1,2}[\/.\-]\d{1,2}[\/.\-]\d{2,4}\b|\b\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}\b/g;
   function auditNumbers() {
     clearTimeout(auditT);
     auditT = setTimeout(function () {
@@ -1125,14 +1161,17 @@
       for (var node = walker.nextNode(); node && marked < 120; node = walker.nextNode()) {
         var el = node.parentElement;
         if (!el || el.closest(TRUSTED)) continue;
-        var toks = String(node.nodeValue || '').match(/[-+]?\d[\d.,]*\s?(?:Tr|Tỷ|tỷ|N|K|M|B|%|₫)?/g) || [];
+        var toks = String(node.nodeValue || '').replace(DATE_RX, ' ').match(/[-+]?\d[\d.,]*\s?(?:Tr|Tỷ|tỷ|N|K|M|B|%|₫)?/g) || [];
         toks.forEach(function (tok) {
-          var t = tok.replace(/\s+/g, '');
+          // the sentence's own punctuation is not part of the figure ("mốc 2026." -> 2026)
+          var t = tok.replace(/\s+/g, '').replace(/^[.,]+|[.,]+$/g, '');
           var n = parseFloat(t.replace(/\./g, '').replace(',', '.'));
-          if (isFinite(n) && allowed[t]) { checkAssoc(el, t); return; }
           if (!isFinite(n)) return;
+          // FIRST the numbers that are not figures - a rank, a month, a day, a year: equal
+          // to some bound value by chance ("Top 10" vs a row worth 10) they are no misplacement
           if (/^\d{4}$/.test(t) && n >= 1900 && n <= 2100) return;   // years in headings
           if (/^\d{1,2}$/.test(t) && n <= 31) return;                // ranks, months, days
+          if (allowed[t]) { checkAssoc(el, t); return; }
           if (!el.classList.contains('rac-static')) { el.classList.add('rac-static'); marked++; }
           if (bad.indexOf(t) < 0 && bad.length < 6) bad.push(t);
         });

@@ -38,6 +38,11 @@ export interface ReportSummary {
   binding_count?: number;
   /** saved charts it reads (draft + published), for the list's Chart/Source/Dataset filters */
   chart_ids?: number[];
+  /** Places pointing at data the revision does not have ("missing" from an import, a
+   *  deleted binding/filter): counted by the server on read, draft and published. */
+  unbound?: { draft: number; published: number };
+  /** Page-size limits (server settings REPORT_MAX_BINDINGS / REPORT_MAX_FILTERS). */
+  limits?: { bindings: number; filters: number };
   /** Set by the list endpoint: the caller's level and the owner, as on a dashboard row. */
   user_permission?: 'none' | 'view' | 'edit' | 'full';
   owner_email?: string | null;
@@ -45,6 +50,9 @@ export interface ReportSummary {
   updated_at: string | null;
   last_published_at: string | null;
 }
+
+export interface ReadinessItem { code: string; message: string; place: { region: string | null; label: string | null; snippet: string }; fix?: string }
+export interface ReadinessReport { revision: number; ready: boolean; blocking: ReadinessItem[]; warnings: ReadinessItem[]; counts: Record<string, number> }
 
 export interface ReportBinding { id: string; chart_id: number; title: string; kind: string }
 export interface ReportFilter { key: string; label: string; kind: 'category' | 'date'; fieldKey?: string; grain?: 'month'; default?: 'latest'; single?: boolean; default_value?: string }
@@ -183,6 +191,9 @@ export const reportCodeApi = {
   /** A signed, 10-minute URL for one revision's document on the isolated report origin. */
   documentTicket: async (id: number, revision?: number | null): Promise<{ url: string; isolated: boolean; revision: number }> =>
     (await apiClient.post(`${base(id)}/document-ticket`, null, { params: revision ? { revision } : {} })).data,
+  /** The server's one readiness report for a revision (what blocks publishing, per place). */
+  readiness: async (id: number, revision?: number | null): Promise<ReadinessReport> =>
+    (await apiClient.get(`/report-artifacts/${id}/readiness`, { params: revision ? { revision } : {} })).data,
   data: async (id: number, binding: string, state: FilterState, revision?: number | null): Promise<unknown> =>
     (await apiClient.post(`${base(id)}/data`, { binding, state, revision: revision ?? null })).data,
   values: async (id: number, key: string, search: string, state: FilterState, revision?: number | null): Promise<unknown[]> =>

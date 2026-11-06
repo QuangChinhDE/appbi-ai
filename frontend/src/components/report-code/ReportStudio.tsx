@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/Button';
+import { ReadinessPanel } from '@/components/report-code/ReadinessPanel';
 import { DevicePreview, type Device } from '@/components/report-code/DevicePreview';
 import { ReportFrame, type RuntimeIssue } from '@/components/report-code/ReportFrame';
 import { AiPanel, DataPanel } from '@/components/report-code/StudioPanels';
@@ -118,7 +119,11 @@ export function ReportStudio({ reportId, initialRevision = null, proposalId = nu
           clearInterval(timer);
           if (j.state === 'done') {
             toast.success(j.summary || t('reportCode.job.done'));
-            (j.notes || []).slice(0, 3).forEach((n) => toast.info(n));
+            // a place the import could not bind is a WARNING the author must act on - first,
+            // never lost behind the informational notes
+            const notes = j.notes || [];
+            notes.filter((n) => /missing|chưa gắn/i.test(n)).forEach((n) => toast.warning(n));
+            notes.filter((n) => !/missing|chưa gắn/i.test(n)).slice(0, 3).forEach((n) => toast.info(n));
             setRegion(null);
             setPreviewNumber(null);
           } else {
@@ -350,6 +355,27 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
           </div>
         </div>
       </div>
+
+      <ReadinessPanel reportId={reportId} revision={draft?.number} />
+      {detail.limits && draft && (() => {
+        const b = (draft.bindings || []).length, f = (draft.filters || []).length;
+        const near = b >= detail.limits.bindings * 0.9 || f >= detail.limits.filters * 0.9;
+        return (
+          <div className={`mx-4 mb-2 text-[11px] sm:mx-5 ${near ? 'text-amber-700' : 'text-text-tertiary'}`} data-testid="studio-limits"
+            data-bindings={b} data-bindings-max={detail.limits.bindings} data-filters={f} data-filters-max={detail.limits.filters}>
+            {t('reportCode.limits.usage', { b, bm: detail.limits.bindings, f, fm: detail.limits.filters })}
+            {near ? ` · ${t('reportCode.limits.near')}` : ''}
+          </div>
+        );
+      })()}
+      {(detail.unbound?.draft || detail.unbound?.published) ? (
+        <div className="mx-4 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:mx-5"
+          role="status" data-testid="studio-unbound">
+          <AlertTriangle className="h-4 w-4 flex-shrink-0 text-amber-600" aria-hidden="true" />
+          {!!detail.unbound?.draft && <span data-testid="studio-unbound-draft">{t('reportCode.unbound.draft', { n: detail.unbound.draft })}</span>}
+          {!!detail.unbound?.published && <span data-testid="studio-unbound-published">{t('reportCode.unbound.published', { n: detail.unbound.published, v: detail.published_number ?? '' })}</span>}
+        </div>
+      ) : null}
 
       <div ref={splitRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 pb-4 sm:px-5 lg:flex-row lg:gap-0 lg:overflow-hidden">
         {/* Work panel — resizable on wide screens */}

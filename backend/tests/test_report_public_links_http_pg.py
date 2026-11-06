@@ -519,3 +519,27 @@ def test_creating_a_link_whose_lock_a_binding_cannot_apply_says_so(client, db, b
     client.patch(f"{url}/public-links/{lid}", json={"is_active": False}, headers=own.headers)
     on = client.patch(f"{url}/public-links/{lid}", json={"is_active": True}, headers=own.headers)
     assert on.json()["lock_warnings"][0]["binding"] == "b1"
+
+
+def test_a_place_with_no_binding_is_said_unbound_not_a_generic_404(client, owner, report):  # noqa: F811
+    """Live (artifact 1 rev 1, published before the publish guard): three tables read
+    data-rac-bind="missing" and showed EMPTY to viewers and author alike - /data answered
+    the 404 of a revoked link. A live link (and the studio) say "not bound" with its own
+    code; a dead link keeps its 404."""
+    link = _create(client, owner, report)
+    url = f"/api/v1/public/reports/{link['token']}/data"
+    r = client.post(url, json={"binding": "missing", "state": {}})
+    assert r.status_code == 200 and r.json()["status"] == "unbound" and r.json()["code"] == "BINDING_UNBOUND"
+    assert r.json()["rows"] == [] and "Chưa gắn dữ liệu" in r.json()["error"]
+    s = client.post(f"/api/v1/report-artifacts/{report.id}/data", json={"binding": "b99", "state": {}}, headers=owner.headers)
+    assert s.status_code == 200 and s.json()["code"] == "BINDING_UNBOUND"
+    assert client.post("/api/v1/public/reports/rpt_doesnotexist/data", json={"binding": "missing", "state": {}}).status_code == 404
+
+
+def test_the_readiness_report_is_served_to_the_author_and_never_to_an_anonymous_caller(client, owner, report):  # noqa: F811
+    r = client.get(f"/api/v1/report-artifacts/{report.id}/readiness", headers=owner.headers)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) >= {"revision", "ready", "blocking", "warnings", "counts"}
+    assert isinstance(body["blocking"], list) and all({"code", "message", "place"} <= set(x) for x in body["blocking"] + body["warnings"])
+    assert client.get(f"/api/v1/report-artifacts/{report.id}/readiness").status_code in (401, 403)

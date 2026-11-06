@@ -448,14 +448,28 @@ def save_source(artifact_id: int, body: SourceBody, db: Session = Depends(get_db
     draft = _draft(db, art)
     if body.base_number is not None and body.base_number != draft.number:
         raise HTTPException(status_code=409, detail=f"Bản nháp đã đổi (phiên bản {draft.number}) — tải lại trước khi lưu.")
+    html, css, js = body.html, body.css, body.js
+    bindings, filters, notes, note = list(draft.bindings or []), list(draft.filters or []), [], "Sửa mã nguồn"
+    from app.services.report_code import importer as I
+
+    if I.has_placeholders(html, js):
+        # `@cN` / `@fN` typed in the editor mean what they mean in an import: bind them the
+        # same way (same rules, same reuse of existing bindings), never save them raw.
+        try:
+            out = I.apply(db, dataset_id=art.dataset_id, html=html, css=css, js=js, mapping=[], filters=[],
+                          owner_id=current_user.id, report_name=art.name, existing=bindings,
+                          existing_filters=filters, progress=lambda *_: None)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        html, css, js, bindings, filters = out["html"], out["css"], out["js"], out["bindings"], out["filters"]
+        notes, note = list(out.get("notes") or []), "Sửa mã nguồn (gắn dữ liệu @c/@f)"
     try:
-        rev, warnings = L.add_revision(db, art, user_id=current_user.id, html=body.html, css=body.css, js=body.js,
-                                       bindings=list(draft.bindings or []), filters=list(draft.filters or []),
-                                       source="manual", note="Sửa mã nguồn")
+        rev, warnings = L.add_revision(db, art, user_id=current_user.id, html=html, css=css, js=js,
+                                       bindings=bindings, filters=filters, source="manual", note=note)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
-    return {"revision": L.revision_view(rev, with_source=True), "warnings": warnings}
+    return {"revision": L.revision_view(rev, with_source=True), "warnings": notes + list(warnings)}
 
 
 @router.post("/{artifact_id}/ai-edit", status_code=202)
@@ -840,18 +854,37 @@ def _served_revision(db: Session, art: ReportArtifact) -> ReportArtifactRevision
     return L.get_revision(db, art, art.published_revision_id) or _draft(db, art)
 
 
+@router.get("/{artifact_id}/readiness")
+def readiness(artifact_id: int, revision: Optional[int] = None, data: bool = False, db: Session = Depends(get_db),
+              current_user: User = Depends(require_permission(MODULE, "view"))):
+    """What blocks publishing this revision and what to look at, per place on the page
+    (services/report_code/readiness.py). `data=1` also reads the bindings (row addresses),
+    under the caller's own rights."""
+    from app.services.report_code import readiness as R
+
+    art = _load(db, artifact_id, current_user)
+    rev = _revision_for(db, art, revision)
+    dtos = None
+    if data:
+        _require_bindings_access(db, current_user, rev)
+        from app.services.report_code.generation import _probe
+
+        dtos = _probe(db, list(rev.bindings or []), list(rev.filters or []))
+    return {"revision": rev.number, **R.report(rev, dtos=dtos)}
+
+
 @router.post("/{artifact_id}/data")
 def binding_data(artifact_id: int, body: DataBody, db: Session = Depends(get_db),
                  current_user: User = Depends(require_permission(MODULE, "view"))):
     art = _load(db, artifact_id, current_user)
     rev = _revision_for(db, art, body.revision)
     binding = next((b for b in rev.bindings or [] if b.get("id") == body.binding), None)
-    if binding is None:
-        raise HTTPException(status_code=404, detail="Nguồn dữ liệu không thuộc báo cáo này.")
     try:
         state = B.clean_state(rev.filters or [], body.state)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if binding is None:
+        return B.unbound_dto(body.binding)  # "not bound", apart from a lost chart (404) / rights (403)
     _check_chart_access(db, current_user, int(binding["chart_id"]))
     ds = db.query(Dataset).filter(Dataset.id == art.dataset_id).first() if art.dataset_id else None
     return B.mint_dto(db, binding, rev.filters or [], state, source_label=ds.name if ds else None)
