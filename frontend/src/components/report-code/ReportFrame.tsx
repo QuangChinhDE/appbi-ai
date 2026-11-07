@@ -146,7 +146,11 @@ export function ReportFrame({
         const keys = new Set([...Object.keys(prev.state), ...Object.keys(state)]);
         const changed = Array.from(keys).filter((x) => JSON.stringify(prev.state[x] ?? null) !== JSON.stringify(state[x] ?? null));
         if (changed.every((x) => ignored.includes(x))) {
-          const p = Promise.resolve(prev.dto);
+          // same numbers; the state it carries says what the viewer picked now (text bound to a filter)
+          const known = prev.dto.state && typeof prev.dto.state === 'object' ? prev.dto.state : {};
+          const nextState: Record<string, unknown> = { ...known };
+          changed.forEach((x) => { if (x in known || state[x] !== undefined) { if (state[x] === undefined) delete nextState[x]; else nextState[x] = state[x]; } });
+          const p = Promise.resolve({ ...prev.dto, state: nextState });
           cache.map.set(k, { at: Date.now(), p });
           promises[id] = p;
           continue;

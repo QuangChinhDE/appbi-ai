@@ -766,14 +766,18 @@ _dto_guard = threading.Lock()
 # Every table whose rows decide a binding's result. A write bumps updated_at (onupdate) and
 # a delete changes the count: either moves the epoch, so the cache never outlives an edit.
 _EPOCH_TABLES = ("datasets", "dataset_tables", "dataset_table_snapshots", "data_sources",
-                 "semantic_models", "semantic_views", "semantic_explores")
+                 "semantic_models", "semantic_views", "semantic_explores", "govern_metrics")
+# Small tables without an updated_at: their whole content is the stamp.
+_EPOCH_CONTENT_TABLES = ("govern_metric_bindings", "dataset_dependencies")
 
 
 def data_epoch(db: Session, chart_ids: List[int]) -> str:
     """A stamp that changes whenever anything a set of charts' results depend on is edited."""
     from sqlalchemy import text
 
-    parts = " UNION ALL ".join(f"SELECT '{t}', MAX(updated_at)::text, COUNT(*) FROM {t}" for t in _EPOCH_TABLES)
+    parts = " UNION ALL ".join([f"SELECT '{t}', MAX(updated_at)::text, COUNT(*) FROM {t}" for t in _EPOCH_TABLES]
+                               + [f"SELECT '{t}', md5(string_agg(x::text, ',' ORDER BY x::text)), COUNT(*) FROM {t} x"
+                                  for t in _EPOCH_CONTENT_TABLES])
     rows = [tuple(r) for r in db.execute(text(parts)).fetchall()]
     ids = sorted({int(i) for i in chart_ids})
     if ids:
@@ -783,6 +787,9 @@ def data_epoch(db: Session, chart_ids: List[int]) -> str:
         rows += [tuple(r) for r in db.execute(
             text("SELECT chart_id, md5(string_agg(to_jsonb(p)::text, ',' ORDER BY p.id)) FROM chart_parameters p "
                  "WHERE chart_id = ANY(:ids) GROUP BY chart_id ORDER BY chart_id"), {"ids": ids}).fetchall()]
+        rows += [tuple(r) for r in db.execute(
+            text("SELECT chart_id, md5(to_jsonb(m)::text) FROM chart_metadata m WHERE chart_id = ANY(:ids) ORDER BY chart_id"),
+            {"ids": ids}).fetchall()]
     import hashlib
 
     return hashlib.sha256(repr(rows).encode()).hexdigest()[:24]
