@@ -119,9 +119,10 @@ HTML is the BODY CONTENT only (no <html>/<head>/<body>/<script>/<link>/<meta>). 
 6. Theme through CSS variables on :root (--rac-accent, --rac-bg, --rac-surface, --rac-text, --rac-muted, --rac-border, --rac-c1 … --rac-c8). System fonts only.
 7. JS is optional: navigation active state, tabs, toggles, custom visuals built with rac.bind. Use addEventListener (inline on* handlers do not run). No network, storage or timers that poll.
 8. Write UI text in the language of the request (Vietnamese by default). Never leave placeholder or lorem text.
+9. Speed: a detail list (data-rac-repeat) carries data-rac-limit="100" or less; never map codes to labels with CSS attribute selectors (the data has labels); keep the page lean (no thousands of elements). Only the shown part of the page loads, so put secondary sections in tabs or <details>.
 """
 
-JS_OFF_RULE = ("9. THIS ENVIRONMENT DOES NOT RUN CUSTOM JS (no dedicated report origin): leave \"js\" empty. "
+JS_OFF_RULE = ("10. THIS ENVIRONMENT DOES NOT RUN CUSTOM JS (no dedicated report origin): leave \"js\" empty. "
                "Do everything in HTML + CSS + the declarative data-rac-* places: tabs/toggles with <details> or "
                ":target/:checked CSS, active nav with :target, charts ONLY with data-rac-viz, lists with data-rac-repeat.")
 

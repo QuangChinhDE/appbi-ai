@@ -562,7 +562,7 @@ def _debug_get(debug: Any, key: str) -> Any:
 
 def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], state: Dict[str, Any],
              *, source_label: Optional[str] = None, public: bool = False,
-             disclose: Optional[Any] = None, enforced: Any = ()) -> Dict[str, Any]:
+             disclose: Optional[Any] = None, enforced: Any = (), limit: Optional[int] = None) -> Dict[str, Any]:
     """Run one binding through the chart engine and reduce the result to the DTO.
 
     The DTO carries `state`: the filter values these numbers were computed with (declared
@@ -643,7 +643,8 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
         fields.append(f)
     kinds = {key_of[r]: (described.get(r) or {}).get("kind") for r in order}
     out_rows = []
-    for row in rows[:MAX_ROWS]:
+    cap = min(MAX_ROWS, int(limit)) if limit and int(limit) > 0 else MAX_ROWS
+    for row in rows[:cap]:
         if isinstance(row, dict):
             out_rows.append({key_of[k]: _plain(v, kinds.get(key_of[k])) for k, v in row.items() if k in key_of})
 
@@ -654,20 +655,26 @@ def mint_dto(db: Session, binding: Dict[str, Any], decl: List[Dict[str, Any]], s
             if isinstance(item, dict) and item.get("bucket") is not None:
                 partial.append(str(_plain(item.get("bucket"), "date")))
 
-    not_applied = []
+    not_applied, ignored = [], []
     labels = {f["fieldKey"]: f["label"] for f in decl if f["key"] in allowed}  # a hidden filter is never named
+    key_by_ref = {f["fieldKey"]: f["key"] for f in decl if f["key"] in allowed}
     for drop in _debug_get(debug, "dropped_filters") or []:
         if isinstance(drop, dict):
             ref = drop.get("semantic_field") or drop.get("fieldKey") or drop.get("field")
             if ref in labels and labels[ref] not in not_applied:
                 not_applied.append(labels[ref])
+            if ref in key_by_ref and key_by_ref[ref] not in ignored:
+                ignored.append(key_by_ref[ref])
 
     as_of = _debug_get(debug, "result_as_of") or _debug_get(debug, "snapshot_as_of")
     prov: Dict[str, Any] = {"asOf": str(as_of) if as_of else _dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"}
     if source_label and not public:
         prov["source"] = source_label
     out = {**base, "status": "ready" if out_rows else "empty", "rows": out_rows, "fields": fields,
-           "truncated": len(rows) > MAX_ROWS, "partial": partial, "notApplied": not_applied, "provenance": prov}
+           "truncated": len(rows) > cap, "partial": partial, "notApplied": not_applied, "provenance": prov}
+    if ignored:
+        # filter keys this binding's engine dropped: a change to ONLY these keys cannot change it
+        out["ignoredFilters"] = ignored
     top = _top_n(db, binding)
     if top:
         out["topN"] = top  # the chart keeps only its N first rows: never a whole population
@@ -741,4 +748,105 @@ def public_filters(decl: List[Dict[str, Any]]) -> List[Dict[str, str]]:
             if f.get(extra) not in (None, "", False):
                 item[extra] = f[extra]
         out.append(item)
+    return out
+
+
+# ── Batched data (one request per page chunk) + the public DTO cache ─────────────
+# A page asked its data one binding per request: 40 HTTP round trips, each re-reading the
+# chart, dataset, model, views, explores and sources (~28 Postgres queries) before the
+# result cache was even probed. A batch shares the request-level work; on a public link a
+# DTO is reused while nothing it depends on has changed (data_epoch) - never longer than
+# DTO_CACHE_TTL_S, which stays under the live-query cache's own TTL.
+
+DTO_CACHE_TTL_S = 60
+_DTO_CACHE_MAX = 256
+_dto_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_dto_guard = threading.Lock()
+
+# Every table whose rows decide a binding's result. A write bumps updated_at (onupdate) and
+# a delete changes the count: either moves the epoch, so the cache never outlives an edit.
+_EPOCH_TABLES = ("datasets", "dataset_tables", "dataset_table_snapshots", "data_sources",
+                 "semantic_models", "semantic_views", "semantic_explores", "govern_metrics")
+# Small tables without an updated_at: their whole content is the stamp.
+_EPOCH_CONTENT_TABLES = ("govern_metric_bindings", "dataset_dependencies")
+
+
+def data_epoch(db: Session, chart_ids: List[int]) -> str:
+    """A stamp that changes whenever anything a set of charts' results depend on is edited."""
+    from sqlalchemy import text
+
+    parts = " UNION ALL ".join([f"SELECT '{t}', MAX(updated_at)::text, COUNT(*) FROM {t}" for t in _EPOCH_TABLES]
+                               + [f"SELECT '{t}', md5(string_agg(x::text, ',' ORDER BY x::text)), COUNT(*) FROM {t} x"
+                                  for t in _EPOCH_CONTENT_TABLES])
+    rows = [tuple(r) for r in db.execute(text(parts)).fetchall()]
+    ids = sorted({int(i) for i in chart_ids})
+    if ids:
+        rows += [tuple(r) for r in db.execute(
+            text("SELECT id, updated_at::text, md5(config::text) FROM charts WHERE id = ANY(:ids) ORDER BY id"),
+            {"ids": ids}).fetchall()]
+        rows += [tuple(r) for r in db.execute(
+            text("SELECT chart_id, md5(string_agg(to_jsonb(p)::text, ',' ORDER BY p.id)) FROM chart_parameters p "
+                 "WHERE chart_id = ANY(:ids) GROUP BY chart_id ORDER BY chart_id"), {"ids": ids}).fetchall()]
+        rows += [tuple(r) for r in db.execute(
+            text("SELECT chart_id, md5(to_jsonb(m)::text) FROM chart_metadata m WHERE chart_id = ANY(:ids) ORDER BY chart_id"),
+            {"ids": ids}).fetchall()]
+    import hashlib
+
+    return hashlib.sha256(repr(rows).encode()).hexdigest()[:24]
+
+
+def _dto_key(scope: str, epoch: str, binding: Dict[str, Any], state: Dict[str, Any], enforced: Any,
+             disclose: Any, limit: Optional[int]) -> str:
+    import json as _json
+
+    return _json.dumps([scope, epoch, binding, state, sorted(set(enforced or ())),
+                        sorted(set(disclose)) if disclose is not None else None, limit], sort_keys=True, default=str)
+
+
+def _cache_get(key: str) -> Optional[Dict[str, Any]]:
+    hit = _dto_cache.get(key)
+    if hit and time.time() - hit[0] < DTO_CACHE_TTL_S:
+        return hit[1]
+    return None
+
+
+def _cache_put(key: str, dto: Dict[str, Any]) -> None:
+    if dto.get("status") not in ("ready", "empty"):
+        return  # an error or a refusal is recomputed every time
+    with _dto_guard:
+        if len(_dto_cache) >= _DTO_CACHE_MAX:
+            now = time.time()
+            for k in [k for k, (at, _) in _dto_cache.items() if now - at >= DTO_CACHE_TTL_S]:
+                _dto_cache.pop(k, None)
+            while len(_dto_cache) >= _DTO_CACHE_MAX:
+                _dto_cache.pop(next(iter(_dto_cache)))
+        _dto_cache[key] = (time.time(), dto)
+
+
+def mint_batch(db: Session, revision_bindings: List[Dict[str, Any]], ids: List[str], decl: List[Dict[str, Any]],
+               state: Dict[str, Any], *, limits: Optional[Dict[str, int]] = None, cache_scope: Optional[str] = None,
+               **kw: Any) -> Dict[str, Dict[str, Any]]:
+    """DTOs for several bindings of ONE revision, in one call - exactly what mint_dto returns
+    for each (an unknown id answers as unbound). `cache_scope` (a public link) turns on the
+    DTO cache; it is part of the key, with the data epoch, the resolved state and the locks."""
+    by_id = {b.get("id"): b for b in revision_bindings or [] if isinstance(b, dict)}
+    wanted = list(dict.fromkeys(str(i) for i in ids))[:MAX_BINDINGS]
+    resolved = resolve_state(db, decl, state, kw.get("enforced") or ())
+    epoch = None
+    if cache_scope:
+        epoch = data_epoch(db, [int(b["chart_id"]) for i in wanted if (b := by_id.get(i)) and b.get("chart_id")])
+    out: Dict[str, Dict[str, Any]] = {}
+    for bid in wanted:
+        b = by_id.get(bid)
+        if b is None:
+            out[bid] = unbound_dto(bid)
+            continue
+        lim = (limits or {}).get(bid)
+        key = _dto_key(cache_scope, epoch, b, resolved, kw.get("enforced"), kw.get("disclose"), lim) if cache_scope else None
+        dto = _cache_get(key) if key else None
+        if dto is None:
+            dto = mint_dto(db, b, decl, resolved, limit=lim, **kw)
+            if key:
+                _cache_put(key, dto)
+        out[bid] = dto
     return out

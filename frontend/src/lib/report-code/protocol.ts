@@ -19,13 +19,31 @@ export type FilterValue = string[] | [string | null, string | null];
 export type FilterState = Record<string, FilterValue>;
 
 export type SandboxMessage =
-  | { type: 'ready'; guard: boolean; authorScript?: 'ran' | 'refused' }
+  | { type: 'ready'; guard: boolean; authorScript?: 'ran' | 'refused'; need?: Need }
+  | ({ type: 'need' } & Need)
   | { type: 'guard'; guard: boolean; authorScript: 'ran' | 'refused' }
   | { type: 'setFilter'; key: string; value: FilterValue | null }
   | { type: 'clearFilters' }
   | { type: 'values'; reqId: string; key: string; search: string }
   | { type: 'region'; region: string }
   | { type: 'error'; kind: string; message: string };
+
+/** What the page shows now: bindings drawn by a rendered element (+ the author JS's), and
+ *  a row cap per binding used only by capped lists. Absent = an old document: load all. */
+export interface Need { ids: string[]; limits: Record<string, number> }
+
+function parseNeed(d: Record<string, unknown>): Need | undefined {
+  if (!Array.isArray(d.need ?? d.ids)) return undefined;
+  const ids = ((d.need ?? d.ids) as unknown[]).map((x) => str(x, 20)).filter((x): x is string => !!x).slice(0, 200);
+  const limits: Record<string, number> = {};
+  if (d.limits && typeof d.limits === 'object') {
+    for (const [k, v] of Object.entries(d.limits as Record<string, unknown>)) {
+      const n = typeof v === 'number' ? Math.floor(v) : NaN;
+      if (str(k, 20) && n > 0 && n <= 100_000) limits[k] = n;
+    }
+  }
+  return { ids, limits };
+}
 
 export const PROTOCOL_VERSION = 1;
 export const MAX_FILTER_VALUES = 200;
@@ -65,7 +83,12 @@ export function parseSandboxMessage(data: unknown, filters: ReportFilterDecl[]):
   switch (d.type) {
     case 'ready':
       return { type: 'ready', guard: d.guard === true,
-        authorScript: d.authorScript === 'ran' || d.authorScript === 'refused' ? d.authorScript : undefined };
+        authorScript: d.authorScript === 'ran' || d.authorScript === 'refused' ? d.authorScript : undefined,
+        need: Array.isArray(d.need) ? parseNeed(d) : undefined };
+    case 'need': {
+      const n = parseNeed(d);
+      return n ? { type: 'need', ...n } : null;
+    }
     case 'guard':
       return { type: 'guard', guard: d.guard === true, authorScript: d.authorScript === 'ran' ? 'ran' : 'refused' };
     case 'clearFilters':

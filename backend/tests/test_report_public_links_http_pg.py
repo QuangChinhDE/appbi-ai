@@ -543,3 +543,74 @@ def test_the_readiness_report_is_served_to_the_author_and_never_to_an_anonymous_
     assert set(body) >= {"revision", "ready", "blocking", "warnings", "counts"}
     assert isinstance(body["blocking"], list) and all({"code", "message", "place"} <= set(x) for x in body["blocking"] + body["warnings"])
     assert client.get(f"/api/v1/report-artifacts/{report.id}/readiness").status_code in (401, 403)
+
+
+# ── Batched data (report-data-perf P1/P2): the same guarantees as /data, once per batch ──
+
+def _batch(client, token, **body):  # noqa: F811
+    return client.post(f"/api/v1/public/reports/{token}/data-batch", json={"bindings": ["b1"], "state": {}, **body})
+
+
+def test_a_batch_keeps_every_lock_and_never_names_a_hidden_one(client, locked_link, monkeypatch):  # noqa: F811
+    from app.services.report_code import bindings as B
+
+    B._dto_cache.clear()
+    seen: list = []
+    _engine(monkeypatch, unreachable="t2.region", seen=seen)
+    r = _batch(client, locked_link)
+    assert r.status_code == 200, r.text
+    dto = r.json()["dtos"]["b1"]
+    assert dto["status"] == "refused" and dto["rows"] == [], "a batch never widens the link's scope"
+    assert any(f.get("_authoritative") for f in seen if f.get("fieldKey") == "t2.region")
+    assert "Vung-An" not in r.text and "North" not in r.text and "t2.region" not in r.text
+    # an override of the hidden lock is refused for the whole batch
+    assert _batch(client, locked_link, state={"f1": ["South"]}).status_code == 400
+    # an interactive filter the engine ignores is told by KEY for the frame; the hidden lock never is
+    B._dto_cache.clear()
+    _engine(monkeypatch, dropped=[{"semantic_field": "t1.state", "field": "state", "reason": "unreachable_view"}])
+    r = _batch(client, locked_link, state={"f2": ["SP"]}, bindings=["b1", "zz"])
+    out = r.json()["dtos"]
+    assert out["b1"]["status"] == "ready" and out["b1"]["ignoredFilters"] == ["f2"] and "f1" not in out["b1"]["state"]
+    assert out["zz"]["status"] == "unbound", "an unknown place is said unbound, as on /data"
+
+
+def test_a_batch_on_a_password_or_revoked_link_is_refused(client, owner, report):  # noqa: F811
+    link = _create(client, owner, report, password="s3cret!")
+    assert _batch(client, link["token"]).status_code == 401
+    session = client.post(f"/api/v1/public/reports/{link['token']}/auth", json={"password": "s3cret!"}).json()["session_token"]
+    ok = client.post(f"/api/v1/public/reports/{link['token']}/data-batch", json={"bindings": ["b1"], "state": {}},
+                     headers={"X-Public-Session": session})
+    assert ok.status_code == 200 and ok.json()["dtos"]["b1"]["status"] == "unbound"
+    client.delete(f"/api/v1/report-artifacts/{report.id}/public-links/{link['id']}", headers=owner.headers)
+    assert client.post(f"/api/v1/public/reports/{link['token']}/data-batch", json={"bindings": ["b1"], "state": {}},
+                       headers={"X-Public-Session": session}).status_code == 404
+
+
+def test_the_studio_batch_checks_data_rights_per_binding(client, db, bound):  # noqa: F811
+    own, art = bound
+    viewer = make_user(db, "rpl-no-data-batch", dashboards="edit")
+    _share(client, own, art, viewer, "view")
+    url = f"/api/v1/report-artifacts/{art.id}/data-batch"
+    assert client.post(url, json={"bindings": ["b1"], "state": {}}, headers=viewer.headers).status_code == 403
+
+
+def test_the_public_dto_cache_serves_a_repeat_and_any_config_edit_misses_it(client, db, locked_link, monkeypatch):  # noqa: F811
+    from app.models.models import Chart
+    from app.services.report_code import bindings as B
+
+    B._dto_cache.clear()
+    calls: list = []
+    _engine(monkeypatch, seen=calls)
+    first = _batch(client, locked_link).json()["dtos"]["b1"]
+    n = len(calls)
+    assert first["status"] == "ready" and n > 0
+    again = _batch(client, locked_link).json()["dtos"]["b1"]
+    assert again == first and len(calls) == n, "a repeat with nothing changed never reaches the engine"
+    other = _batch(client, locked_link, state={"f2": ["SP"]}).json()["dtos"]["b1"]
+    assert len(calls) > n and other["status"] == "ready", "another filter state is another result"
+    n = len(calls)
+    chart = db.query(Chart).order_by(Chart.id.desc()).first()
+    chart.config = {**(chart.config or {}), "edited": 1}
+    db.commit()
+    _batch(client, locked_link)
+    assert len(calls) > n, "a chart edit moves the data epoch: the cached result is not served"

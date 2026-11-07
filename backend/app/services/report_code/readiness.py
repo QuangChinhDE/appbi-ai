@@ -22,6 +22,7 @@ runtime.js `auditNumbers`, kept in step by tests/test_report_code_contract.py).
 """
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -105,6 +106,11 @@ class _Walk:
 
     def blocked_at(self, pos: int) -> bool:
         return any(a <= pos < b for a, b in self.blocked)
+
+
+LONG_LIST_ROWS = 300
+CSS_ATTR_RULES_MAX = 200
+_ATTR_SELECTOR_RX = re.compile(r"\[[\w:-]+\s*[~|^$*]?=")
 
 
 def report(rev: Any, *, dtos: Optional[Dict[str, Dict[str, Any]]] = None, with_origin: bool = True) -> Dict[str, Any]:
@@ -200,6 +206,29 @@ def report(rev: Any, *, dtos: Optional[Dict[str, Dict[str, Any]]] = None, with_o
         _html, notes = S.check_rows(html, dtos, fix=False)
         for n in notes:
             warnings.append(_item("ROW_ADDRESS", n, fix="Thêm data-rac-row=\"<nhãn dòng>\" (Import tự sửa được)."))
+
+    # LONG_LIST / CSS_HEAVY - what freezes the viewer's browser on every filter change
+    if dtos:
+        for t in walk.tags:
+            a = dict(t.attrs)
+            rid = a.get("data-rac-repeat")
+            if t.kind not in ("start", "startend") or not rid:
+                continue
+            try:
+                own = int(a.get("data-rac-limit") or json.loads(a.get("data-rac-opts") or "{}").get("limit") or 0)
+            except (ValueError, TypeError, AttributeError):
+                own = 0
+            n = len((dtos.get(rid) or {}).get("rows") or [])
+            if not own and n > LONG_LIST_ROWS and len(warnings) < MAX_ITEMS:
+                warnings.append(_item("LONG_LIST", f"Danh sách lặp theo '{rid}' vẽ {n} dòng mỗi lần lọc — trình duyệt sẽ chậm.",
+                                      region=walk.region_at(t.start), snippet=html[t.start:t.end],
+                                      fix='Thêm data-rac-limit="100" (chỉ tải và vẽ 100 dòng), hoặc đặt giới hạn dòng (dataLimit) cho chart nguồn.'))
+    css = re.sub(r"/\*.*?\*/", "", getattr(rev, "css", "") or "", flags=re.S)
+    attr_rules = len(_ATTR_SELECTOR_RX.findall(css))
+    if attr_rules > CSS_ATTR_RULES_MAX:
+        warnings.append(_item("CSS_HEAVY", f"CSS có {attr_rules} bộ chọn theo giá trị thuộc tính (ví dụ [data-x=\"…\"]) — "
+                              "trình duyệt tính lại tất cả sau mỗi lần lọc.",
+                              fix="Đừng dùng CSS để đổi mã thành chữ: dữ liệu BI Core đã có nhãn. Gom các quy tắc theo class/tone (data-rac-tone)."))
 
     blocking, warnings = blocking[:MAX_ITEMS], warnings[:MAX_ITEMS]
     counts: Dict[str, int] = {}
