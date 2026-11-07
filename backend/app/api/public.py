@@ -1138,37 +1138,52 @@ def _foreign_check_for(dash: Any, chart_dataset_id: Any):
 
 def _report_dataset_ids(dash: Any) -> set:
     """The datasets the report's charts read (each chart's table, else its binding)."""
-    out: set = set()
-    for dc in getattr(dash, "dashboard_charts", None) or []:
-        cid = getattr(dc, "chart_id", None)
-        if cid is not None:
-            ds = _chart_dataset_id(dash, cid)
-            if ds is not None:
-                out.add(ds)
-    return out
+    return {ds for ds in _chart_dataset_map(dash).values() if ds is not None}
 
 
 def _chart_dataset_id(dash: Dashboard, chart_id: int) -> Any:
     """The dataset a chart is bound to (``semanticBinding.datasetId``) — the
     one the engine checks a filter's ``datasetId`` against."""
-    for dc in dash.dashboard_charts or []:
-        if dc.chart_id == chart_id:
-            chart = getattr(dc, "chart", None)
-            # The chart's TABLE is the truth (a stored binding is a copy that
-            # may be absent or stale — Kernel Contract v1, Binding Truth).
-            table_id = getattr(chart, "dataset_table_id", None)
-            if table_id is not None:
-                from app.models.dataset import DatasetTable
+    return _chart_dataset_map(dash).get(chart_id)
 
-                session = _session_of(dc)
-                table = session.get(DatasetTable, table_id) if session is not None else None
-                if table is not None and table.dataset_id is not None:
-                    return table.dataset_id
+
+def _chart_dataset_map(dash: Any) -> dict:
+    """chart_id -> dataset id for every chart of the report, computed ONCE per request.
+
+    The chart's TABLE is the truth (a stored binding is a copy that may be absent or
+    stale — Kernel Contract v1, Binding Truth); the binding is the fallback. One query
+    for all tables, memoised on the request's DB session: callers ask per chart and per
+    filter, and the old per-call scan (chart x chart x session.get) was ~70k lookups on a
+    52-chart dashboard (pilot: describe 17-19 s)."""
+    session = _session_of(dash)
+    memo = session.info.setdefault("_public_chart_dataset_map", {}) if session is not None else None
+    key = getattr(dash, "id", None)
+    if memo is not None and key is not None and key in memo:
+        return memo[key]
+    dcs = list(getattr(dash, "dashboard_charts", None) or [])
+    table_ids = {getattr(getattr(dc, "chart", None), "dataset_table_id", None) for dc in dcs} - {None}
+    table_ds: dict = {}
+    if table_ids and session is not None:
+        from app.models.dataset import DatasetTable
+
+        table_ds = dict(session.query(DatasetTable.id, DatasetTable.dataset_id)
+                        .filter(DatasetTable.id.in_(table_ids)).all())
+    out: dict = {}
+    for dc in dcs:
+        cid = getattr(dc, "chart_id", None)
+        if cid is None or cid in out:   # the first tile of a chart decides, as before
+            continue
+        chart = getattr(dc, "chart", None)
+        ds = table_ds.get(getattr(chart, "dataset_table_id", None))
+        if ds is None:
             cfg = getattr(chart, "config", None)
             binding = cfg.get("semanticBinding") if isinstance(cfg, dict) else None
-            if isinstance(binding, dict) and binding.get("datasetId") is not None:
-                return binding.get("datasetId")
-    return None
+            if isinstance(binding, dict):
+                ds = binding.get("datasetId")
+        out[cid] = ds
+    if memo is not None and key is not None:
+        memo[key] = out
+    return out
 
 
 def _public_page_scope_by_chart(dash: Dashboard, link_filters_config: list[dict] | None) -> dict[int, list[dict]]:

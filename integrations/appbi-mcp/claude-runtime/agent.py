@@ -182,6 +182,37 @@ def signed_in() -> bool:
     return False
 
 
+def log_event(event: str, **fields) -> None:
+    """One JSON line per event on stdout (`docker logs claude-rt-N`). Operational facts only:
+    never the question, the answer, a code, a token or anything the viewer typed."""
+    print(json.dumps({"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "runtime": INDEX,
+                      "event": event, **fields}, ensure_ascii=False), flush=True)
+
+
+class _PeakRss:
+    """Peak resident memory of the Claude process while it answers (sampled from /proc)."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid, self.peak_kb, self._stop = pid, 0, threading.Event()
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                with open(f"/proc/{self.pid}/status", encoding="ascii") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            self.peak_kb = max(self.peak_kb, int(line.split()[1]))
+                            break
+            except (OSError, ValueError):
+                pass
+            self._stop.wait(0.5)
+
+    def stop(self) -> int:
+        self._stop.set()
+        return round(self.peak_kb / 1024)
+
+
 def _collect(turn: dict, texts: list, ev: dict) -> None:
     """What the history keeps of one stream event: answer text, report tools used, model."""
     if ev.get("type") == "system" and ev.get("model"):
@@ -306,9 +337,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"error": "busy", "lease": STATE["lease"]})
                 configure(str(body["mcp_url"]), str(body["mcp_token"]))
                 STATE["lease"] = str(body["lease_id"])
+                log_event("lease", brief_chars=len(str(body.get("brief") or "")))
                 STATE["brief"] = str(body.get("brief") or "")[:16000]
             return self._send(200, {"ok": True, "panel_path": f"/claude-rt/{INDEX}/"})
         if self.path == "/recycle":
+            log_event("recycle", turns=len(STATE["turns"]))
             self._send(200, {"ok": True})
             threading.Timer(0.3, lambda: os.kill(1, signal.SIGTERM)).start()  # tini -> exit -> clean restart
             return None
@@ -323,6 +356,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE["turns"] = []
             return self._send(200, {"ok": True})
         if self.path.endswith("/api/signin/start"):
+            log_event("signin_start")
             return self._send(200, signin_start())
         if self.path.endswith("/api/signin/code"):
             try:
@@ -331,7 +365,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "bad_request"})
             if not code or len(code) > 512:
                 return self._send(400, {"ok": False, "error": "bad_code", "message": "Paste the whole code."})
-            return self._send(200, signin_code(code))
+            out = signin_code(code)
+            log_event("signin", ok=bool(out.get("ok")), error=out.get("error"))
+            return self._send(200, out)
         if self.path.endswith("/api/rate"):
             try:
                 b = self._body()
@@ -376,6 +412,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         proc = subprocess.Popen(cmd, env=_env(), cwd=WORK, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        rss = _PeakRss(proc.pid)
+        started = time.monotonic()
         killer = threading.Timer(CHAT_TIMEOUT, proc.kill)
         killer.start()
         try:
@@ -403,6 +441,9 @@ class Handler(BaseHTTPRequestHandler):
             killer.cancel()
             turn["answer"] = turn["answer"] or "\n\n".join(texts)
             STATE["turns"] = (STATE["turns"] + [turn])[-MAX_TURNS_KEPT:]
+            log_event("answer", wall_ms=int((time.monotonic() - started) * 1000), duration_ms=turn.get("duration_ms") or 0, tool_calls=len(turn.get("tools") or []),
+                      tools=[t.get("name") for t in turn.get("tools") or []][:20], peak_rss_mb=rss.stop(),
+                      model=turn.get("model") or "", error=turn.get("error"), turn=len(STATE["turns"]))
             threading.Thread(target=report_turn, args=(STATE["lease"], dict(turn)), daemon=True).start()
             try:
                 if not turn["error"]:

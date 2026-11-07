@@ -1,21 +1,13 @@
 # Public Claude: viewers of a Public Report use their OWN Claude inside the AI Bot panel.
-# Optional, independent of Core (same pattern as docker-compose.mcp.yml).
+# Optional, independent of Core. RUN IT WITH THE SCRIPT (it creates the secrets, sizes the
+# pool from CLAUDE_RT_POOL and checks health):
 #
-#   docker compose -p appbi-public-claude -f docker-compose.public-claude.yml --env-file .env.public-claude up -d --build   (see docs/deploy/public-claude.md)
-#   docker compose -p appbi-public-claude -f docker-compose.public-claude.yml down      # Core keeps running
+#   python3 scripts/deploy/public_claude.py up | status | logs | down
 #
-# Two pieces:
-#   public-mcp     the Public Read MCP + report bridge + runtime pool (port 8091, loopback)
-#   claude-rt-N    one isolated Claude Code runtime per concurrent viewer (port 810N, loopback)
-#
-# Needs Core up first: public-mcp joins Core's backend-only `appbi-mcp-link` network.
-# A runtime sees ONLY public-mcp (its own network) + the internet (Anthropic). It never sees
-# the database, the backend, Core's secrets or another viewer's runtime.
-#
-# Pool size = number of claude-rt-N services. Two are declared (fits a 2 vCPU / 8 GB VM);
-# to add a third, copy claude-rt-2 -> claude-rt-3 (index, secret, port 8103, network rtnet3),
-# add its URL + secret to PUBLIC_MCP_RUNTIMES / PUBLIC_MCP_RUNTIME_SECRET, and widen the
-# nginx index class ([1-2] -> [1-3]). See docs/deploy/public-claude.md.
+# This file declares public-mcp + runtimes 1-2; a bigger pool adds a generated override.
+# A runtime sees ONLY public-mcp (its own network) + the internet (Anthropic): never the
+# database, the backend, Core's secrets or another viewer's runtime. See
+# docs/deploy/public-claude.md.
 name: appbi-public-claude
 
 x-runtime: &runtime
@@ -54,7 +46,7 @@ services:
       PUBLIC_MCP_STATE_KEY: ${PUBLIC_MCP_STATE_KEY:?set PUBLIC_MCP_STATE_KEY (Fernet key, NOT the author MCP's)}
       PUBLIC_MCP_STATE_DIR: /data
       MCP_COOKIE_SECURE: "true"
-      PUBLIC_MCP_RUNTIMES: http://claude-rt-1:8099,http://claude-rt-2:8099
+      PUBLIC_MCP_RUNTIMES: ${PUBLIC_MCP_RUNTIMES:-http://claude-rt-1:8099,http://claude-rt-2:8099}
       PUBLIC_MCP_RUNTIME_SECRET: ${CLAUDE_RT_SECRET_1:?set CLAUDE_RT_SECRET_1},${CLAUDE_RT_SECRET_2:?set CLAUDE_RT_SECRET_2}
       MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
     volumes:
