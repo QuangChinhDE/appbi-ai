@@ -24,6 +24,7 @@ import {
   parseSandboxMessage,
   previewKey,
   type FilterState,
+  type Need,
   type ReportBindingDecl,
   type ReportFilterDecl,
 } from '@/lib/report-code/protocol';
@@ -40,6 +41,8 @@ export interface ReportFrameProps {
   bindings: ReportBindingDecl[];
   filters: ReportFilterDecl[];
   fetchData: (bindingId: string, state: FilterState) => Promise<unknown>;
+  /** Several bindings in one request ({id: dto}); preferred over fetchData when given. */
+  fetchBatch?: (bindingIds: string[], state: FilterState, limits: Record<string, number>) => Promise<Record<string, unknown>>;
   fetchValues: (key: string, search: string, state: FilterState) => Promise<unknown[]>;
   mode?: 'studio' | 'view';
   selectMode?: boolean;
@@ -57,6 +60,8 @@ export interface ReportFrameProps {
 
 // The same bound as a Manual dashboard's tiles (PublicDashboardView CHART_FETCH_CONCURRENCY).
 const PARALLEL = 8;
+/** Bindings per batch request: a page of 40 is 5 requests, still spread over the workers. */
+const BATCH = 8;
 /** A DTO is reused for this long by the SAME frame owner (same fetcher = same report, revision
  *  and caller): an unsaved-code preview re-renders the document, not the data. */
 const DTO_TTL_MS = 60_000;
@@ -68,7 +73,7 @@ const FRAME_READY_TIMEOUT_MS = 15_000;
 const waitingSince = new Map<string, number>();
 
 export function ReportFrame({
-  src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchValues, mode = 'view', selectMode = false,
+  src, post, isolated = false, onGuard, bindings, filters, fetchData, fetchBatch, fetchValues, mode = 'view', selectMode = false,
   provenance = false, focus = null, selectedRegion = null,
   onRegionSelected, onIssue, onStateChange, className, title,
 }: ReportFrameProps) {
@@ -77,8 +82,12 @@ export function ReportFrame({
   const loadsRef = useRef(0);
   const stateRef = useRef<FilterState>({});
   const seqRef = useRef<Record<string, number>>({});
-  const propsRef = useRef({ bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src });
-  propsRef.current = { bindings, filters, fetchData, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src };
+  const propsRef = useRef({ bindings, filters, fetchData, fetchBatch, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src });
+  propsRef.current = { bindings, filters, fetchData, fetchBatch, fetchValues, onRegionSelected, onIssue, onStateChange, onGuard, mode, provenance, src };
+  // What the document shows now (runtime "need"); null = an old document, load everything.
+  const needRef = useRef<Need | null>(null);
+  // Per binding: the last DTO posted and the filter state it was computed for.
+  const postedRef = useRef<Record<string, { stateKey: string; state: FilterState; dto: any; limit: number }>>({});
   const [blocked, setBlocked] = useState(false);
   // The document never said "ready": unreachable origin (a report origin pointing at the
   // viewer's own machine), a proxy that does not route it, a crash. Said, not a blank box.
@@ -99,34 +108,86 @@ export function ReportFrame({
     postMsg({ type: 'context', filters: p.filters, state: stateRef.current, bindings: p.bindings, mode: p.mode, locale: 'vi-VN' });
   }, [postMsg]);
 
-  const loadAll = useCallback(async () => {
-    const { bindings: list, fetchData: fetcher, filters: decl } = propsRef.current;
+  const loadAll = useCallback(async (only?: string[]) => {
+    const { bindings: list, fetchData: fetcher, fetchBatch: batcher, filters: decl } = propsRef.current;
     const state = stateRef.current;
     const cache = dtoCacheRef.current;
+    const owner = batcher || fetcher;
     const contract = list.map((b) => `${b.id}:${b.kind}`).join(',') + '|' + decl.map((f) => `${f.key}:${f.kind}:${f.grain || ''}:${f.default || ''}:${f.default_value || ''}`).join(',');
-    if (cache.owner !== fetcher || cache.key !== contract) { cache.owner = fetcher; cache.key = contract; cache.map = new Map(); }
+    if (cache.owner !== owner || cache.key !== contract) { cache.owner = owner; cache.key = contract; cache.map = new Map(); postedRef.current = {}; }
     const stateKey = JSON.stringify(Object.keys(state).sort().map((k) => [k, state[k]]));
-    const fetchOnce = (id: string): Promise<unknown> => {
-      const k = `${id}|${stateKey}`;
-      const hit = cache.map.get(k);
-      if (hit && Date.now() - hit.at < DTO_TTL_MS) return hit.p;
-      const p = fetcher(id, state).catch((e: any) => {
-        cache.map.delete(k); // an error is never cached
-        return { bindingId: id, status: 'error', error: e?.response?.data?.detail || 'Không tải được dữ liệu', rows: [], fields: [] };
-      });
-      cache.map.set(k, { at: Date.now(), p });
-      return p;
-    };
-    const queue = [...list];
-    const worker = async () => {
-      for (let b = queue.shift(); b; b = queue.shift()) {
-        const id = b.id;
-        const seq = (seqRef.current[id] = (seqRef.current[id] || 0) + 1);
-        const dto = await fetchOnce(id);
-        if (seqRef.current[id] === seq) postMsg({ type: 'data', id, dto });
+    const need = needRef.current;
+    const limits = need?.limits || {};
+    const posted = postedRef.current;
+    const ids = list.map((b) => b.id).filter((id) => (!need || need.ids.includes(id)) && (!only || only.includes(id)));
+    if (!only && need) {
+      // hidden bindings shown with another filter state go back to "loading": when shown,
+      // they load for the CURRENT state, never display the old numbers under new filters
+      for (const b of list) {
+        const prev = posted[b.id];
+        if (!need.ids.includes(b.id) && prev && prev.stateKey !== stateKey) {
+          postMsg({ type: 'data', id: b.id, dto: { bindingId: b.id, status: 'loading', rows: [], fields: [] } });
+          delete posted[b.id];
+        }
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(PARALLEL, queue.length) }, worker));
+    }
+    const errDto = (id: string, e: any) => ({ bindingId: id, status: 'error', error: e?.response?.data?.detail || 'Không tải được dữ liệu', rows: [], fields: [] });
+    const promises: Record<string, Promise<unknown>> = {};
+    const toFetch: string[] = [];
+    for (const id of ids) {
+      const lim = limits[id] || 0;
+      const k = `${id}|${lim}|${stateKey}`;
+      const hit = cache.map.get(k);
+      if (hit && Date.now() - hit.at < DTO_TTL_MS) { promises[id] = hit.p; continue; }
+      // a filter this binding's engine ignores cannot change it: keep its DTO
+      const prev = posted[id];
+      const ignored: string[] = Array.isArray(prev?.dto?.ignoredFilters) ? prev!.dto.ignoredFilters : [];
+      if (prev && prev.limit === lim && ignored.length) {
+        const keys = new Set([...Object.keys(prev.state), ...Object.keys(state)]);
+        const changed = Array.from(keys).filter((x) => JSON.stringify(prev.state[x] ?? null) !== JSON.stringify(state[x] ?? null));
+        if (changed.every((x) => ignored.includes(x))) {
+          const p = Promise.resolve(prev.dto);
+          cache.map.set(k, { at: Date.now(), p });
+          promises[id] = p;
+          continue;
+        }
+      }
+      toFetch.push(id);
+    }
+    if (batcher) {
+      for (let i = 0; i < toFetch.length; i += BATCH) {
+        const chunk = toFetch.slice(i, i + BATCH);
+        const lims: Record<string, number> = {};
+        chunk.forEach((id) => { if (limits[id]) lims[id] = limits[id]; });
+        const all = batcher(chunk, state, lims);
+        for (const id of chunk) {
+          const k = `${id}|${limits[id] || 0}|${stateKey}`;
+          const p = all.then((m) => m[id] ?? errDto(id, null)).catch((e: any) => { cache.map.delete(k); return errDto(id, e); });
+          cache.map.set(k, { at: Date.now(), p });
+          promises[id] = p;
+        }
+      }
+    } else {
+      let active = 0;
+      const waiters: Array<() => void> = [];
+      const slot = () => new Promise<void>((r) => { if (active < PARALLEL) { active += 1; r(); } else waiters.push(r); });
+      const release = () => { const w = waiters.shift(); if (w) w(); else active -= 1; };
+      for (const id of toFetch) {
+        const k = `${id}|${limits[id] || 0}|${stateKey}`;
+        const p = slot().then(() => fetcher(id, state)).finally(release)
+          .catch((e: any) => { cache.map.delete(k); return errDto(id, e); });
+        cache.map.set(k, { at: Date.now(), p });
+        promises[id] = p;
+      }
+    }
+    await Promise.all(ids.map(async (id) => {
+      const seq = (seqRef.current[id] = (seqRef.current[id] || 0) + 1);
+      const dto: any = await (promises[id] ?? Promise.resolve(errDto(id, null)));
+      if (seqRef.current[id] !== seq) return;
+      postMsg({ type: 'data', id, dto });
+      if (dto && (dto.status === 'ready' || dto.status === 'empty')) posted[id] = { stateKey, state, dto, limit: limits[id] || 0 };
+      else delete posted[id];
+    }));
   }, [postMsg]);
 
   const onMessage = useCallback(async (event: MessageEvent) => {
@@ -139,6 +200,7 @@ export function ReportFrame({
         waitingSince.delete(`${propsRef.current.src}#${attemptRef.current}`);
         setStalled(false);
         p.onGuard?.({ guard: msg.guard, authorScript: msg.authorScript });
+        needRef.current = msg.need ?? null;
         pushContext();
         if (p.provenance) postMsg({ type: 'provenance', on: true });
         void loadAll();
@@ -175,6 +237,15 @@ export function ReportFrame({
       case 'guard':
         p.onGuard?.({ guard: msg.guard, authorScript: msg.authorScript });
         break;
+      case 'need': {
+        // the document now shows other bindings (a tab, a page, a section opened)
+        const before = needRef.current;
+        needRef.current = { ids: msg.ids, limits: msg.limits };
+        const fresh = msg.ids.filter((id) => !before || !before.ids.includes(id)
+          || (before.limits[id] || 0) !== (msg.limits[id] || 0));
+        if (readyRef.current && fresh.length) void loadAll(fresh);
+        break;
+      }
       case 'region':
         p.onRegionSelected?.(msg.region);
         break;

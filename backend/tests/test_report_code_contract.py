@@ -1387,3 +1387,78 @@ def test_js_off_is_told_as_js_off_not_as_not_set_or_an_error(monkeypatch):
     rt = (Path(L.__file__).parent / "runtime.js").read_text(encoding="utf-8")
     refused = rt.split("authorState = 'refused';")[1][:400]
     assert "report('js_off'" in refused and "report('security'" not in refused and "KHÔNG lỗi" in refused
+
+
+def test_a_page_row_cap_sends_only_those_rows_and_says_the_list_is_cut(monkeypatch):
+    """report-data-perf P4: a detail list of 1,945 rows was sent (281 KB) and drawn on every
+    filter change; data-rac-limit asks the server for that many rows only."""
+    from app.services import chart_service
+
+    rows = [{"v_o.state": f"S{i}", "v_oi.revenue": i} for i in range(450)]
+    monkeypatch.setattr(chart_service.ChartService, "get_chart_data",
+                        staticmethod(lambda db, cid, **k: {"data": rows, "debug": {}}))
+    monkeypatch.setattr(B, "_top_n", lambda db, b: None)
+    binding = {"id": "b3", "chart_id": 1, "title": "Danh sách", "kind": "category",
+               "fields": {"v_o.state": {"label": "Bang", "role": "dimension", "kind": "string"},
+                          "v_oi.revenue": {"label": "Doanh thu", "role": "measure", "kind": "number"}}}
+    capped = B.mint_dto(None, binding, DECL, {}, public=True, limit=100)
+    assert len(capped["rows"]) == 100 and capped["truncated"] is True
+    full = B.mint_dto(None, binding, DECL, {}, public=True)
+    assert len(full["rows"]) == 450 and full["truncated"] is False
+    assert len(B.mint_dto(None, binding, DECL, {}, public=True, limit=10**9)["rows"]) == 450, "never more than MAX_ROWS"
+
+
+def test_a_batch_answers_every_id_once_and_errors_are_never_cached(monkeypatch):
+    calls: list = []
+
+    def fake_mint(db, b, decl, state, **kw):
+        calls.append(b["id"])
+        return {"bindingId": b["id"], "status": "error" if b["id"] == "b2" else "ready", "rows": []}
+
+    monkeypatch.setattr(B, "mint_dto", fake_mint)
+    monkeypatch.setattr(B, "data_epoch", lambda db, ids: "E1")
+    B._dto_cache.clear()
+    revb = [{"id": "b1", "chart_id": 1}, {"id": "b2", "chart_id": 2}]
+    out = B.mint_batch(None, revb, ["b1", "b2", "b1", "nope"], [], {}, cache_scope="public:1:1", public=True)
+    assert list(out) == ["b1", "b2", "nope"] and out["nope"]["status"] == "unbound" and calls == ["b1", "b2"]
+    B.mint_batch(None, revb, ["b1", "b2"], [], {}, cache_scope="public:1:1", public=True)
+    assert calls == ["b1", "b2", "b2"], "ready is served from the cache, an error is recomputed"
+    monkeypatch.setattr(B, "data_epoch", lambda db, ids: "E2")
+    B.mint_batch(None, revb, ["b1"], [], {}, cache_scope="public:1:1", public=True)
+    assert calls[-1] == "b1", "a new data epoch is a miss"
+    B.mint_batch(None, revb, ["b1"], [], {}, public=False)
+    assert calls[-1] == "b1" and len(calls) == 5, "no cache scope (Studio): always computed"
+    B._dto_cache.clear()
+
+
+def test_readiness_warns_about_what_freezes_the_viewers_browser():
+    from app.services.report_code import readiness as R
+
+    class Rev:
+        html = ('<section data-rac-region="a" data-rac-label="A"><table><tr data-rac-repeat="b1"><td data-rac-cell="d0"></td></tr>'
+                '<tr data-rac-repeat="b2" data-rac-limit="50"><td data-rac-cell="d0"></td></tr></table></section>')
+        css = "\n".join(f'[data-v="{i}"]::after{{content:"x"}}' for i in range(260))
+        js = ""
+        bindings = [{"id": "b1", "chart_id": 1}, {"id": "b2", "chart_id": 2}]
+        filters: list = []
+
+    many = {"rows": [{"d0": i} for i in range(400)], "fields": []}
+    rep = R.report(Rev, dtos={"b1": many, "b2": many}, with_origin=False)
+    codes = [w["code"] for w in rep["warnings"]]
+    assert codes.count("LONG_LIST") == 1 and "b1" in next(w["message"] for w in rep["warnings"] if w["code"] == "LONG_LIST")
+    assert "CSS_HEAVY" in codes and rep["ready"], "a warning, never a block"
+
+
+def test_the_pack_and_the_generator_teach_the_page_to_stay_fast(monkeypatch):
+    from app.services.report_code import generation as G
+    from app.services.report_code import importer as I
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert 'data-rac-limit=\\"100\\"' in pack or 'data-rac-limit="100"' in pack
+    assert "LONG_LIST" in pack and "CSS_HEAVY" in pack and "Never map codes to" in pack
+    assert "data-rac-limit" in G.DESIGN_RULES
+
+    rt = (Path(B.__file__).parent / "runtime.js").read_text(encoding="utf-8")
+    assert "need: nd.ids" in rt and "type: 'need'" in rt, "the document tells the host what it shows"
+    assert "requestIdleCallback" in rt, "a long list is drawn in idle chunks"

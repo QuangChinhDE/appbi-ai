@@ -270,6 +270,8 @@ export const publicReportApi = {
     (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/auth`, { password })).data,
   data: async (token: string, binding: string, state: Record<string, unknown>): Promise<unknown> =>
     (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/data`, { binding, state }, { headers: reportSession(token) })).data,
+  dataBatch: async (token: string, bindings: string[], state: Record<string, unknown>, limits: Record<string, number>): Promise<Record<string, unknown>> =>
+    (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/data-batch`, { bindings, state, limits }, { headers: reportSession(token) })).data?.dtos ?? {},
   values: async (token: string, key: string, search: string, state: Record<string, unknown>): Promise<unknown[]> =>
     (await publicClient.post(`/public/reports/${encodeURIComponent(token)}/values`, { key, search, state }, { headers: reportSession(token) })).data?.values ?? [],
 };

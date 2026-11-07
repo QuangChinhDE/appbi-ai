@@ -193,6 +193,8 @@ export const reportCodeApi = {
     (await apiClient.get(`/report-artifacts/${id}/readiness`, { params: revision ? { revision } : {} })).data,
   data: async (id: number, binding: string, state: FilterState, revision?: number | null): Promise<unknown> =>
     (await apiClient.post(`${base(id)}/data`, { binding, state, revision: revision ?? null })).data,
+  dataBatch: async (id: number, bindings: string[], state: FilterState, limits: Record<string, number>, revision?: number | null): Promise<Record<string, unknown>> =>
+    (await apiClient.post(`${base(id)}/data-batch`, { bindings, state, limits, revision: revision ?? null })).data?.dtos ?? {},
   values: async (id: number, key: string, search: string, state: FilterState, revision?: number | null): Promise<unknown[]> =>
     (await apiClient.post(`${base(id)}/values`, { key, search, state, revision: revision ?? null })).data?.values ?? [],
   catalog: async (id: number): Promise<ReportCatalog> => (await apiClient.get(`${base(id)}/catalog`)).data,

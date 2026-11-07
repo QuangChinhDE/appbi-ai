@@ -111,7 +111,9 @@
     applyContext(e.data.context || {});
     var queued = outbox; outbox = [];
     queued.forEach(send);
-    send({ type: 'ready', version: VERSION, guard: settleGuard(), authorScript: authorState });
+    var nd = needed(); lastNeed = nd.key;
+    send({ type: 'ready', version: VERSION, guard: settleGuard(), authorScript: authorState, need: nd.ids, limits: nd.limits });
+    watchNeed();
     readySubs.forEach(function (fn) { safe(fn); });
   });
 
@@ -797,8 +799,8 @@
       parent.insertBefore(none, after.nextSibling);
       return;
     }
-    var maxOf = {};
-    rows.forEach(function (row, idx) {
+    var maxOf = {}, gen = (tpl.__racGen = (tpl.__racGen || 0) + 1);
+    function drawRow(row, idx) {
       var el = tpl.__racTpl.cloneNode(true);
       el.setAttribute('data-rac-clone', id);
       el.setAttribute('data-rac-prov', d.bindingId || id);
@@ -825,9 +827,27 @@
         var tf = cellField(d, tones[t].getAttribute('data-rac-tone'));
         if (tf) tones[t].setAttribute('data-rac-tone-v', tone(row[tf.key], opts(tones[t]).bands || o.bands));
       }
-      parent.insertBefore(el, after.nextSibling);
-      after = el;
-    });
+      return el;
+    }
+    function drawRange(from, to) {
+      var frag = document.createDocumentFragment();
+      for (var k = from; k < to; k++) frag.appendChild(drawRow(rows[k], k));
+      var last = frag.lastChild;
+      parent.insertBefore(frag, after.nextSibling);
+      if (last) after = last;
+    }
+    var FIRST = 100, CHUNK = 200;
+    drawRange(0, Math.min(FIRST, rows.length));
+    var at = Math.min(FIRST, rows.length);
+    var later = window.requestIdleCallback || function (fn) { return setTimeout(fn, 16); };
+    function more() {
+      if (tpl.__racGen !== gen || at >= rows.length) { if (at >= rows.length && tpl.__racGen === gen) tail(); return; }
+      drawRange(at, Math.min(at + CHUNK, rows.length)); at = Math.min(at + CHUNK, rows.length);
+      if (at < rows.length) later(more); else tail();
+    }
+    if (at < rows.length) { later(more); return; }
+    tail();
+    function tail() {
     var cut = cutNote(d);
     if (cut && o.cutNote !== false) {
       // the list is not the whole population: say so after the rows (same element type)
@@ -835,6 +855,7 @@
       note.removeAttribute('data-rac-tone'); note.setAttribute('data-rac-clone', id); note.setAttribute('data-rac-prov', 'cut');
       note.innerHTML = note.tagName === 'TR' ? '<td colspan="99"><span class="rac-note">' + esc(cut) + '</span></td>' : '<span class="rac-note">' + esc(cut) + '</span>';
       parent.insertBefore(note, after.nextSibling);
+    }
     }
   }
   function renderSamples() {
@@ -994,6 +1015,52 @@
     el.textContent = fmt(p.value, p.field, o);
     el.title = provTitle(d, p.field);
     el.setAttribute('data-rac-prov', d.bindingId || '');
+  }
+  // What the page needs NOW: bindings drawn by an element that is rendered (not inside a
+  // hidden tab / page / collapsed section) plus every binding the author's JS subscribed to.
+  // The host loads only these; a hidden one loads when it is shown. A repeat with its own
+  // row cap (data-rac-limit / opts.limit) asks the server for that many rows only.
+  var lastNeed = '', needTimer = null;
+  function shown(el) {
+    if (el.hasAttribute('data-rac-repeat') && el.style.display === 'none') el = el.parentNode || el;
+    if (!el || !el.getClientRects) return false;
+    // checkVisibility also sees a closed <details> (content-visibility), which keeps its boxes
+    return el.checkVisibility ? el.checkVisibility() : !!el.getClientRects().length;
+  }
+  function needed() {
+    var ids = {}, limits = {}, other = {};
+    var els = document.querySelectorAll('[data-rac-bind],[data-rac-value],[data-rac-repeat],[data-rac-title],[data-rac-asof]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i], id = el.getAttribute('data-rac-bind') || el.getAttribute('data-rac-value') || el.getAttribute('data-rac-repeat')
+        || el.getAttribute('data-rac-title') || el.getAttribute('data-rac-asof');
+      if (!id || !shown(el)) continue;
+      ids[id] = 1;
+      if (el.hasAttribute('data-rac-repeat')) {
+        var lim = parseInt(el.getAttribute('data-rac-limit') || opts(el).limit || '0', 10);
+        if (lim > 0 && !other[id]) limits[id] = Math.max(limits[id] || 0, lim); else { other[id] = 1; delete limits[id]; }
+      } else if (!el.hasAttribute('data-rac-title') && !el.hasAttribute('data-rac-asof')) { other[id] = 1; delete limits[id]; }
+    }
+    Object.keys(subs).forEach(function (id) { ids[id] = 1; other[id] = 1; delete limits[id]; });
+    var list = Object.keys(ids).sort();
+    return { ids: list, limits: limits, key: list.join(',') + '|' + JSON.stringify(limits) };
+  }
+  function checkNeed() {
+    clearTimeout(needTimer);
+    needTimer = setTimeout(function () {
+      if (!port) return;
+      var nd = needed();
+      if (nd.key === lastNeed) return;
+      lastNeed = nd.key;
+      send({ type: 'need', ids: nd.ids, limits: nd.limits });
+    }, 80);
+  }
+  function watchNeed() {
+    try {
+      new MutationObserver(checkNeed).observe(document.body, { attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open'], subtree: true, childList: true });
+    } catch (e) { /* no observer: everything visible at ready was asked, the rest on hash/resize */ }
+    window.addEventListener('hashchange', checkNeed);
+    window.addEventListener('resize', checkNeed);
+    document.addEventListener('toggle', checkNeed, true);
   }
   function renderBinding(id) {
     var els = document.querySelectorAll('[data-rac-bind="' + cssEsc(id) + '"][data-rac-viz]');
@@ -1215,7 +1282,7 @@
   // ── 9. Public API ──────────────────────────────────────────────────────────────
   var api = {
     version: VERSION,
-    bind: function (id, fn) { (subs[id] = subs[id] || []).push(fn); if (cache[id]) safe(fn, cache[id]); return function () { subs[id] = (subs[id] || []).filter(function (f) { return f !== fn; }); }; },
+    bind: function (id, fn) { (subs[id] = subs[id] || []).push(fn); checkNeed(); if (cache[id]) safe(fn, cache[id]); return function () { subs[id] = (subs[id] || []).filter(function (f) { return f !== fn; }); }; },
     data: function (id) { return cache[id] || null; },
     bindings: function () { return ctx.bindings.slice(); },
     filters: function () { return ctx.filters.slice(); },

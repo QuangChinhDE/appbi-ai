@@ -86,6 +86,13 @@ class DataBody(BaseModel):
     revision: Optional[int] = None
 
 
+class DataBatchBody(BaseModel):
+    bindings: List[str] = Field(..., min_length=1, max_length=200)
+    state: Dict[str, Any] = Field(default_factory=dict)
+    revision: Optional[int] = None
+    limits: Dict[str, int] = Field(default_factory=dict)
+
+
 class ValuesBody(BaseModel):
     key: str = Field(..., max_length=20)
     search: str = Field("", max_length=80)
@@ -806,6 +813,25 @@ def binding_data(artifact_id: int, body: DataBody, db: Session = Depends(get_db)
     _check_chart_access(db, current_user, int(binding["chart_id"]))
     ds = db.query(Dataset).filter(Dataset.id == art.dataset_id).first() if art.dataset_id else None
     return B.mint_dto(db, binding, rev.filters or [], state, source_label=ds.name if ds else None)
+
+
+@router.post("/{artifact_id}/data-batch")
+def binding_data_batch(artifact_id: int, body: DataBatchBody, db: Session = Depends(get_db),
+                       current_user: User = Depends(require_permission(MODULE, "view"))):
+    """/data for several bindings at once - the same checks per binding (chart access)."""
+    art = _load(db, artifact_id, current_user)
+    rev = _revision_for(db, art, body.revision)
+    try:
+        state = B.clean_state(rev.filters or [], body.state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    by_id = {b.get("id"): b for b in rev.bindings or [] if isinstance(b, dict)}
+    for bid in dict.fromkeys(body.bindings):
+        if bid in by_id:
+            _check_chart_access(db, current_user, int(by_id[bid]["chart_id"]))
+    ds = db.query(Dataset).filter(Dataset.id == art.dataset_id).first() if art.dataset_id else None
+    return {"dtos": B.mint_batch(db, rev.bindings or [], body.bindings, rev.filters or [], state,
+                                 limits=body.limits, source_label=ds.name if ds else None)}
 
 
 @router.post("/{artifact_id}/values")

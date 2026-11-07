@@ -75,6 +75,7 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
 
   const fetchData = useCallback((binding: string, state: FilterState) => publicReportApi.data(token, binding, state), [token]);
   const fetchValues = useCallback((key: string, search: string, state: FilterState) => publicReportApi.values(token, key, search, state), [token]);
+  const fetchBatch = useCallback((ids: string[], state: FilterState, limits: Record<string, number>) => publicReportApi.dataBatch(token, ids, state, limits), [token]);
 
   if (gate?.kind === 'password') {
     return (
@@ -129,6 +130,7 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           bindings={meta.bindings}
           filters={meta.filters}
           fetchData={fetchData}
+          fetchBatch={fetchBatch}
           fetchValues={fetchValues}
           mode="view"
           title={meta.name}

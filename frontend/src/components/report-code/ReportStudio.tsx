@@ -162,6 +162,8 @@ export function ReportStudio({ reportId }: { reportId: number }) {
     [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
   const fetchValues = useCallback((key: string, search: string, state: FilterState) => reportCodeApi.values(reportId, key, search, state, previewNumber),
     [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
+  const fetchBatch = useCallback((ids: string[], state: FilterState, limits: Record<string, number>) => reportCodeApi.dataBatch(reportId, ids, state, limits, previewNumber),
+    [reportId, previewNumber, draftNumber]); // eslint-disable-line react-hooks/exhaustive-deps
   // An old version is shown only once its own bindings are known, never with the draft's.
   const [doc, setDoc] = useState<{ url: string; isolated: boolean; n: number } | null>(null);
   const [guardState, setGuardState] = useState<{ guard: boolean; authorScript?: 'ran' | 'refused' } | null>(null);
@@ -451,6 +453,7 @@ ${t('reportCode.publish.samplesConfirm')}?`)) {
                 bindings={bindings}
                 filters={filters}
                 fetchData={fetchData}
+                fetchBatch={fetchBatch}
                 fetchValues={fetchValues}
                 mode="studio"
                 selectMode={selectMode}
