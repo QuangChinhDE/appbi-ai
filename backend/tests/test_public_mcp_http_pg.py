@@ -277,3 +277,15 @@ def test_dashboard_grant_and_its_refusals(client, db, dashboard_link):  # noqa: 
 def test_embed_grants_cannot_pair(client):  # noqa: F811
     r = _pair(client, "emb_" + secrets.token_urlsafe(16), kind="dashboard")
     assert r.status_code == 404
+
+
+def test_page_charts_follow_tile_placement_not_the_stale_page_record():
+    """Rig finding: page-1's record said chart_ids [] while its tiles (no pageId) rendered there,
+    so Claude's brief told it the overview page was empty."""
+    from app.services.public_mcp.service import page_charts
+
+    pages = [{"id": "page-1", "name": "Tong quan", "chart_ids": []}, {"id": "page-2", "name": "Chi tiet", "chart_ids": [9]}]
+    tiles = {1: [{"tile_id": 1, "page_id": "page-1"}], 2: [{"tile_id": 2, "page_id": "page-1"}],
+             3: [{"tile_id": 3, "page_id": "page-2"}]}
+    assert page_charts(pages, tiles) == [{"page_id": "page-1", "name": "Tong quan", "chart_ids": [1, 2]},
+                                         {"page_id": "page-2", "name": "Chi tiet", "chart_ids": [3]}]

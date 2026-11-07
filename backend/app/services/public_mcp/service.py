@@ -176,6 +176,13 @@ def _drill_filter(drill: Optional[dict]) -> Optional[dict]:
     return {"field": str(fld), "operator": "in", "value": [val]}
 
 
+def page_charts(pages: List[Dict[str, Any]], tiles: Dict[int, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Each page with the charts whose tiles sit on it (a tile without a pageId is on the default page)."""
+    return [{"page_id": p.get("id"), "name": p.get("name"),
+             "chart_ids": sorted({cid for cid, ts in tiles.items() for t in ts if t["page_id"] == str(p.get("id"))})}
+            for p in pages]
+
+
 def describe_dashboard(db, h: Handle, state: Dict[str, Any]) -> Dict[str, Any]:
     from app.services.filter_layered_merge import DISCLOSE_KEY, link_filters_a_viewer_may_see
 
@@ -200,7 +207,9 @@ def describe_dashboard(db, h: Handle, state: Dict[str, Any]) -> Dict[str, Any]:
     hidden_count = sum(1 for e in h.filters_config or [] if isinstance(e, dict) and e.get("hidden"))
     return {
         "kind": DASHBOARD, "name": h.name,
-        "pages": [{"page_id": p.get("id"), "name": p.get("name"), "chart_ids": p.get("chart_ids") or []} for p in ctx.pages or []],
+        # A chart is on the page its tile is placed on (the viewer renders by tile pageId) — not on
+        # the page record's own chart_ids, which can lag the layout.
+        "pages": page_charts(ctx.pages or [], tiles),
         "charts": charts,
         "viewer_filters_allowed": h.appearance.get("allow_viewer_filters") is not False,
         "locked_filters": [{"field": _filter_field(e), "operator": e.get("operator"), "value": e.get("value")}
