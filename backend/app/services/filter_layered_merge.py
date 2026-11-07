@@ -776,7 +776,9 @@ def foreign_field_check(db: Any, dataset_id: Any, report_dataset_ids: Any = None
     from app.models.dataset import DatasetTable
     from app.models.semantic import SemanticView
 
-    memo: Dict[str, frozenset] = {}
+    # shared by every check of this request (one query per dataset, not per chart x dataset)
+    info = getattr(db, "info", None)
+    memo: Dict[str, frozenset] = info.setdefault("_views_of_dataset", {}) if isinstance(info, dict) else {}
 
     def views_of(ds: Any) -> frozenset:
         key = str(ds)

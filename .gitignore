@@ -569,3 +569,7 @@ integrations/appbi-mcp/.venv/
 !backend/tests/test_govern_doc_answerability.py
 !backend/tests/test_knowledge_hit_contract.py
 !backend/tests/test_semantic_level0.py
+
+# Public Claude deploy (secrets; generated pool override)
+.env.public-claude
+docker-compose.public-claude.pool.yml

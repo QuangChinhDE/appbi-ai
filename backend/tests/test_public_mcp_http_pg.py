@@ -315,3 +315,36 @@ def test_a_viewer_rates_their_own_claude_answer_like_an_ai_bot_answer(client, db
                                             ReportAnswerTurn.idempotency_key == "claude:rtl-1").one()
     db.refresh(row)
     assert row.rating == "up"
+
+
+def test_chart_dataset_map_is_one_query_per_request_however_many_charts(monkeypatch):
+    """Pilot: describe took 17-19 s on a 52-chart dashboard — every per-chart lookup re-scanned
+    every chart and hit the DB per table (chart x chart x session.get). Now one query, memoised."""
+    from types import SimpleNamespace as NS
+
+    from app.api import public as P
+
+    class Q:
+        def __init__(self, s): self.s = s
+        def filter(self, *a): return self
+        def all(self):
+            self.s.queries += 1
+            return [(t, 100 + t % 3) for t in range(1, 61)]
+
+    class Sess:
+        def __init__(self): self.info, self.queries = {}, 0
+        def query(self, *a): return Q(self)
+
+    sess = Sess()
+    charts = [NS(chart_id=i, chart=NS(dataset_table_id=i, config={})) for i in range(1, 53)]
+    charts.append(NS(chart_id=99, chart=NS(dataset_table_id=None, config={"semanticBinding": {"datasetId": 7}})))
+    dash = NS(id=1, dashboard_charts=charts)
+    monkeypatch.setattr(P, "_session_of", lambda obj: sess)
+
+    for c in charts:
+        P._foreign_check_for  # noqa: B018 - same helpers the filter path uses
+        P._chart_dataset_id(dash, c.chart_id)
+        P._report_dataset_ids(dash)
+    assert sess.queries == 1, "one DatasetTable query for the whole request"
+    assert P._chart_dataset_id(dash, 4) == 101 and P._chart_dataset_id(dash, 99) == 7, "table first, binding fallback"
+    assert P._report_dataset_ids(dash) == {100, 101, 102, 7}
