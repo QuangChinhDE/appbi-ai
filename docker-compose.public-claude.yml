@@ -1,0 +1,115 @@
+# Public Claude: viewers of a Public Report use their OWN Claude inside the AI Bot panel.
+# Optional, independent of Core (same pattern as docker-compose.mcp.yml).
+#
+#   docker compose -p appbi-public-claude -f docker-compose.public-claude.yml --env-file .env.public-claude up -d --build   (see docs/deploy/public-claude.md)
+#   docker compose -p appbi-public-claude -f docker-compose.public-claude.yml down      # Core keeps running
+#
+# Two pieces:
+#   public-mcp     the Public Read MCP + report bridge + runtime pool (port 8091, loopback)
+#   claude-rt-N    one isolated Claude Code runtime per concurrent viewer (port 810N, loopback)
+#
+# Needs Core up first: public-mcp joins Core's backend-only `appbi-mcp-link` network.
+# A runtime sees ONLY public-mcp (its own network) + the internet (Anthropic). It never sees
+# the database, the backend, Core's secrets or another viewer's runtime.
+#
+# Pool size = number of claude-rt-N services. Two are declared (fits a 2 vCPU / 8 GB VM);
+# to add a third, copy claude-rt-2 -> claude-rt-3 (index, secret, port 8103, network rtnet3),
+# add its URL + secret to PUBLIC_MCP_RUNTIMES / PUBLIC_MCP_RUNTIME_SECRET, and widen the
+# nginx index class ([1-2] -> [1-3]). See docs/deploy/public-claude.md.
+name: appbi-public-claude
+
+x-runtime: &runtime
+  image: appbi-claude-runtime:${GIT_SHA:-local}
+  restart: always            # "end of session" = the process exits and comes back clean
+  read_only: true
+  tmpfs:
+    - /home/viewer:uid=1001,gid=1001,mode=0700,size=256m   # the viewer's Claude login lives ONLY here
+    - /tmp:size=64m
+  mem_limit: ${CLAUDE_RT_MEM:-768m}
+  cpus: ${CLAUDE_RT_CPUS:-1.0}
+  pids_limit: 256
+  security_opt: [ "no-new-privileges:true" ]
+  cap_drop: [ ALL ]
+  extra_hosts:
+    # Claude Code reaches the Public MCP at its public URL; resolve it to this host's nginx
+    # (no hairpin NAT through the cloud's public IP).
+    - "${APPBI_PUBLIC_HOST:?set APPBI_PUBLIC_HOST (e.g. report.example.com)}:host-gateway"
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
+services:
+  public-mcp:
+    build:
+      context: ./integrations/appbi-mcp
+      args:
+        APPBI_MCP_BUILD_SHA: ${GIT_SHA:-unknown}
+    image: appbi-mcp:${GIT_SHA:-local}
+    entrypoint: ["python", "-m", "appbi_mcp.public"]
+    restart: unless-stopped
+    environment:
+      MCP_PUBLIC_URL: https://${APPBI_PUBLIC_HOST}
+      APPBI_PUBLIC_URL: https://${APPBI_PUBLIC_HOST}
+      APPBI_API_URL: ${APPBI_API_URL:-http://appbi-backend-api:8000/api/v1}
+      PUBLIC_MCP_STATE_KEY: ${PUBLIC_MCP_STATE_KEY:?set PUBLIC_MCP_STATE_KEY (Fernet key, NOT the author MCP's)}
+      PUBLIC_MCP_STATE_DIR: /data
+      MCP_COOKIE_SECURE: "true"
+      PUBLIC_MCP_RUNTIMES: http://claude-rt-1:8099,http://claude-rt-2:8099
+      PUBLIC_MCP_RUNTIME_SECRET: ${CLAUDE_RT_SECRET_1:?set CLAUDE_RT_SECRET_1},${CLAUDE_RT_SECRET_2:?set CLAUDE_RT_SECRET_2}
+      MCP_LOG_LEVEL: ${MCP_LOG_LEVEL:-INFO}
+    volumes:
+      - public_mcp_state:/data
+    ports:
+      - "127.0.0.1:${PUBLIC_MCP_PORT:-8091}:8091"
+    networks: [ pmcp-ingress, appbi-mcp-link, rtnet1, rtnet2 ]
+    cpus: "0.5"
+    mem_limit: 384m
+    pids_limit: 128
+    security_opt: [ "no-new-privileges:true" ]
+    cap_drop: [ ALL ]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8091/public-mcp/healthz', timeout=2).status == 200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  claude-rt-1:
+    <<: *runtime
+    build:                     # built once here; the other runtimes reuse the image
+      context: ./integrations/appbi-mcp/claude-runtime
+    environment:
+      RUNTIME_INDEX: "1"
+      RUNTIME_SECRET: ${CLAUDE_RT_SECRET_1}
+      PUBLIC_MCP_INTERNAL: http://public-mcp:8091
+    ports: [ "127.0.0.1:8101:8099" ]
+    networks: [ rtnet1 ]
+
+  claude-rt-2:
+    <<: *runtime
+    pull_policy: never
+    depends_on: [ claude-rt-1 ]
+    environment:
+      RUNTIME_INDEX: "2"
+      RUNTIME_SECRET: ${CLAUDE_RT_SECRET_2}
+      PUBLIC_MCP_INTERNAL: http://public-mcp:8091
+    ports: [ "127.0.0.1:8102:8099" ]
+    networks: [ rtnet2 ]
+
+networks:
+  pmcp-ingress:
+    name: appbi-public-claude-ingress
+  # one network per runtime: it sees public-mcp and nothing else of AppBI
+  rtnet1:
+    name: appbi-public-claude-rt1
+  rtnet2:
+    name: appbi-public-claude-rt2
+  appbi-mcp-link:
+    external: true
+    name: ${APPBI_MCP_LINK_NETWORK:-appbi-mcp-link}
+
+volumes:
+  public_mcp_state:
