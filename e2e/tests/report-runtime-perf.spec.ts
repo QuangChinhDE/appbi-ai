@@ -14,7 +14,8 @@ import path from 'path';
 const RUNTIME = fs.readFileSync(path.resolve(__dirname, '../../backend/app/services/report_code/runtime.js'), 'utf8');
 
 const BODY = `
-<style>.tab{display:none}.tab.on{display:block}</style>
+<style>.tab{display:none}.tab.on{display:block}.pg{visibility:hidden;height:0;overflow:hidden}.pg.on{visibility:visible;height:auto}</style>
+<div class="pg" id="p3"><b data-rac-value="vpage"></b></div>
 <b id="kpi" data-rac-value="k"></b>
 <div class="tab" id="t2"><div data-rac-viz="bar" data-rac-bind="hidden"></div></div>
 <details id="d"><summary>x</summary><b data-rac-value="indetails"></b></details>
@@ -34,7 +35,7 @@ async function mount(page: Page) {
       const ch = new MessageChannel();
       w.__port = ch.port1;
       ch.port1.onmessage = (e) => { w.__msgs.push(e.data); if (e.data?.type === 'ready') resolve(); };
-      f.contentWindow!.postMessage({ type: 'rac:init', v: 1, context: { filters: [], state: {}, bindings: ['k', 'hidden', 'capped', 'long', 'indetails'].map((id) => ({ id, title: id, kind: '' })), mode: 'view', locale: 'vi-VN' } }, '*', [ch.port2]);
+      f.contentWindow!.postMessage({ type: 'rac:init', v: 1, context: { filters: [], state: {}, bindings: ['k', 'hidden', 'capped', 'long', 'indetails', 'vpage'].map((id) => ({ id, title: id, kind: '' })), mode: 'view', locale: 'vi-VN' } }, '*', [ch.port2]);
     };
     f.src = 'http://report.test/doc';
   }));
@@ -56,6 +57,10 @@ test('the document asks only for what it shows, caps capped lists and draws long
   await frame.evaluate(() => { (document.getElementById('d') as HTMLDetailsElement).open = true; });
   await expect.poll(() => page.evaluate(() => (window as any).__msgs.filter((m: any) => m.type === 'need').pop()?.ids))
     .toEqual(['capped', 'hidden', 'indetails', 'k', 'long']);
+  // a page hidden with visibility:hidden + height:0 (report 23's pages) is not shown either
+  await frame.evaluate(() => document.getElementById('p3')!.classList.add('on'));
+  await expect.poll(() => page.evaluate(() => (window as any).__msgs.filter((m: any) => m.type === 'need').pop()?.ids))
+    .toEqual(['capped', 'hidden', 'indetails', 'k', 'long', 'vpage']);
 
   // a 450-row list: 100 rows at once, all 450 a moment later
   const rows = Array.from({ length: 450 }, (_, i) => ({ d0: `R${i}` }));
