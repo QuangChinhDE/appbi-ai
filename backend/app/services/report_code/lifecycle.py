@@ -533,9 +533,12 @@ def origin_warning() -> Optional[str]:
                 f"{public[0]}: every viewer's browser would load reports from its OWN machine (blank report). "
                 "Set it to a dedicated subdomain (e.g. https://report-docs.<your-domain>) routed to this backend.")
     if report_origin() is None and public:
-        return ("REPORT_ARTIFACT_ORIGIN is not set: reports are served from the app's own origin, so the "
-                "author's report JavaScript is BLOCKED (security). Set it to a dedicated subdomain routed to "
-                "/api/v1/public/report-docs/ on this backend to run report scripts.")
+        why = (f"REPORT_ARTIFACT_ORIGIN={configured} is the app's own domain" if configured
+               else "REPORT_ARTIFACT_ORIGIN is not set")
+        return (f"{why}: report documents share the app's origin, so custom report JavaScript is OFF "
+                "(security); data, charts, filters and CSS still work. To run report scripts set it to a "
+                "dedicated subdomain routed to /api/v1/public/report-docs/ and /api/v1/public/reports/<token>/document "
+                "on this backend (docs/deploy/report-artifact-origin.md).")
     return None
 
 

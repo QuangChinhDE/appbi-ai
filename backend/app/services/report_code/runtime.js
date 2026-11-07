@@ -1254,8 +1254,8 @@
       setTimeout(function () {
         if (!settleGuard()) {
           authorState = 'refused';
-          report('security', 'Mã JavaScript tùy biến của báo cáo không chạy: môi trường này không khóa được điều hướng ra ngoài '
-            + '(cần origin báo cáo riêng và trình duyệt hỗ trợ Navigation API). Dữ liệu và biểu đồ chuẩn vẫn hiển thị.');
+          report('js_off', 'JavaScript tùy biến của báo cáo chưa chạy (báo cáo KHÔNG lỗi): môi trường này chưa có origin báo cáo riêng '
+            + '(REPORT_ARTIFACT_ORIGIN) hoặc trình duyệt thiếu Navigation API. Dữ liệu, biểu đồ, bộ lọc và CSS vẫn chạy bình thường.');
           send({ type: 'guard', guard: false, authorScript: authorState });
           return;
         }

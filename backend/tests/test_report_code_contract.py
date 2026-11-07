@@ -1,6 +1,7 @@
 """Report-as-Code contracts: what reaches the sandbox, what authored code may do,
 and that an edit of one region leaves every other byte alone."""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -1428,3 +1429,33 @@ def test_saving_code_with_context_pack_placeholders_binds_them_like_an_import(mo
     seen.clear(); saved.clear()
     RA.save_source(7, RA.SourceBody(html='<b data-rac-value="b1"></b>', base_number=3), db, user)
     assert seen == {} and saved["bindings"] == [{"id": "b1"}], "code without placeholders saves as it is"
+
+
+def test_js_off_is_told_as_js_off_not_as_not_set_or_an_error(monkeypatch):
+    """Operator feedback: REPORT_ARTIFACT_ORIGIN set to the app's own domain still logged
+    "is not set"; authors saw a red "Bảo mật" issue as if the report were broken; the pack
+    and the AI generator taught JS the environment would never run."""
+    from app.core.config import settings
+    from app.services.report_code import generation as G
+    from app.services.report_code import importer as I
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(B, "load_model", lambda db, ds: _MODEL)
+    monkeypatch.setattr(settings, "CORS_ORIGINS", "https://bi.example.com")
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://bi.example.com")
+    w = L.origin_warning() or ""
+    assert "is not set" not in w and "app's own domain" in w and "still work" in w and "OFF" in w
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    check = json.loads(pack.split("```json\n")[1].split("\n```")[0])
+    assert check["custom_js"] is False and "custom JavaScript is OFF" in pack.split("## 1.")[0]
+    assert "leave \"js\" empty" in G.design_rules()
+
+    monkeypatch.setattr(settings, "REPORT_ARTIFACT_ORIGIN", "https://report-docs.example.com")
+    assert L.origin_warning() is None
+    pack = I.context_pack(None, dataset_id=9, dataset_name="Bán hàng")
+    assert json.loads(pack.split("```json\n")[1].split("\n```")[0])["custom_js"] is True
+    assert "custom JavaScript RUNS" in pack and G.design_rules() == G.DESIGN_RULES
+
+    rt = (Path(L.__file__).parent / "runtime.js").read_text(encoding="utf-8")
+    refused = rt.split("authorState = 'refused';")[1][:400]
+    assert "report('js_off'" in refused and "report('security'" not in refused and "KHÔNG lỗi" in refused
