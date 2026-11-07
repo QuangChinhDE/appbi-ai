@@ -8,8 +8,13 @@
  *     back to AppBI, by design);
  *  3. "Paste code and confirm" hands that code to the waiting `claude auth login`, which
  *     exchanges it with Anthropic. AppBI does not store or log it.
+ *
+ * Fewer clicks: Anthropic opens in a popup; once the viewer presses "Copy Code" there and comes
+ * back (popup closed or this tab focused), the code is read from THEIR clipboard (the browser
+ * asks them once) and confirmed by itself; a paste anywhere in the panel does the same. The
+ * cross-origin popup itself can never be read — that is the browser's rule, not ours.
  */
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ClipboardPaste, ExternalLink, Loader2 } from 'lucide-react';
 
 import { useI18n } from '@/providers/LanguageProvider';
@@ -19,12 +24,21 @@ export function ClaudeSignIn({ base, onSignedIn }: { base: string; onSignedIn: (
   const [step, setStep] = useState<'idle' | 'opening' | 'waiting' | 'checking'>('idle');
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
+  const popupRef = useRef<Window | null>(null);
+  const triedRef = useRef<string>('');
+  const stepRef = useRef(step);
+  stepRef.current = step;
 
   const open = async () => {
     setError('');
     setStep('opening');
-    // open the tab synchronously (popup blockers), then point it at Anthropic's URL
-    const tab = window.open('about:blank', '_blank');
+    triedRef.current = '';
+    // open the popup synchronously (popup blockers), then point it at Anthropic's URL
+    const w = 520, h = 720;
+    const left = Math.max(0, (window.screenX || 0) + (window.outerWidth - w) / 2);
+    const top = Math.max(0, (window.screenY || 0) + (window.outerHeight - h) / 2);
+    const tab = window.open('about:blank', 'appbi-claude-signin', `popup=yes,width=${w},height=${h},left=${left},top=${top}`);
+    popupRef.current = tab;
     try {
       const r = await fetch(`${base}api/signin/start`, { method: 'POST', credentials: 'include' });
       const j = await r.json();
@@ -48,7 +62,12 @@ export function ClaudeSignIn({ base, onSignedIn }: { base: string; onSignedIn: (
         method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: v }),
       });
       const j = await r.json().catch(() => ({}));
-      if (r.ok && j.ok) { setCode(''); onSignedIn(); return; }
+      if (r.ok && j.ok) {
+        setCode('');
+        try { popupRef.current?.close(); } catch { /* already closed */ }
+        onSignedIn();
+        return;
+      }
       setError(j?.error === 'no_signin' ? t('publicClaude.signin.restart') : t('publicClaude.signin.rejected'));
       setStep(j?.error === 'no_signin' || j?.error === 'code_rejected' ? 'idle' : 'waiting');
     } catch {
@@ -56,6 +75,45 @@ export function ClaudeSignIn({ base, onSignedIn }: { base: string; onSignedIn: (
       setStep('waiting');
     }
   };
+
+  // A copied Anthropic code: "<code>#<state>", no spaces. Anything else in the clipboard is left alone.
+  const looksLikeCode = (v: string) => /^[A-Za-z0-9_-]{20,}#[A-Za-z0-9_-]{10,}$/.test(v.trim());
+
+  const tryClipboard = useCallback(async () => {
+    if (stepRef.current !== 'waiting' || !navigator.clipboard?.readText) return;
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (looksLikeCode(text) && text !== triedRef.current) {
+        triedRef.current = text;
+        setCode(text);
+        await confirm(text);
+      }
+    } catch { /* not focused / not allowed: the buttons below still work */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // the viewer comes back from the popup (closed it, or switched back): pick the code up
+  useEffect(() => {
+    if (step !== 'waiting') return;
+    const onFocus = () => { void tryClipboard(); };
+    const onPaste = (e: ClipboardEvent) => {
+      const text = (e.clipboardData?.getData('text') || '').trim();
+      if (looksLikeCode(text) && text !== triedRef.current) { e.preventDefault(); triedRef.current = text; setCode(text); void confirm(text); }
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+    document.addEventListener('paste', onPaste);
+    const closedPoll = window.setInterval(() => {
+      if (popupRef.current && popupRef.current.closed) { popupRef.current = null; void tryClipboard(); }
+    }, 600);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+      document.removeEventListener('paste', onPaste);
+      window.clearInterval(closedPoll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, tryClipboard]);
 
   const pasteAndConfirm = async () => {
     try {
@@ -81,6 +139,11 @@ export function ClaudeSignIn({ base, onSignedIn }: { base: string; onSignedIn: (
             {t('publicClaude.signin.open')}
           </button>
           <p className="mt-1 text-micro text-text-tertiary">{t('publicClaude.signin.openHint')}</p>
+          {step === 'waiting' && (
+            <p className="mt-1 inline-flex items-center gap-1.5 text-micro text-brand" data-testid="claude-signin-waiting">
+              <Loader2 className="h-3 w-3 animate-spin" />{t('publicClaude.signin.waitingCode')}
+            </p>
+          )}
         </div>
       </div>
 
