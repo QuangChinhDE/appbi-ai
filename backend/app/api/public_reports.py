@@ -11,7 +11,7 @@ No chart id, dataset id, field reference, SQL or debug leaves this module.
 """
 # No `from __future__ import annotations`: slowapi wraps each endpoint, and FastAPI
 # could then no longer resolve the body models from string annotations.
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -35,6 +35,13 @@ _NOT_FOUND = "Báo cáo không tồn tại hoặc chưa được chia sẻ."
 class PublicDataBody(BaseModel):
     binding: str = Field(..., max_length=20)
     state: Dict[str, Any] = Field(default_factory=dict)
+
+
+class PublicBatchBody(BaseModel):
+    bindings: List[str] = Field(..., min_length=1, max_length=200)
+    state: Dict[str, Any] = Field(default_factory=dict)
+    #: per-binding row cap the page asked for (data-rac-limit): fewer rows, never more
+    limits: Dict[str, int] = Field(default_factory=dict)
 
 
 class PublicPasswordBody(BaseModel):
@@ -190,6 +197,26 @@ def public_data(token: str, body: PublicDataBody, request: Request, db: Session 
     return B.mint_dto(db, binding, rev.filters or [], state, public=True,
                       disclose=[f["key"] for f in rev.filters or [] if f["key"] not in hidden],
                       enforced=PL.enforced_keys(rev.filters or [], link.filters_config, link.appearance_config))
+
+
+@router.post("/{token}/data-batch")
+@_limiter.limit("600/minute")
+def public_data_batch(token: str, body: PublicBatchBody, request: Request, db: Session = Depends(get_db),
+                      x_public_session: Optional[str] = Header(default=None)):
+    """Several bindings of the page in ONE request: the link, its locks and the resolved
+    filter state are checked once; each binding gets exactly what /data would give it."""
+    art, rev, link = _live(db, token, x_public_session)
+    if any(len(b) > 20 for b in body.bindings):
+        raise HTTPException(status_code=400, detail="Mã dữ liệu không hợp lệ.")
+    try:  # first: an override of a lock is refused whatever binding is asked for
+        state = PL.effective_state(rev.filters or [], link.filters_config, body.state, link.appearance_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    hidden = {str(e.get("field")) for e in (link.filters_config or []) if isinstance(e, dict) and e.get("hidden")}
+    return {"dtos": B.mint_batch(db, rev.bindings or [], body.bindings, rev.filters or [], state,
+                                 limits=body.limits, cache_scope=f"public:{link.id}:{rev.id}", public=True,
+                                 disclose=[f["key"] for f in rev.filters or [] if f["key"] not in hidden],
+                                 enforced=PL.enforced_keys(rev.filters or [], link.filters_config, link.appearance_config))}
 
 
 @router.post("/{token}/values")
