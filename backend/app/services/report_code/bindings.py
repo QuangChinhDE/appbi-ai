@@ -759,6 +759,11 @@ def public_filters(decl: List[Dict[str, Any]]) -> List[Dict[str, str]]:
 # DTO_CACHE_TTL_S, which stays under the live-query cache's own TTL.
 
 DTO_CACHE_TTL_S = 60
+#: bindings of one batch computed side by side (each on its own DB session)
+BATCH_PARALLEL = int(getattr(_settings, "REPORT_BATCH_PARALLEL", 8) or 8)
+# Per worker process, across every batch and viewer: the warehouse and the DB pool
+# (POOL_SIZE + MAX_OVERFLOW per worker) never see more than this many bindings at once.
+_worker_slots = threading.BoundedSemaphore(int(getattr(_settings, "REPORT_WORKER_PARALLEL", 16) or 16))
 _DTO_CACHE_MAX = 256
 _dto_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _dto_guard = threading.Lock()
@@ -803,16 +808,53 @@ def _dto_key(scope: str, epoch: str, binding: Dict[str, Any], state: Dict[str, A
                         sorted(set(disclose)) if disclose is not None else None, limit], sort_keys=True, default=str)
 
 
+# The live-query cache's cross-worker sqlite store, under a namespace no datasource uses:
+# a DTO computed by one uvicorn worker is served by the others (pilot: a repeat that landed
+# on another worker paid 1.1 s instead of 0.06 s).
+_SHARED_NS = -7310
+
+
+def _shared():
+    try:
+        from app.services import query_cache
+
+        return query_cache._get_shared_store()
+    except Exception:  # noqa: BLE001 - no shared store: the per-worker cache still works
+        return None
+
+
+def _shared_key(key: str) -> str:
+    import hashlib
+
+    return "report-dto:" + hashlib.sha256(key.encode()).hexdigest()
+
+
 def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     hit = _dto_cache.get(key)
     if hit and time.time() - hit[0] < DTO_CACHE_TTL_S:
         return hit[1]
+    store = _shared()
+    if store is not None:
+        try:
+            got = store.get(_SHARED_NS, _shared_key(key))
+        except Exception:  # noqa: BLE001 - a cache read never fails the page
+            got = None
+        if isinstance(got, dict) and isinstance(got.get("dto"), dict):
+            with _dto_guard:
+                _dto_cache[key] = (time.time(), got["dto"])
+            return got["dto"]
     return None
 
 
 def _cache_put(key: str, dto: Dict[str, Any]) -> None:
     if dto.get("status") not in ("ready", "empty"):
         return  # an error or a refusal is recomputed every time
+    store = _shared()
+    if store is not None:
+        try:
+            store.set(_SHARED_NS, _shared_key(key), {"dto": dto}, ttl_seconds=DTO_CACHE_TTL_S)
+        except Exception:  # noqa: BLE001
+            pass
     with _dto_guard:
         if len(_dto_cache) >= _DTO_CACHE_MAX:
             now = time.time()
@@ -836,6 +878,7 @@ def mint_batch(db: Session, revision_bindings: List[Dict[str, Any]], ids: List[s
     if cache_scope:
         epoch = data_epoch(db, [int(b["chart_id"]) for i in wanted if (b := by_id.get(i)) and b.get("chart_id")])
     out: Dict[str, Dict[str, Any]] = {}
+    todo: List[Tuple[str, Dict[str, Any], Optional[int], Optional[str]]] = []
     for bid in wanted:
         b = by_id.get(bid)
         if b is None:
@@ -845,8 +888,41 @@ def mint_batch(db: Session, revision_bindings: List[Dict[str, Any]], ids: List[s
         key = _dto_key(cache_scope, epoch, b, resolved, kw.get("enforced"), kw.get("disclose"), lim) if cache_scope else None
         dto = _cache_get(key) if key else None
         if dto is None:
-            dto = mint_dto(db, b, decl, resolved, limit=lim, **kw)
-            if key:
-                _cache_put(key, dto)
-        out[bid] = dto
-    return out
+            todo.append((bid, b, lim, key))
+        else:
+            out[bid] = dto
+
+    def run(item, session) -> Tuple[str, Dict[str, Any]]:
+        bid, b, lim, key = item
+        dto = mint_dto(session, b, decl, resolved, limit=lim, **kw)
+        if key:
+            _cache_put(key, dto)
+        return bid, dto
+
+    # A batch must not be slower than the requests it replaced: the misses run side by
+    # side, each on its own DB session (one session is not thread-safe). The pilot's 8
+    # cold bindings ran one after another in one worker: 8 x 0.66 s per request.
+    workers = min(BATCH_PARALLEL, len(todo))
+    if workers <= 1 or db is None:
+        for item in todo:
+            bid, dto = run(item, db)
+            out[bid] = dto
+    else:
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+
+        bind = db.get_bind()
+        parent = contextvars.copy_context()  # request-scoped context (principal, scope) follows each thread
+
+        def isolated(item):
+            with _worker_slots:
+                s = Session(bind=bind)
+                try:
+                    return run(item, s)
+                finally:
+                    s.close()
+
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="report-batch") as pool:
+            for bid, dto in pool.map(lambda it: parent.copy().run(isolated, it), todo):
+                out[bid] = dto
+    return {bid: out[bid] for bid in wanted}

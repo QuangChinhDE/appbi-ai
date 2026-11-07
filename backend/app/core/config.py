@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     REPORT_MAX_FILTERS: int = 12            # declared viewer filters per page
     REPORT_MAX_CATEGORY_FILTERS: int = 3    # list filters an AI-GENERATED page proposes
     REPORT_IMPORT_MAX_SLOTS: int = 60       # places the importer reads from free HTML
+    REPORT_WORKER_PARALLEL: int = 16        # bindings computed at once per worker process (DB pool / warehouse guard)
+    REPORT_BATCH_PARALLEL: int = 8          # bindings of one data batch computed side by side (= the frame's batch size)
     REPORT_PROBE_BUDGET_S: int = 90         # seconds an import may spend test-running data
 
     # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──
