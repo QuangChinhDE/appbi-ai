@@ -203,18 +203,47 @@ def _collect(turn: dict, texts: list, ev: dict) -> None:
             turn["error"] = str(ev.get("result") or "error")[:300]
 
 
-def report_turn(lease_id: str, turn: dict) -> None:
-    """Best effort: the public MCP has AppBI keep this turn (if the publisher keeps history)."""
+def _relay(path: str, body: dict) -> tuple:
+    """POST to the public MCP as this runtime (its secret), for the lease it holds."""
+    import urllib.error
     import urllib.request
 
-    req = urllib.request.Request(f"{PUBLIC_MCP}/public-mcp/runtime-transcript", method="POST",
-                                 data=json.dumps({"lease_id": lease_id, "turn": turn}, ensure_ascii=False).encode(),
+    req = urllib.request.Request(f"{PUBLIC_MCP}/public-mcp/{path}", method="POST",
+                                 data=json.dumps(body, ensure_ascii=False).encode(),
                                  headers={"Content-Type": "application/json", "X-Runtime-Secret": SECRET,
                                           "X-Runtime-Index": str(INDEX)})
     try:
-        urllib.request.urlopen(req, timeout=15).read()
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read() or b"{}")
+        except ValueError:
+            return exc.code, {}
+
+
+def report_turn(lease_id: str, turn: dict) -> None:
+    """Best effort: the public MCP has AppBI keep this turn (if the publisher keeps history)."""
+    try:
+        _relay("runtime-transcript", {"lease_id": lease_id, "turn": {k: v for k, v in turn.items() if k != "rating"}})
     except Exception as exc:  # noqa: BLE001 - history is never allowed to break the chat
         print(f"transcript not kept: {type(exc).__name__}", file=sys.stderr)
+
+
+def rate_turn(turn_id: str, rating: str) -> tuple:
+    """The viewer's up/down on one of THEIR answers in this lease (AppBI keeps the verdict)."""
+    if rating not in ("up", "down"):
+        return 422, {"error": "bad_rating"}
+    turn = next((t for t in STATE["turns"] if t.get("id") == turn_id), None)
+    if turn is None or turn.get("error"):
+        return 404, {"error": "turn_not_found"}
+    try:
+        code, out = _relay("runtime-rating", {"lease_id": STATE["lease"], "turn": turn_id, "rating": rating})
+    except Exception:  # noqa: BLE001
+        return 502, {"error": "unavailable"}
+    if code == 200:
+        turn["rating"] = rating
+    return code, out
 
 
 def wait_for_port(port: int, timeout: float = 8.0) -> None:
@@ -256,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.endswith("/api/history"):
             if not STATE["lease"]:
                 return self._send(409, {"error": "not_leased"})
-            return self._send(200, {"turns": [{k: t.get(k) for k in ("question", "answer", "error")}
+            return self._send(200, {"turns": [{k: t.get(k) for k in ("id", "question", "answer", "error", "rating")}
                                               | {"tools": [x["name"] for x in t.get("tools") or []]}
                                               for t in STATE["turns"]]})
         if self.path.endswith("/api/status"):
@@ -303,6 +332,13 @@ class Handler(BaseHTTPRequestHandler):
             if not code or len(code) > 512:
                 return self._send(400, {"ok": False, "error": "bad_code", "message": "Paste the whole code."})
             return self._send(200, signin_code(code))
+        if self.path.endswith("/api/rate"):
+            try:
+                b = self._body()
+            except ValueError:
+                return self._send(400, {"error": "bad_request"})
+            code, out = rate_turn(str(b.get("id") or "")[:80], str(b.get("rating") or ""))
+            return self._send(code, out)
         if not self.path.endswith("/api/chat"):
             return self._send(404, {"error": "not_found"})
         try:
@@ -369,6 +405,8 @@ class Handler(BaseHTTPRequestHandler):
             STATE["turns"] = (STATE["turns"] + [turn])[-MAX_TURNS_KEPT:]
             threading.Thread(target=report_turn, args=(STATE["lease"], dict(turn)), daemon=True).start()
             try:
+                if not turn["error"]:
+                    chunk({"type": "appbi_turn", "id": turn["id"]})  # what the viewer's thumb refers to
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except OSError:

@@ -289,3 +289,29 @@ def test_page_charts_follow_tile_placement_not_the_stale_page_record():
              3: [{"tile_id": 3, "page_id": "page-2"}]}
     assert page_charts(pages, tiles) == [{"page_id": "page-1", "name": "Tong quan", "chart_ids": [1, 2]},
                                          {"page_id": "page-2", "name": "Chi tiet", "chart_ids": [3]}]
+
+
+def test_a_viewer_rates_their_own_claude_answer_like_an_ai_bot_answer(client, db, owner, report):  # noqa: F811
+    """Same verdict, same column, same rules as the AI Bot's thumb; only the session that asked."""
+    from app.models.report_artifact import ReportAnswerTurn
+
+    def rate(grant, turn, rating):
+        return client.post("/api/v1/public/mcp/rating", json={"turn": turn, "rating": rating},
+                           headers={"X-Public-MCP-Grant": grant})
+
+    link = _link(client, owner, report, appearance_config=ON)
+    me, other = _pair(client, link["token"]).json(), _pair(client, link["token"]).json()
+    assert _transcript(client, me["grant"], {"id": "rtl-1", "question": "q", "answer": "a"}).json()["kept"] is True
+    _transcript(client, me["grant"], {"id": "rtl-2", "question": "q", "answer": "", "error": "claude_failed"})
+
+    assert rate(other["grant"], "rtl-1", "up").status_code == 404, "another viewer's session cannot rate it"
+    assert rate(me["grant"], "rtl-1", "meh").status_code in (409, 422)
+    assert rate(me["grant"], "rtl-2", "up").status_code == 409, "a failed turn holds no answer to rate"
+    assert rate(me["grant"], "nope", "up").status_code == 404
+    r = rate(me["grant"], "rtl-1", "down")
+    assert r.status_code == 200 and r.json() == {"rated": True, "rating": "down"}, r.text
+    assert rate(me["grant"], "rtl-1", "up").json()["rating"] == "up", "one current verdict, changeable"
+    row = db.query(ReportAnswerTurn).filter(ReportAnswerTurn.link_id == link["id"],
+                                            ReportAnswerTurn.idempotency_key == "claude:rtl-1").one()
+    db.refresh(row)
+    assert row.rating == "up"

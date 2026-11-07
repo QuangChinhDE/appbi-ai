@@ -102,3 +102,29 @@ def record(db, h, turn: Dict[str, Any], view_state: Dict[str, Any] | None) -> Di
        .delete(synchronize_session=False))
     db.commit()
     return {"kept": True}
+
+
+def rate(db, h, ref: str, rating: str) -> dict:
+    """The viewer's thumb on one Claude answer of THEIR view session. The same verdict, column
+    and rules as an AI Bot answer (answer_core.public_turn.rate), so the publisher's Feedback
+    view reads both engines alike. The grant pins link + session: no other viewer's turn."""
+    from app.services.answer_core import public_turn
+
+    from app.models.ai_runtime import PublicAnswerTurn
+    from app.models.report_artifact import ReportAnswerTurn
+    from app.services.public_mcp.service import DASHBOARD
+
+    T = PublicAnswerTurn if h.kind == DASHBOARD else ReportAnswerTurn
+    ref = re.sub(r"[^A-Za-z0-9_\-]", "", str(ref or ""))[:40]
+    conv = f"claude-{h.sid}"[:64]
+    row = (db.query(T).filter(T.link_id == h.link.id, T.idempotency_key == f"claude:{ref}"[:64],
+                              T.conversation_key == conv).first())
+    if row is None:
+        from app.services.public_mcp.service import Refused
+        raise Refused("turn_not_found", "This answer was not kept, so it cannot be rated.", 404)
+    try:
+        out = public_turn.rate(db, link_id=h.link.id, turn_id=row.turn_id, conversation_key=conv, rating=rating, T=T)
+    except public_turn.TurnRejected as exc:
+        from app.services.public_mcp.service import Refused
+        raise Refused("rating_refused", str(exc.detail), exc.status_code)
+    return {"rated": True, "rating": out["rating"]}

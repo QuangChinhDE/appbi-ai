@@ -315,6 +315,16 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         """A runtime reports one finished Claude turn of its viewer (history). Only that runtime
         (its own secret) and only for the lease it currently holds; kept by AppBI with the
         session's grant, when the publisher keeps history."""
+        return await _runtime_relay(request, "/public/mcp/transcript",
+                                    lambda body, sess: {"turn": body.get("turn") or {}, "view_state": bridge.view_state(sess)})
+
+    async def runtime_rating(request: Request) -> Response:
+        """The viewer's up/down on one of their Claude answers, relayed by their runtime."""
+        return await _runtime_relay(request, "/public/mcp/rating",
+                                    lambda body, _sess: {"turn": str(body.get("turn") or "")[:64],
+                                                         "rating": str(body.get("rating") or "")[:8]})
+
+    async def _runtime_relay(request: Request, path: str, build: Any) -> Response:
         import secrets as _s
 
         try:
@@ -333,8 +343,7 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         if not grant:
             return _bridge_json({"error": "session_ended"}, 410)
         try:
-            out = await bridge.appbi(grant).post("/public/mcp/transcript", {
-                "turn": (body or {}).get("turn") or {}, "view_state": bridge.view_state(sess)})
+            out = await bridge.appbi(grant).post(path, build(body or {}, sess))
         except Refused as exc:
             return _bridge_json({"error": exc.code}, exc.status if exc.status >= 400 else 400)
         return _bridge_json(out)
@@ -387,6 +396,7 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         Route(f"{res_path}/runtime-auth", endpoint=runtime_auth, methods=["GET"]),
         Route(f"{res_path}/runtime-pool", endpoint=runtime_pool, methods=["GET"]),
         Route(f"{res_path}/runtime-transcript", endpoint=runtime_transcript, methods=["POST"]),
+        Route(f"{res_path}/runtime-rating", endpoint=runtime_rating, methods=["POST"]),
         Route(res_path, endpoint=gated, methods=["GET", "POST", "DELETE"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)

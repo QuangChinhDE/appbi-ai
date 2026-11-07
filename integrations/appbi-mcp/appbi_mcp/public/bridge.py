@@ -36,7 +36,7 @@ log = logging.getLogger("appbi_mcp.public.bridge")
 
 PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 APPBI_PATHS = ("/public/mcp/describe", "/public/mcp/chart-data", "/public/mcp/check-state", "/public/mcp/filter-values",
-               "/public/mcp/transcript")
+               "/public/mcp/transcript", "/public/mcp/rating")
 MAX_STATE_BYTES = 64 * 1024
 
 

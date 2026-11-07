@@ -14,10 +14,11 @@
  * Public surface: lib/api/public.ts and same-origin runtime paths only (no signed-in client).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Loader2, Send, Square } from 'lucide-react';
+import { Loader2, Send, Square, ThumbsDown, ThumbsUp } from 'lucide-react';
 
 import { ClaudeSignIn } from '@/components/public-claude/ClaudeSignIn';
 import { renderMarkdown } from '@/lib/dashboard-markdown';
+import { nextReaderRating, type ReaderRating } from '@/lib/readerRating';
 import { ReportBridge, type ApplyResult, type BridgeCommand } from '@/lib/public-mcp/bridge';
 import { useI18n } from '@/providers/LanguageProvider';
 
@@ -32,7 +33,8 @@ export interface ClaudeEngineProps {
 }
 
 type Phase = 'starting' | 'signin' | 'ready' | 'error';
-interface Turn { id: string; question: string; answer: string; steps: string[]; running: boolean; error?: string }
+/** `ref` is the runtime's id for the turn (what AppBI kept and what a rating names). */
+interface Turn { id: string; ref?: string; rating?: ReaderRating; question: string; answer: string; steps: string[]; running: boolean; error?: string }
 
 const TOOL_KEYS: Record<string, string> = {
   get_report_context: 'publicClaude.chat.tool.context', get_view_state: 'publicClaude.chat.tool.view',
@@ -113,7 +115,8 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
         if (!r.ok) return;
         const j = await r.json();
         const kept: Turn[] = (j.turns || []).map((x: any) => ({
-          id: newId(), question: String(x.question || ''), answer: String(x.answer || ''),
+          id: newId(), ref: x.id ? String(x.id) : undefined, rating: x.rating === 'up' || x.rating === 'down' ? x.rating : undefined,
+          question: String(x.question || ''), answer: String(x.answer || ''),
           steps: (x.tools || []).map((n: string) => (TOOL_KEYS[n] ? t(TOOL_KEYS[n]) : n)), running: false,
           error: x.error ? t('publicClaude.chat.failed') : undefined,
         }));
@@ -197,6 +200,8 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
           } else if (ev.type === 'result') {
             finalText = String(ev.result || '');
             if (ev.is_error) patch((x) => ({ ...x, error: finalText || t('publicClaude.chat.failed') }));
+          } else if (ev.type === 'appbi_turn' && ev.id) {
+            patch((x) => ({ ...x, ref: String(ev.id) }));
           } else if (ev.type === 'agent_error') {
             const msg = String(ev.message || '');
             patch((x) => ({ ...x, error: /log ?in|auth/i.test(msg) ? t('publicClaude.chat.signedOut') : t('publicClaude.chat.failed') }));
@@ -212,6 +217,24 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
       setBusy(false);
       abortRef.current = null;
     }
+  };
+
+  // The AI Bot's thumb, same contract (lib/readerRating.ts): one current verdict, never cleared;
+  // a save that fails puts back what was shown before — unless the viewer clicked again meanwhile.
+  const rate = async (x: Turn, clicked: ReaderRating) => {
+    if (!base || !x.ref) return;
+    const previous = x.rating;
+    const attempted = nextReaderRating(previous, clicked);
+    const set = (r: ReaderRating | undefined, only?: ReaderRating) =>
+      setTurns((all) => all.map((y) => (y.id === x.id && (only === undefined || y.rating === only) ? { ...y, rating: r } : y)));
+    set(attempted);
+    try {
+      const r = await fetch(`${base}api/rate`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: x.ref, rating: attempted }),
+      });
+      if (!r.ok) set(previous, attempted);
+    } catch { set(previous, attempted); }
   };
 
   return (
@@ -262,6 +285,18 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
               )}
               {x.error && <p className="mt-1 text-tiny" data-testid="claude-chat-turn-error">{x.error}</p>}
             </Bubble>
+            {engine.keepsHistory && x.ref && !x.running && !x.error && x.answer && (
+              <div className="flex items-center gap-1 pl-1" data-testid="claude-chat-rating">
+                {(['up', 'down'] as const).map((r) => (
+                  <button key={r} type="button" onClick={() => { void rate(x, r); }} aria-pressed={x.rating === r}
+                    aria-label={r === 'up' ? t('dashboards.aiBot.core.rateUp') : t('dashboards.aiBot.core.rateDown')}
+                    data-testid={`claude-chat-rate-${r}`}
+                    className={`rounded-md p-1 ${x.rating === r ? 'bg-brand-subtle text-brand' : 'text-text-tertiary hover:bg-surface-2'}`}>
+                    {r === 'up' ? <ThumbsUp className="h-3.5 w-3.5" aria-hidden="true" /> : <ThumbsDown className="h-3.5 w-3.5" aria-hidden="true" />}
+                  </button>
+                ))}
+              </div>
+            )}
           </article>
         ))}
         <div ref={bottomRef} />

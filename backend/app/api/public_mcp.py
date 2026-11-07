@@ -238,3 +238,24 @@ def transcript(body: TranscriptBody, request: Request, db: Session = Depends(get
         return _refused(exc)
     S.audit(h, "transcript", kept=out.get("kept"))
     return JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+class RatingBody(BaseModel):
+    turn: str = Field(..., min_length=1, max_length=64)
+    rating: str = Field(..., max_length=8)
+
+
+@router.post("/rating")
+@_limiter.limit("30/minute", key_func=_grant_key)
+def rating(body: RatingBody, request: Request, db: Session = Depends(get_db),
+           x_public_mcp_grant: Optional[str] = Header(default=None)):
+    """The viewer's up/down on one kept Claude answer of this view session (AI Bot rating rules)."""
+    from app.services.public_mcp import transcript as TR
+
+    try:
+        h = _handle(db, x_public_mcp_grant)
+        out = TR.rate(db, h, body.turn, body.rating)
+    except S.Refused as exc:
+        return _refused(exc)
+    S.audit(h, "rating", rating=out.get("rating"))
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})

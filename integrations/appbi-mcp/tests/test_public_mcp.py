@@ -56,6 +56,8 @@ class FakePublicAppbi:
                                      "assistant_brief": f"# Report: {g['name']}"})
             if path == "/public/mcp/transcript":
                 return JSONResponse({"kept": True})
+            if path == "/public/mcp/rating":
+                return JSONResponse({"rated": True, "rating": body.get("rating")})
             if path == "/public/mcp/check-state":
                 for f in state.get("viewer_filters") or []:
                     if f.get("field") == "orders.region":

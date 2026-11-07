@@ -279,3 +279,19 @@ async def test_runtime_transcript_only_from_that_runtime_for_its_lease(rc, agent
     path, body = rc.fake.calls[-1]
     assert path == "/public/mcp/transcript" and body["_grant_name"] == "A"
     assert body["turn"]["question"] == "Doanh thu?" and body["view_state"] == DASH_STATE
+
+
+async def test_runtime_rating_is_relayed_only_for_its_own_lease(rc, agents):
+    a = await tab(rc, "A")
+    i = (await lease(rc, a)).json()["runtime"]
+    lease_id = agents.state[i]["lease"]
+    body = {"lease_id": lease_id, "turn": "t1", "rating": "up"}
+    assert (await rc.post("/public-mcp/runtime-rating", json=body)).status_code == 404
+    other = 2 if i == 1 else 1
+    assert (await rc.post("/public-mcp/runtime-rating", json=body,
+                          headers={"X-Runtime-Index": str(other), "X-Runtime-Secret": SECRET})).status_code == 409
+    rc.fake.calls.clear()
+    ok = await rc.post("/public-mcp/runtime-rating", json=body, headers={"X-Runtime-Index": str(i), "X-Runtime-Secret": SECRET})
+    assert ok.status_code == 200, ok.text
+    path, sent = rc.fake.calls[-1]
+    assert path == "/public/mcp/rating" and sent["turn"] == "t1" and sent["rating"] == "up" and sent["_grant_name"] == "A"
