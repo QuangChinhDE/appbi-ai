@@ -167,7 +167,6 @@ export function ClaudeSignIn({ base, onSignedIn }: { base: string; onSignedIn: (
       </div>
 
       {error && <p className="rounded-md bg-danger/5 px-2 py-1.5 text-tiny text-danger" role="alert" data-testid="claude-signin-error">{error}</p>}
-      <p className="text-micro text-text-quaternary">{t('publicClaude.chat.signinNote')}</p>
     </div>
   );
 }

@@ -71,6 +71,18 @@ def _link_token_key(request: Request) -> str:
     return "public-report-link-auth:" + str(request.path_params.get("token") or "")
 
 
+def _data_link_key(request: Request) -> str:
+    """Data requests of ONE link, whoever sends them: bounds the warehouse work a single
+    shared link can cause, however many callers (or addresses) it has."""
+    return "public-report-data-link:" + str(request.path_params.get("token") or "")
+
+
+def _data_session_key(request: Request) -> str:
+    """One viewer's page session (falls back to the caller's address without one)."""
+    sid = (request.headers.get("x-public-session") or "").strip()[:128]
+    return "public-report-data-session:" + (sid or get_remote_address(request))
+
+
 @router.post("/{token}/auth")
 @_limiter.limit("10/minute")
 @_limiter.limit("100/hour", key_func=_link_token_key)
@@ -182,6 +194,8 @@ def ticket_document(ticket: str, request: Request, db: Session = Depends(get_db)
 
 @router.post("/{token}/data")
 @_limiter.limit("600/minute")
+@_limiter.limit("300/minute", key_func=_data_session_key)
+@_limiter.limit("3000/minute", key_func=_data_link_key)
 def public_data(token: str, body: PublicDataBody, request: Request, db: Session = Depends(get_db),
                 x_public_session: Optional[str] = Header(default=None)):
     art, rev, link = _live(db, token, x_public_session)
@@ -201,6 +215,8 @@ def public_data(token: str, body: PublicDataBody, request: Request, db: Session 
 
 @router.post("/{token}/data-batch")
 @_limiter.limit("600/minute")
+@_limiter.limit("300/minute", key_func=_data_session_key)
+@_limiter.limit("3000/minute", key_func=_data_link_key)
 def public_data_batch(token: str, body: PublicBatchBody, request: Request, db: Session = Depends(get_db),
                       x_public_session: Optional[str] = Header(default=None)):
     """Several bindings of the page in ONE request: the link, its locks and the resolved

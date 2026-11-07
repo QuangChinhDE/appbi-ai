@@ -155,7 +155,11 @@ class Settings(BaseSettings):
     # and Claude reach the public MCP service on (its /public-mcp endpoint and bridge).
     # Empty = the app's own origin (the edge routes /public-mcp to the service).
     PUBLIC_MCP_URL: str = ""
-    PUBLIC_CLAUDE_HISTORY_DAYS: int = 90
+    PUBLIC_CLAUDE_HISTORY_DAYS: int = 0  # 0 = keep forever
+    # concurrent DuckDB queries (manual files, Sheets) per worker; 0 = the CPU count
+    DUCKDB_PARALLEL: int = 0
+    # seconds a public dashboard tile's result is reused while nothing it depends on changed
+    PUBLIC_CHART_RESULT_TTL_S: int = 60
     # The origin report documents are served from — a DIFFERENT origin than the app
     # (e.g. https://reports.example.com). There the frame gets a real origin, which
     # is what lets the runtime cancel navigations before any request leaves. Empty:

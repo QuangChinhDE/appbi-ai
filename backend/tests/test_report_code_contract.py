@@ -1489,6 +1489,7 @@ def test_a_batch_answers_every_id_once_and_errors_are_never_cached(monkeypatch):
 
     monkeypatch.setattr(B, "mint_dto", fake_mint)
     monkeypatch.setattr(B, "data_epoch", lambda db, ids: "E1")
+    monkeypatch.setattr(B, "_shared", lambda: None)  # hermetic: no cross-worker store left by another run
     B._dto_cache.clear()
     revb = [{"id": "b1", "chart_id": 1}, {"id": "b2", "chart_id": 2}]
     out = B.mint_batch(None, revb, ["b1", "b2", "b1", "nope"], [], {}, cache_scope="public:1:1", public=True)
@@ -1585,3 +1586,23 @@ def test_the_public_dto_cache_is_shared_across_workers(monkeypatch):
     again = B.mint_batch(None, [{"id": "b1", "chart_id": 1}], ["b1"], [], {}, cache_scope="public:1:1", public=True)
     assert calls == ["b1"] and again["b1"]["rows"] == [1], "served from the shared store"
     B._dto_cache.clear()
+
+
+def test_public_report_data_is_also_capped_per_viewer_session_and_per_link():
+    """#4: an office behind one NAT address is many viewers; a link is one warehouse bill.
+    Both data routes keep the per-address cap and add one per session and one per link."""
+    from types import SimpleNamespace
+
+    from app.api import public_reports as PR
+
+    for fn in (PR.public_data, PR.public_data_batch):
+        name = f"{fn.__module__}.{fn.__name__}"
+        limits = [(str(l.limit), getattr(l.key_func, "__name__", "")) for l in PR._limiter._route_limits.get(name, [])]
+        assert any(k == "get_remote_address" for _, k in limits), "the per-address cap stays"
+        assert ("300 per 1 minute", "_data_session_key") in limits, limits
+        assert ("3000 per 1 minute", "_data_link_key") in limits, limits
+
+    req = SimpleNamespace(headers={"x-public-session": "s-1"}, path_params={"token": "tok"},
+                          client=SimpleNamespace(host="10.0.0.9"), scope={"type": "http"})
+    assert PR._data_session_key(req) == "public-report-data-session:s-1"
+    assert PR._data_link_key(req) == "public-report-data-link:tok"

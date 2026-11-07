@@ -150,5 +150,6 @@ viewer out** (the login is in memory by design): upgrade out of hours.
 - With "keep Claude conversations" on (default): question, answer, report actions and
   view state per turn, in the AI Bot's own turn tables (`public_answer_turns`,
   `report_answer_turns`), plus the viewer's 👍/👎. Token-like strings are redacted.
-  Retention `PUBLIC_CLAUDE_HISTORY_DAYS` (backend `.env`, default 90).
+  Kept forever by default (the publisher uses it to improve the report and the AI Bot
+  instructions); set `PUBLIC_CLAUDE_HISTORY_DAYS=N` in the backend `.env` to purge older turns.
 - Never kept: Claude passwords, OAuth tokens or codes.

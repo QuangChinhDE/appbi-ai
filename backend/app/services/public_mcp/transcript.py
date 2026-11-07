@@ -12,8 +12,8 @@ the runtime never sends them, and anything shaped like one is redacted here anyw
 
 Written by the Public MCP service with the session's grant (the runtime's own report
 of a finished turn), only when the publisher keeps history on (`mcp_access.keep_history`,
-default on, notice shown in the chat). Retention: `PUBLIC_CLAUDE_HISTORY_DAYS` (default
-90) — older Claude turns of the link are deleted when a new one is written.
+default on, notice shown in the chat). Retention: kept forever by default; a positive `PUBLIC_CLAUDE_HISTORY_DAYS` purges older
+Claude turns of the link when a new one is written.
 """
 from __future__ import annotations
 
@@ -56,12 +56,14 @@ def _clean(value: Any, depth: int = 0) -> Any:
 
 
 def retention_days() -> int:
+    """0 (default) = keep forever: the history is how the publisher improves the report and the
+    AI Bot instructions. A positive PUBLIC_CLAUDE_HISTORY_DAYS purges older Claude turns."""
     from app.core.config import settings
 
     try:
-        return max(1, int(getattr(settings, "PUBLIC_CLAUDE_HISTORY_DAYS", 90) or 90))
+        return max(0, int(getattr(settings, "PUBLIC_CLAUDE_HISTORY_DAYS", 0) or 0))
     except (TypeError, ValueError):
-        return 90
+        return 0
 
 
 def record(db, h, turn: Dict[str, Any], view_state: Dict[str, Any] | None) -> Dict[str, Any]:
@@ -97,9 +99,11 @@ def record(db, h, turn: Dict[str, Any], view_state: Dict[str, Any] | None) -> Di
             idempotency_key=idem, question=question, status="failed" if envelope["error"] else "answered",
             envelope=envelope, usd=None, finished_at=now)
     db.add(row)
-    cutoff = now - timedelta(days=retention_days())
-    (db.query(T).filter(T.link_id == h.link.id, T.idempotency_key.like("claude:%"), T.created_at < cutoff)
-       .delete(synchronize_session=False))
+    days = retention_days()
+    if days:
+        cutoff = now - timedelta(days=days)
+        (db.query(T).filter(T.link_id == h.link.id, T.idempotency_key.like("claude:%"), T.created_at < cutoff)
+           .delete(synchronize_session=False))
     db.commit()
     return {"kept": True}
 
