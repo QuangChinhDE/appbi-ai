@@ -6,6 +6,7 @@ import base64
 import hashlib
 import os
 import re
+import threading
 import time
 from typing import Callable, Generator, Iterator, List, Dict, Any, Tuple, Optional
 import pymysql
@@ -230,6 +231,19 @@ def _coerce_sheet_value(value: Any, declared_type: str) -> Any:
 
     text = str(value).strip()
     return text or None
+
+
+# DuckDB work (Arrow build + CREATE TABLE + the query) is CPU-bound and holds the GIL for
+# the Python part: a batch of 8 tiles on a 2-vCPU host ran 8 at once and each SUM over a
+# small file took ~2.7 s instead of ~0.3 s (pilot). At most DUCKDB_PARALLEL (default: the
+# CPU count) run at once per worker process; the rest wait their turn. IO-bound sources
+# (BigQuery, Postgres) are not limited by this.
+_DUCKDB_SLOTS = threading.BoundedSemaphore(
+    max(1, int(getattr(settings, "DUCKDB_PARALLEL", 0) or 0) or (os.cpu_count() or 2)))
+
+
+def duckdb_slot():
+    return _DUCKDB_SLOTS
 
 
 def _duckdb_quote_ident(name: str) -> str:
@@ -3717,95 +3731,96 @@ class DataSourceConnectionService:
 
             # ── Try DuckDB first (full SQL support) ───────────────────────────
             try:
-                import duckdb
-                import pyarrow as pa
+                with duckdb_slot():  # CPU-bound: never more DuckDB queries than cores
+                    import duckdb
+                    import pyarrow as pa
 
-                _duck_start = time.time()
-                from app.services.sql_validator import open_locked_duckdb
-                con = open_locked_duckdb()  # S1: no host files / settings
+                    _duck_start = time.time()
+                    from app.services.sql_validator import open_locked_duckdb
+                    con = open_locked_duckdb()  # S1: no host files / settings
 
-                # Perf (#4): only register the tabs the SQL actually references.
-                # Loading the WHOLE workbook into DuckDB for every tile is the
-                # dominant per-tile cost on multi-tab spreadsheets (Arrow build
-                # + CREATE TABLE per tab). `_sheets_referenced_by_sql` matches
-                # tab names against identifier tokens in the SQL; it falls back
-                # to ALL tabs when detection is uncertain so a JOIN/CTE that
-                # names a tab in a way we can't parse never silently loses data.
-                _all_tab_count = len(all_sheets)
-                tabs_to_load = _sheets_referenced_by_sql(sql_query, list(all_sheets.keys()))
-                # [perf] result cache MISS → we rebuild DuckDB. The tab ratio
-                # shows Fix #4 working: "loaded 1/8 tabs" means we skipped 7
-                # tabs' Arrow build + CREATE TABLE. "loaded 8/8" = conservative
-                # fallback (couldn't detect refs) — still correct, just no win.
-                logger.info(
-                    "[perf] sheets result cache=MISS ss=%s tabs_loaded=%d/%d "
-                    "(rebuilding duckdb; loaded tabs=%s)",
-                    spreadsheet_id, len(tabs_to_load), _all_tab_count,
-                    ",".join(tabs_to_load[:8]) + ("…" if len(tabs_to_load) > 8 else ""),
-                )
+                    # Perf (#4): only register the tabs the SQL actually references.
+                    # Loading the WHOLE workbook into DuckDB for every tile is the
+                    # dominant per-tile cost on multi-tab spreadsheets (Arrow build
+                    # + CREATE TABLE per tab). `_sheets_referenced_by_sql` matches
+                    # tab names against identifier tokens in the SQL; it falls back
+                    # to ALL tabs when detection is uncertain so a JOIN/CTE that
+                    # names a tab in a way we can't parse never silently loses data.
+                    _all_tab_count = len(all_sheets)
+                    tabs_to_load = _sheets_referenced_by_sql(sql_query, list(all_sheets.keys()))
+                    # [perf] result cache MISS → we rebuild DuckDB. The tab ratio
+                    # shows Fix #4 working: "loaded 1/8 tabs" means we skipped 7
+                    # tabs' Arrow build + CREATE TABLE. "loaded 8/8" = conservative
+                    # fallback (couldn't detect refs) — still correct, just no win.
+                    logger.info(
+                        "[perf] sheets result cache=MISS ss=%s tabs_loaded=%d/%d "
+                        "(rebuilding duckdb; loaded tabs=%s)",
+                        spreadsheet_id, len(tabs_to_load), _all_tab_count,
+                        ",".join(tabs_to_load[:8]) + ("…" if len(tabs_to_load) > 8 else ""),
+                    )
 
-                for sheet_name in tabs_to_load:
-                    sheet_data = all_sheets.get(sheet_name)
-                    if sheet_data is None:
-                        continue
-                    rows = sheet_data.get('rows', [])
-                    col_defs = sheet_data.get('columns', [])
-                    col_names = [c['name'] for c in col_defs]
-                    if not col_names:
-                        logger.info(
-                            "Skipping empty Google Sheet tab '%s' during DuckDB registration",
-                            sheet_name,
-                        )
-                        continue
+                    for sheet_name in tabs_to_load:
+                        sheet_data = all_sheets.get(sheet_name)
+                        if sheet_data is None:
+                            continue
+                        rows = sheet_data.get('rows', [])
+                        col_defs = sheet_data.get('columns', [])
+                        col_names = [c['name'] for c in col_defs]
+                        if not col_names:
+                            logger.info(
+                                "Skipping empty Google Sheet tab '%s' during DuckDB registration",
+                                sheet_name,
+                            )
+                            continue
 
-                    if rows:
-                        table = _build_arrow_table_from_sheet(pa, col_defs, rows)
-                    else:
-                        table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
+                        if rows:
+                            table = _build_arrow_table_from_sheet(pa, col_defs, rows)
+                        else:
+                            table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
-                    # Materialise the Arrow table into a NATIVE DuckDB table
-                    # instead of querying the Arrow view directly. DuckDB's
-                    # Arrow scan pushes predicates down to PyArrow compute
-                    # kernels, which have gaps — e.g. BETWEEN + ORDER BY over a
-                    # column containing NULLs raises
-                    # "ArrowNotImplementedError: 'and_kleene' (bool, null)" and
-                    # the whole read fails (date-range filters silently return
-                    # zero rows). Copying into a native table makes DuckDB use
-                    # its own complete execution engine. Null/value semantics
-                    # are preserved; cost is negligible for Sheets-sized data.
-                    safe_name = sheet_name.replace(" ", "_")
-                    con.register("__arrow_src__", table)
-                    for nm in dict.fromkeys([safe_name, sheet_name]):
-                        con.execute(
-                            f'CREATE TABLE {_duckdb_quote_ident(nm)} AS '
-                            f'SELECT * FROM "__arrow_src__"'
-                        )
-                    con.unregister("__arrow_src__")
+                        # Materialise the Arrow table into a NATIVE DuckDB table
+                        # instead of querying the Arrow view directly. DuckDB's
+                        # Arrow scan pushes predicates down to PyArrow compute
+                        # kernels, which have gaps — e.g. BETWEEN + ORDER BY over a
+                        # column containing NULLs raises
+                        # "ArrowNotImplementedError: 'and_kleene' (bool, null)" and
+                        # the whole read fails (date-range filters silently return
+                        # zero rows). Copying into a native table makes DuckDB use
+                        # its own complete execution engine. Null/value semantics
+                        # are preserved; cost is negligible for Sheets-sized data.
+                        safe_name = sheet_name.replace(" ", "_")
+                        con.register("__arrow_src__", table)
+                        for nm in dict.fromkeys([safe_name, sheet_name]):
+                            con.execute(
+                                f'CREATE TABLE {_duckdb_quote_ident(nm)} AS '
+                                f'SELECT * FROM "__arrow_src__"'
+                            )
+                        con.unregister("__arrow_src__")
 
-                final_sql = sql_query
-                if limit:
-                    final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
+                    final_sql = sql_query
+                    if limit:
+                        final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
 
-                result = con.execute(final_sql)
-                columns = [desc[0] for desc in result.description]
-                raw_rows = result.fetchall()
-                con.close()
+                    result = con.execute(final_sql)
+                    columns = [desc[0] for desc in result.description]
+                    raw_rows = result.fetchall()
+                    con.close()
 
-                rows = [dict(zip(columns, row)) for row in raw_rows]
-                _duck_ms = (time.time() - _duck_start) * 1000
-                # [perf] full cold cost of a Sheets tile: build N tabs into
-                # DuckDB + run the SQL. Compare against the cache=HIT line to
-                # see what Fix #3 saves on the next identical request.
-                logger.info(
-                    "[perf] sheets duckdb EXECUTED ss=%s tabs_loaded=%d/%d rows=%d "
-                    "duckdb_build_exec_ms=%.0f",
-                    spreadsheet_id, len(tabs_to_load), _all_tab_count, len(rows), _duck_ms,
-                )
-                # Perf (#3): cache the computed result under the workbook's TTL.
-                google_sheets_cache.set_cached_result(
-                    spreadsheet_id, _result_key, (list(columns), [dict(r) for r in rows])
-                )
-                return columns, rows
+                    rows = [dict(zip(columns, row)) for row in raw_rows]
+                    _duck_ms = (time.time() - _duck_start) * 1000
+                    # [perf] full cold cost of a Sheets tile: build N tabs into
+                    # DuckDB + run the SQL. Compare against the cache=HIT line to
+                    # see what Fix #3 saves on the next identical request.
+                    logger.info(
+                        "[perf] sheets duckdb EXECUTED ss=%s tabs_loaded=%d/%d rows=%d "
+                        "duckdb_build_exec_ms=%.0f",
+                        spreadsheet_id, len(tabs_to_load), _all_tab_count, len(rows), _duck_ms,
+                    )
+                    # Perf (#3): cache the computed result under the workbook's TTL.
+                    google_sheets_cache.set_cached_result(
+                        spreadsheet_id, _result_key, (list(columns), [dict(r) for r in rows])
+                    )
+                    return columns, rows
 
             except ImportError:
                 logger.warning("DuckDB not available; falling back to raw sheet scan")
@@ -3857,49 +3872,50 @@ class DataSourceConnectionService:
 
             # ── Try DuckDB first (full SQL support) ──────────────────────────
             try:
-                import duckdb
-                import pyarrow as pa
+                with duckdb_slot():  # CPU-bound: never more DuckDB queries than cores
+                    import duckdb
+                    import pyarrow as pa
 
-                from app.services.sql_validator import open_locked_duckdb
-                con = open_locked_duckdb()  # S1: no host files / settings
+                    from app.services.sql_validator import open_locked_duckdb
+                    con = open_locked_duckdb()  # S1: no host files / settings
 
-                # Create a "manual" schema so queries like "manual"."table" work
-                con.execute("CREATE SCHEMA IF NOT EXISTS manual")
+                    # Create a "manual" schema so queries like "manual"."table" work
+                    con.execute("CREATE SCHEMA IF NOT EXISTS manual")
 
-                # Register every sheet as a DuckDB table via PyArrow
-                for sheet_name in connector.list_sheets():
-                    sheet_data = connector.get_sheet_data(sheet_name)
-                    rows = sheet_data.get("rows", [])
-                    col_defs = sheet_data.get("columns", [])
-                    col_names = [c["name"] for c in col_defs]
+                    # Register every sheet as a DuckDB table via PyArrow
+                    for sheet_name in connector.list_sheets():
+                        sheet_data = connector.get_sheet_data(sheet_name)
+                        rows = sheet_data.get("rows", [])
+                        col_defs = sheet_data.get("columns", [])
+                        col_names = [c["name"] for c in col_defs]
 
-                    if rows:
-                        table = _build_arrow_table_from_sheet(pa, col_defs, rows, exact_integers=True)
-                    else:
-                        table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
+                        if rows:
+                            table = _build_arrow_table_from_sheet(pa, col_defs, rows, exact_integers=True)
+                        else:
+                            table = pa.table({c: pa.array([], type=pa.string()) for c in col_names})
 
-                    safe_name = sheet_name.replace(" ", "_")
-                    # Register in main schema (default)
-                    con.register(safe_name, table)
-                    if safe_name != sheet_name:
-                        con.register(sheet_name, table)
-                    # Also register in manual schema for "manual"."table" queries
-                    con.execute(f'CREATE OR REPLACE VIEW manual."{safe_name}" AS SELECT * FROM "{safe_name}"')
-                    if safe_name != sheet_name:
-                        con.execute(f'CREATE OR REPLACE VIEW manual."{sheet_name}" AS SELECT * FROM "{safe_name}"')
+                        safe_name = sheet_name.replace(" ", "_")
+                        # Register in main schema (default)
+                        con.register(safe_name, table)
+                        if safe_name != sheet_name:
+                            con.register(sheet_name, table)
+                        # Also register in manual schema for "manual"."table" queries
+                        con.execute(f'CREATE OR REPLACE VIEW manual."{safe_name}" AS SELECT * FROM "{safe_name}"')
+                        if safe_name != sheet_name:
+                            con.execute(f'CREATE OR REPLACE VIEW manual."{sheet_name}" AS SELECT * FROM "{safe_name}"')
 
-                final_sql = sql_query
-                if limit:
-                    final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
+                    final_sql = sql_query
+                    if limit:
+                        final_sql = f"SELECT * FROM ({sql_query}) _lim LIMIT {limit}"
 
-                result = con.execute(final_sql)
-                columns = [desc[0] for desc in result.description]
-                raw_rows = result.fetchall()
-                con.close()
+                    result = con.execute(final_sql)
+                    columns = [desc[0] for desc in result.description]
+                    raw_rows = result.fetchall()
+                    con.close()
 
-                rows = [dict(zip(columns, row)) for row in raw_rows]
-                logger.info(f"DuckDB executed manual query: {len(rows)} rows")
-                return columns, rows
+                    rows = [dict(zip(columns, row)) for row in raw_rows]
+                    logger.info(f"DuckDB executed manual query: {len(rows)} rows")
+                    return columns, rows
 
             except ImportError:
                 # DuckDB / pandas not installed – fall back to raw sheet scan

@@ -155,7 +155,11 @@ class Settings(BaseSettings):
     # and Claude reach the public MCP service on (its /public-mcp endpoint and bridge).
     # Empty = the app's own origin (the edge routes /public-mcp to the service).
     PUBLIC_MCP_URL: str = ""
-    PUBLIC_CLAUDE_HISTORY_DAYS: int = 90
+    PUBLIC_CLAUDE_HISTORY_DAYS: int = 0  # 0 = keep forever
+    # concurrent DuckDB queries (manual files, Sheets) per worker; 0 = the CPU count
+    DUCKDB_PARALLEL: int = 0
+    # seconds a public dashboard tile's result is reused while nothing it depends on changed
+    PUBLIC_CHART_RESULT_TTL_S: int = 60
     # The origin report documents are served from — a DIFFERENT origin than the app
     # (e.g. https://reports.example.com). There the frame gets a real origin, which
     # is what lets the runtime cancel navigations before any request leaves. Empty:
@@ -170,6 +174,8 @@ class Settings(BaseSettings):
     REPORT_MAX_FILTERS: int = 12            # declared viewer filters per page
     REPORT_MAX_CATEGORY_FILTERS: int = 3    # list filters an AI-GENERATED page proposes
     REPORT_IMPORT_MAX_SLOTS: int = 60       # places the importer reads from free HTML
+    REPORT_WORKER_PARALLEL: int = 16        # bindings computed at once per worker process (DB pool / warehouse guard)
+    REPORT_BATCH_PARALLEL: int = 8          # bindings of one data batch computed side by side (= the frame's batch size)
     REPORT_PROBE_BUDGET_S: int = 90         # seconds an import may spend test-running data
 
     # ── AI Chat: one chat, one Data Core (docs/features/unified-ai-chat/contract.md) ──

@@ -1489,6 +1489,7 @@ def test_a_batch_answers_every_id_once_and_errors_are_never_cached(monkeypatch):
 
     monkeypatch.setattr(B, "mint_dto", fake_mint)
     monkeypatch.setattr(B, "data_epoch", lambda db, ids: "E1")
+    monkeypatch.setattr(B, "_shared", lambda: None)  # hermetic: no cross-worker store left by another run
     B._dto_cache.clear()
     revb = [{"id": "b1", "chart_id": 1}, {"id": "b2", "chart_id": 2}]
     out = B.mint_batch(None, revb, ["b1", "b2", "b1", "nope"], [], {}, cache_scope="public:1:1", public=True)
@@ -1534,3 +1535,74 @@ def test_the_pack_and_the_generator_teach_the_page_to_stay_fast(monkeypatch):
     rt = (Path(B.__file__).parent / "runtime.js").read_text(encoding="utf-8")
     assert "need: nd.ids" in rt and "type: 'need'" in rt, "the document tells the host what it shows"
     assert "requestIdleCallback" in rt, "a long list is drawn in idle chunks"
+
+
+def test_a_batch_computes_its_misses_side_by_side_on_their_own_sessions(monkeypatch):
+    """Pilot: 8 cold bindings in one batch ran one after another (8 x 0.66 s = 5.3 s per
+    request) - a filter change was as slow as before batching."""
+    import threading
+    import time as _t
+
+    sessions, threads = set(), set()
+
+    def slow(db, b, decl, state, **kw):
+        sessions.add(id(db)); threads.add(threading.get_ident())
+        _t.sleep(0.3)
+        return {"bindingId": b["id"], "status": "ready", "rows": []}
+
+    class _Db:
+        def get_bind(self):
+            return None
+
+    monkeypatch.setattr(B, "mint_dto", slow)
+    monkeypatch.setattr(B, "BATCH_PARALLEL", 4)
+    revb = [{"id": f"b{i}", "chart_id": i} for i in range(8)]
+    t0 = _t.time()
+    out = B.mint_batch(_Db(), revb, [b["id"] for b in revb], [], {}, public=True)
+    took = _t.time() - t0
+    assert list(out) == [f"b{i}" for i in range(8)], "answers keep the asked order"
+    assert took < 1.0, f"8 x 0.3 s ran in series ({took:.2f}s)"
+    assert len(threads) > 1 and len(sessions) > 1, "each parallel binding has its own session"
+
+
+def test_the_public_dto_cache_is_shared_across_workers(monkeypatch):
+    """Pilot: a repeat that landed on another uvicorn worker paid 1.1 s instead of 0.06 s."""
+    store: dict = {}
+
+    class _Store:
+        def get(self, ns, k):
+            return store.get((ns, k))
+
+        def set(self, ns, k, v, ttl_seconds=None):
+            store[(ns, k)] = v
+
+    calls: list = []
+    monkeypatch.setattr(B, "_shared", lambda: _Store())
+    monkeypatch.setattr(B, "data_epoch", lambda db, ids: "E")
+    monkeypatch.setattr(B, "mint_dto", lambda db, b, *a, **k: calls.append(b["id"]) or {"bindingId": b["id"], "status": "ready", "rows": [1]})
+    B._dto_cache.clear()
+    B.mint_batch(None, [{"id": "b1", "chart_id": 1}], ["b1"], [], {}, cache_scope="public:1:1", public=True)
+    B._dto_cache.clear()  # "another worker": its own memory is empty
+    again = B.mint_batch(None, [{"id": "b1", "chart_id": 1}], ["b1"], [], {}, cache_scope="public:1:1", public=True)
+    assert calls == ["b1"] and again["b1"]["rows"] == [1], "served from the shared store"
+    B._dto_cache.clear()
+
+
+def test_public_report_data_is_also_capped_per_viewer_session_and_per_link():
+    """#4: an office behind one NAT address is many viewers; a link is one warehouse bill.
+    Both data routes keep the per-address cap and add one per session and one per link."""
+    from types import SimpleNamespace
+
+    from app.api import public_reports as PR
+
+    for fn in (PR.public_data, PR.public_data_batch):
+        name = f"{fn.__module__}.{fn.__name__}"
+        limits = [(str(l.limit), getattr(l.key_func, "__name__", "")) for l in PR._limiter._route_limits.get(name, [])]
+        assert any(k == "get_remote_address" for _, k in limits), "the per-address cap stays"
+        assert ("300 per 1 minute", "_data_session_key") in limits, limits
+        assert ("3000 per 1 minute", "_data_link_key") in limits, limits
+
+    req = SimpleNamespace(headers={"x-public-session": "s-1"}, path_params={"token": "tok"},
+                          client=SimpleNamespace(host="10.0.0.9"), scope={"type": "http"})
+    assert PR._data_session_key(req) == "public-report-data-session:s-1"
+    assert PR._data_link_key(req) == "public-report-data-link:tok"

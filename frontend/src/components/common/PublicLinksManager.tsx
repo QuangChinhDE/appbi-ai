@@ -17,7 +17,6 @@ import {
 } from '@/lib/public-link-appearance';
 import { PublicLinkAppearanceEditor } from '@/components/common/PublicLinkAppearanceEditor';
 import { PublicLinkAiBotEditor } from '@/components/common/PublicLinkAiBotEditor';
-import { PublicLinkClaudeAccess } from '@/components/public-claude/PublicLinkClaudeAccess';
 import {
   getFilterDisplayLabel,
   inferColumnTypeFromData,
@@ -1701,9 +1700,6 @@ export function PublicLinksManager({
                   />
                 )}
 
-                {formTab === 'aibot' && (
-                  <PublicLinkClaudeAccess value={formAppearance} onChange={setFormAppearance} />
-                )}
                 {formTab === 'aibot' && (
                   <PublicLinkAiBotEditor
                     value={formAppearance}

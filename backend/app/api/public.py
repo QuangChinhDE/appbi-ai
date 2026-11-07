@@ -9,6 +9,7 @@ Password-protected links require a session token obtained from /auth.
 Session tokens are JWTs signed with the app SECRET_KEY, valid for 2 hours.
 Send them via the X-Public-Session request header.
 """
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -4165,9 +4166,27 @@ def get_public_charts_data_batch(
     # Serialize INSIDE each worker thread (session still open) so the Chart ORM
     # in the result is copied into ChartDataResponse before the session closes —
     # otherwise the request thread hits DetachedInstanceError on lazy attributes.
-    raw_results = ChartService.get_charts_data_batch(
-        items, serialize=lambda d: ChartDataResponse(**d),
-    )
+    # Tiles whose exact engine inputs were answered a moment ago skip the engine (planner,
+    # snapshot resolve, filter normalisation): see public_chart_result_cache.
+    from app.services import public_chart_result_cache as _result_cache
+
+    cache_scope = (_result_cache.scope(db, dash, hashlib.sha256(token.encode()).hexdigest()[:24],
+                                       [it["chart_id"] for it in items]) if items else None)
+    cache_keys = {it["key"]: _result_cache.key_of(cache_scope, it) for it in items} if cache_scope else {}
+    served: dict[str, dict] = {}
+    for it in items:
+        hit = _result_cache.get(cache_keys[it["key"]]) if cache_scope else None
+        if hit is not None:
+            served[it["key"]] = {"ok": True, "data": hit}
+    to_run = [it for it in items if it["key"] not in served]
+    ran = ChartService.get_charts_data_batch(
+        to_run, serialize=lambda d: ChartDataResponse(**d),
+    ) if to_run else []
+    for it, r in zip(to_run, ran):
+        served[it["key"]] = r
+        if r.get("ok") and cache_scope:
+            _result_cache.put(cache_keys[it["key"]], r["data"])
+    raw_results = [served[it["key"]] for it in items]
 
     results: list[dict] = []
     for item, r in zip(items, raw_results):

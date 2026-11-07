@@ -322,9 +322,6 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
             </button>
           )}
         </div>
-        {engine.keepsHistory && (
-          <p className="mt-1.5 px-1 text-micro text-text-tertiary" data-testid="claude-chat-history-notice">{t('publicClaude.chat.historyNotice')}</p>
-        )}
         <div className="mt-1.5 flex items-center justify-between px-1 text-micro text-text-quaternary">
           <span>{t('publicClaude.chat.hint')}</span>
           {base && (

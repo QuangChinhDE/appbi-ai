@@ -246,3 +246,78 @@ def test_a_tile_of_another_chart_or_report_is_not_found(http):
     client, _ = http
     r = _batch(client, [{"chart_id": 100, "tile_id": 12}, {"chart_id": 100, "tile_id": 999}])
     assert {x["status"] for x in r.json()["results"]} == {404}
+
+
+# ── public tile result cache (pilot #3: cache HIT still 2.9-4.2 s per page) ─────
+
+@pytest.fixture()
+def cached_http(http, monkeypatch):
+    from app.services import public_chart_result_cache as prc
+
+    epoch = {"v": "e1"}
+    monkeypatch.setattr(prc, "scope", lambda db, dash, link, ids: f"scope:{link}:{epoch['v']}")
+    monkeypatch.setattr(prc, "_store", lambda: None)
+    monkeypatch.setattr(prc, "_local", {})
+    return (*http, epoch)
+
+
+def test_a_repeat_of_the_same_tile_inputs_skips_the_engine(cached_http):
+    client, captured, _ = cached_http
+    first = _batch(client, [{"chart_id": 100, "tile_id": 10}, {"chart_id": 100, "tile_id": 11}])
+    assert len(captured) == 2
+    again = _batch(client, [{"chart_id": 100, "tile_id": 10}, {"chart_id": 100, "tile_id": 11}])
+    assert len(captured) == 2, "every tile was served from the result cache"
+    assert again.json() == first.json()
+
+
+def test_other_filters_or_a_moved_epoch_recompute(cached_http):
+    client, captured, epoch = cached_http
+    _batch(client, [{"chart_id": 200, "tile_id": 12}])
+    pf = {"id": "param-reg", "operator": "in", "value": ["South"], "field": "region",
+          "semanticField": "orders.region", "fieldKey": "orders.region", "datasetId": 7}
+    _batch(client, [{"chart_id": 200, "tile_id": 12, "filters": [pf]}])
+    assert len(captured) == 2, "a different filter is a different key"
+    epoch["v"] = "e2"  # a chart / dataset / snapshot was edited
+    _batch(client, [{"chart_id": 200, "tile_id": 12}])
+    assert len(captured) == 3
+
+
+def test_a_failed_tile_is_never_cached(cached_http, monkeypatch):
+    from app.api import public as public_api
+
+    client, captured, _ = cached_http
+    calls = {"n": 0}
+
+    def failing(items, serialize=None):
+        calls["n"] += 1
+        return [{"chart_id": it["chart_id"], "ok": False, "error": "boom", "status": 500} for it in items]
+
+    monkeypatch.setattr(public_api.ChartService, "get_charts_data_batch", staticmethod(failing))
+    _batch(client, [{"chart_id": 100, "tile_id": 10}])
+    _batch(client, [{"chart_id": 100, "tile_id": 10}])
+    assert calls["n"] == 2
+
+
+def test_no_epoch_means_no_cache(http, monkeypatch):
+    """db=None here: data_epoch fails, so the scope is None and nothing is served from cache."""
+    client, captured = http
+    _batch(client, [{"chart_id": 100, "tile_id": 10}])
+    _batch(client, [{"chart_id": 100, "tile_id": 10}])
+    assert len(captured) == 2
+
+
+def test_an_as_of_request_never_shares_a_slot_with_today():
+    """A viewer (or PDF export) sending X-AppBI-As-Of must not seed the cache others read."""
+    from datetime import datetime, timezone
+
+    from app.services import public_chart_result_cache as prc
+    from app.services import time_contract as tc
+
+    item = {"chart_id": 1, "extra_filters": [{"field": "d", "datePreset": "last_30_days"}]}
+    now_key = prc.key_of("s", item)
+    tok = tc.set_report_anchor(datetime(2020, 1, 31, tzinfo=timezone.utc))
+    try:
+        assert prc.key_of("s", item) != now_key
+    finally:
+        tc.reset_report_anchor(tok)
+    assert prc.key_of("s", item) == now_key

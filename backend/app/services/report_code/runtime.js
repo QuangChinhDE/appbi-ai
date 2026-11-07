@@ -1034,7 +1034,9 @@
     if (el.hasAttribute('data-rac-repeat') && el.style.display === 'none') el = el.parentNode || el;
     if (!el || !el.getClientRects) return false;
     // checkVisibility also sees a closed <details> (content-visibility), which keeps its boxes
-    return el.checkVisibility ? el.checkVisibility() : !!el.getClientRects().length;
+    // also visibility:hidden (a page hidden with visibility + height 0 still has boxes)
+    if (el.checkVisibility) return el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true });
+    return !!el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden';
   }
   function needed() {
     var ids = {}, limits = {}, other = {};
