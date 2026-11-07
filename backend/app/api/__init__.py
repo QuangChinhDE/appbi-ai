@@ -78,5 +78,8 @@ api_router.include_router(user_notifications.router)
 # Public unauthenticated endpoints (shared dashboard links)
 api_router.include_router(integrations.router)
 api_router.include_router(public.router)
+# Public Read MCP: a customer's own Claude on ONE public link (owner opt-in, read-only).
+from app.api import public_mcp  # noqa: E402
+api_router.include_router(public_mcp.router)
 
 __all__ = ["api_router"]

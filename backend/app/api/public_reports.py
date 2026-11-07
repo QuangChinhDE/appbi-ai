@@ -105,6 +105,8 @@ def public_report(token: str, request: Request, db: Session = Depends(get_db),
     appearance = {k: v for k, v in (link.appearance_config or {}).items() if not str(k).startswith("ai_bot")}
     appearance["ai_bot_enabled"] = bool((link.appearance_config or {}).get("ai_bot_enabled")) \
         and not getattr(link, "is_preview", False)
+    from app.services.public_mcp import access as _mcp_access  # the switch's state only, never its settings
+    appearance = _mcp_access.for_viewer(appearance, preview=bool(getattr(link, "is_preview", False)))
     return {"name": art.name, "link_name": link.name, "version": rev.number,
             "published_at": art.last_published_at.isoformat() if art.last_published_at else None,
             "bindings": B.public_bindings(rev.bindings or []), "filters": B.public_filters(viewer),

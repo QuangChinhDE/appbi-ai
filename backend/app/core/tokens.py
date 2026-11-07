@@ -40,8 +40,11 @@ REFRESH = "refresh"
 PUBLIC_SESSION = "public_link_session"
 WORKSPACE_SESSION = "workspace_session"
 OAUTH_STATE = "google_data_access_state"
+# A public link's Claude (Public Read MCP) connection: bound to ONE link, ONE security
+# generation and ONE viewer session (services/public_mcp/grants.py).
+PUBLIC_MCP_GRANT = "public_mcp_grant"
 
-DOMAINS = (ACCESS, REFRESH, PUBLIC_SESSION, WORKSPACE_SESSION, OAUTH_STATE)
+DOMAINS = (ACCESS, REFRESH, PUBLIC_SESSION, WORKSPACE_SESSION, OAUTH_STATE, PUBLIC_MCP_GRANT)
 
 
 @lru_cache(maxsize=None)

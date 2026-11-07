@@ -227,3 +227,17 @@ async def test_no_browser_session_goes_through_appbi_verification(app, client, f
 async def test_approval_page_is_rate_limited(app, client):
     codes = [(await client.get("/mcp-oauth/approve/plan_nope")).status_code for _ in range(40)]
     assert 429 in codes
+
+
+async def test_approval_limit_is_per_signed_in_user_with_retry_after(app, client, fake_appbi):
+    """CI (69bdcc95): several rig users approving from one IP shared one bucket and an
+    approval answered 429. A signed-in approver has their own bucket; the limit stays."""
+    plans, plan = await _approval_setup(app, client, fake_appbi)
+    limiter = app.state.ctx.auth_limiter
+    for _ in range(int(limiter.capacity) + 1):
+        limiter.allow("approve:ip:127.0.0.1")          # the shared IP bucket is exhausted
+    assert (await client.get(f"/mcp-oauth/approve/{plan.id}")).status_code == 200
+    while limiter.allow(f"approve:user:{plan.user_id}")[0]:
+        pass                                            # now this user's own bucket
+    r = await client.get(f"/mcp-oauth/approve/{plan.id}")
+    assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1

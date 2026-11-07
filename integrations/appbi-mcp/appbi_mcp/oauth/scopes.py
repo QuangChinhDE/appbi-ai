@@ -48,17 +48,22 @@ def normalize(requested: list[str] | None) -> list[str]:
 
 
 def appbi_pat_scopes(mcp_scopes: list[str]) -> dict[str, str]:
-    """The PAT module caps the AppBI connect page should request.
+    """The PAT module caps the AppBI connect page should request (a CEILING).
 
-    Only modules the MCP's allowlisted endpoints actually need. AppBI rejects a
-    cap above the user's own permission, so a view-only user cannot obtain an
-    edit PAT here (`api/personal_access_tokens.py`, scopes ⊆ user permissions).
+    The connect page lowers each cap to the user's own level before creating the
+    PAT (and AppBI refuses a cap above it), so these never raise anyone's rights:
+    an author with `edit` gets `edit` even when `full` is requested.
+
+    * read    -> view everywhere
+    * author  -> edit (drafts; on data sources only re-testing a saved source is
+                 reachable through the allowlist)
+    * publish -> full: AppBI requires full on the object to publish an AI Vibe
+                 report or to share a resource; every such action still needs its
+                 own browser approval
     """
-    writes = bool(set(mcp_scopes) & {AUTHOR, PUBLISH})
-    level = "edit" if writes else "view"
-    return {
-        "data_sources": "view",
-        "datasets": level,
-        "explore_charts": level,
-        "dashboards": level,
-    }
+    granted = set(mcp_scopes)
+    level = "full" if PUBLISH in granted else "edit" if AUTHOR in granted else "view"
+    # A module administrator (full) reads every source; capping data_sources lower would
+    # take that away. Source WRITES stay unreachable: the allowlist has none but re-test.
+    return {"data_sources": level, "datasets": level,
+            "explore_charts": level, "dashboards": level, "workboards": level}

@@ -263,6 +263,14 @@ const reportSession = (token: string) => {
   return s ? { 'X-Public-Session': s } : undefined;
 };
 
+/** Public Read MCP: the viewer of a link pairs their own Claude (same proof as viewing it). */
+export const publicMcpApi = {
+  pair: async (kind: 'dashboard' | 'report', token: string, sessionToken?: string | null): Promise<{
+    grant: string; sid: string; expires_in: number; mcp_base: string; report: { kind: string; name: string };
+  }> => (await publicClient.post('/public/mcp/pair', { kind, token },
+    { headers: sessionToken ? { 'X-Public-Session': sessionToken } : {} })).data,
+};
+
 export const publicReportApi = {
   get: async (token: string): Promise<PublicReportMeta> =>
     (await publicClient.get(`/public/reports/${encodeURIComponent(token)}`, { headers: reportSession(token) })).data,

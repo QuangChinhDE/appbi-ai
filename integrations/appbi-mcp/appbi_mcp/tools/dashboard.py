@@ -75,13 +75,15 @@ class DashboardPlanInput(BaseModel):
     dashboard_name: str | None = Field(default=None, max_length=200, description="Name for a NEW dashboard")
     dashboard_id: int | None = Field(default=None, description="Add to this EXISTING dashboard instead")
     description: str | None = Field(default=None, max_length=1000)
-    charts: list[ChartSpec] = Field(min_length=1, max_length=MAX_CHARTS)
+    charts: list[ChartSpec] = Field(default_factory=list, max_length=MAX_CHARTS)
     filters: list[FilterSpec] = Field(default_factory=list, max_length=MAX_FILTERS)
 
     @model_validator(mode="after")
     def _target(self) -> "DashboardPlanInput":
         if (self.dashboard_name is None) == (self.dashboard_id is None):
             raise ValueError("give exactly one of dashboard_name (new) or dashboard_id (existing)")
+        if not self.charts and (self.dashboard_id is None or not self.filters):
+            raise ValueError("a plan adds at least one chart (or, on an existing dashboard, at least one filter)")
         return self
 
 

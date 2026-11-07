@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft, Settings } from 'lucide-react';
 import { toast } from '@/lib/toast';
 import DataSourceForm from '@/components/datasources/DataSourceForm';
+import { HandoffBanner } from '@/components/datasources/HandoffBanner';
 import { useCreateDataSource } from '@/hooks/use-datasources';
 import type { DataSourceCreate } from '@/types/api';
 
@@ -81,6 +82,7 @@ export default function NewDataSourcePage() {
           <div className="flex-1 overflow-hidden min-h-0">
             {activeTab === 'connection' && (
               <div className="h-full overflow-y-auto p-6">
+                <HandoffBanner />
                 <DataSourceForm
                   onSubmit={handleCreate}
                   onCancel={() => router.push('/datasources')}

@@ -20,6 +20,9 @@ code{font-size:13px}
 button{font:inherit;padding:10px 18px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 .err{color:var(--danger)}.ok{color:var(--ok)}
+pre.diff{font:12px/1.45 ui-monospace,Consolas,monospace;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:420px;white-space:pre}
+pre.diff .add{color:var(--ok)}pre.diff .del{color:var(--danger)}
+a{color:var(--accent);word-break:break-all}
 """
 
 SECURITY_HEADERS = {

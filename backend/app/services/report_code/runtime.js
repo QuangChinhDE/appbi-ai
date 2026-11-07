@@ -165,6 +165,15 @@
         // A binding can be drawn more than once (a KPI and its chart, a table below):
         // scroll to the first VISIBLE block that draws it (a chart before a number in a
         // sentence) and flash every block that shows it.
+        if (msg.region && !msg.id) {
+          // a section of the page (the viewer's Claude: "go to the Revenue section")
+          var reg = document.querySelector('[data-rac-region="' + cssEsc(String(msg.region)) + '"]');
+          if (reg) {
+            reg.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            reg.classList.add('rac-flash');
+            setTimeout(function () { reg.classList.remove('rac-flash'); }, 1600);
+          }
+        }
         if (msg.id) {
           var q = cssEsc(String(msg.id));
           var all = Array.prototype.slice.call(document.querySelectorAll('[data-rac-bind="' + q + '"]'))

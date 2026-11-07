@@ -84,6 +84,12 @@ def backend_routes() -> set[tuple[str, str]]:
         include_prefix = includes.get(name, "")
         for method, sub in routes:
             out.add((method, normalise(include_prefix + router_prefix + sub)))
+    # Feature modules (workboards, agent flows, catalog...) carry their own router prefix
+    # and are included without one.
+    for path in sorted(BACKEND_APP.glob("modules/*/api.py")):
+        router_prefix, routes = _module_routes(path)
+        for method, sub in routes:
+            out.add((method, normalise(router_prefix + sub)))
     # Defined directly on the app in main.py, under /api/v1.
     out.add(("GET", "/health"))
     return out

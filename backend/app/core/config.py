@@ -151,6 +151,11 @@ class Settings(BaseSettings):
     # false unmounts the studio API and the public /public/reports surface; report
     # rows, charts and dashboards are untouched and come back as they were.
     REPORT_AS_CODE_ENABLED: bool = True
+    # Public Read MCP (docs/features/public-read-mcp/): the origin the viewer's browser
+    # and Claude reach the public MCP service on (its /public-mcp endpoint and bridge).
+    # Empty = the app's own origin (the edge routes /public-mcp to the service).
+    PUBLIC_MCP_URL: str = ""
+    PUBLIC_CLAUDE_HISTORY_DAYS: int = 90
     # The origin report documents are served from — a DIFFERENT origin than the app
     # (e.g. https://reports.example.com). There the frame gets a real origin, which
     # is what lets the runtime cancel navigations before any request leaves. Empty:

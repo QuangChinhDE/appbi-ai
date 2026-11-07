@@ -33,6 +33,7 @@ import {
 } from '@/lib/api/public';
 import { applyReaderRating, revertReaderRating, type ReaderRating } from '@/lib/readerRating';
 import { useI18n } from '@/providers/LanguageProvider';
+import { ClaudeChat, type ClaudeEngineProps } from '@/components/public-claude/ClaudeChat';
 
 interface Props {
   token: string;
@@ -51,6 +52,11 @@ interface Props {
   surface?: PublicBotSurface;
   /** A report link: the viewer's current filter choices on the report. */
   viewerState?: Record<string, unknown>;
+  /** The link offers AppBI's own AI Bot (default true). */
+  aiBotEnabled?: boolean;
+  /** The link offers Claude (the viewer's own subscription, Public Read MCP): a second engine
+   *  of this same panel. Absent: AppBI's AI Bot only. */
+  claude?: ClaudeEngineProps;
 }
 
 /** The report's "show this chart" action, for the source chips of every answer. */
@@ -106,11 +112,23 @@ function fmt(v: unknown, locale: string): string {
 
 export function DashboardAiBot({
   token, sessionToken, dashboardName, viewerFilters, pageId, chartTitles, onShowChart, surface = 'dashboards', viewerState,
+  aiBotEnabled = true, claude,
 }: Props) {
   const { t, locale } = useI18n();
+  // which engine answers in this panel: AppBI's AI Bot or the viewer's own Claude
+  // the panel's open/engine choice survives a reload of this tab (sessionStorage), so a viewer
+  // who was talking to Claude comes back to the same conversation
+  const uiStorage = `appbi.aiBot.ui.${token}`;
+  const savedUi = useMemo(() => { try { return JSON.parse(storageGet(uiStorage) || '{}'); } catch { return {}; } }, [uiStorage]);
+  const [engine, setEngine] = useState<'appbi' | 'claude'>(
+    claude && (savedUi.engine === 'claude' || !aiBotEnabled) ? 'claude' : 'appbi');
+  const [claudeReset, setClaudeReset] = useState(0);
+  const [claudeStarted, setClaudeStarted] = useState(false);
+  useEffect(() => { if (engine === 'claude') setClaudeStarted(true); }, [engine]);
   const convStorage = `appbi.aiAnswer.conv.${token}`;
   const msgStorage = `appbi.aiAnswer.msgs.${token}`;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<boolean>(savedUi.open === true);
+  useEffect(() => { storageSet(uiStorage, JSON.stringify({ open, engine })); }, [open, engine, uiStorage]);
   const [ready, setReady] = useState<boolean | null>(null);
   const [question, setQuestion] = useState('');
   const [conversationKey, setConversationKey] = useState<string>(() => storageGet(convStorage) || newKey());
@@ -280,7 +298,9 @@ export function DashboardAiBot({
           <BotIcon />
         </button>
       )}
-      {open && (
+      {(open || claudeStarted) && (
+        // Kept mounted while closed once Claude started: closing the panel must not end the
+        // viewer's Claude session (sign-in, conversation). Hidden, not unmounted.
         // A SIDE PANEL IN THE LAYOUT, not an overlay (PO 2026-10-28, the earlier
         // look): the report's flex row gives it its width and the report narrows
         // beside it, so no chart is hidden behind the assistant. On a phone the
@@ -290,7 +310,7 @@ export function DashboardAiBot({
           aria-label={t('dashboards.aiBot.core.title')}
           data-testid="ai-bot-panel"
           style={{ width: 'min(400px, calc(100vw - 24px))' }}
-          className="my-3 mr-1.5 flex min-w-0 flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm sm:mr-3"
+          className={`my-3 mr-1.5 min-w-0 flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm sm:mr-3 ${open ? 'flex' : 'hidden'}`}
         >
           <header className="flex flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))]/60 bg-gradient-to-b from-surface-2 to-surface-1 px-4 py-3">
             <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-brand to-brand/70 text-white shadow-sm">
@@ -299,10 +319,20 @@ export function DashboardAiBot({
             <div className="flex min-w-0 flex-1 flex-col leading-tight">
               <h2 className="truncate text-caption font-strong text-text-primary">{t('dashboards.aiBot.core.title')}</h2>
               <p className="truncate text-micro text-text-tertiary">
-                {dashboardName ? `${dashboardName} · ` : ''}{t('dashboards.aiBot.core.subtitle')}
+                {dashboardName ? `${dashboardName} · ` : ''}{engine === 'claude' ? t('publicClaude.chat.subtitle') : t('dashboards.aiBot.core.subtitle')}
               </p>
             </div>
-            <Button type="button" variant="ghost" size="sm" onClick={reset} disabled={busy}
+            {claude && aiBotEnabled && (
+              <div className="flex flex-shrink-0 items-center rounded-full border border-[rgb(var(--border-line))] bg-surface-2 p-0.5 text-micro" role="tablist" data-testid="ai-bot-engine">
+                {(['appbi', 'claude'] as const).map((e) => (
+                  <button key={e} type="button" role="tab" aria-selected={engine === e} onClick={() => setEngine(e)} data-testid={`ai-bot-engine-${e}`}
+                    className={`rounded-full px-2 py-0.5 font-emphasis transition-colors ${engine === e ? 'bg-surface-1 text-text-primary shadow-sm' : 'text-text-tertiary hover:text-text-secondary'}`}>
+                    {e === 'appbi' ? t('publicClaude.engine.appbi') : 'Claude'}
+                  </button>
+                ))}
+              </div>
+            )}
+            <Button type="button" variant="ghost" size="sm" onClick={engine === 'claude' ? () => setClaudeReset((n) => n + 1) : reset} disabled={engine === 'appbi' && busy}
                     data-testid="ai-bot-new" title={t('dashboards.aiBot.core.newConversation')}
                     aria-label={t('dashboards.aiBot.core.newConversation')}>
               <Plus className="h-4 w-4" aria-hidden="true" />
@@ -313,6 +343,12 @@ export function DashboardAiBot({
             </Button>
           </header>
 
+          {claude && claudeStarted && (
+            <div className={engine === 'claude' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'} data-testid="ai-bot-claude">
+              <ClaudeChat engine={claude} dashboardName={dashboardName} starters={starters} resetSignal={claudeReset} />
+            </div>
+          )}
+          {engine === 'appbi' && (<>
           <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-4" data-testid="ai-bot-history">
             {ready === false && (
               <Bubble side="assistant" tone="warning">
@@ -386,6 +422,7 @@ export function DashboardAiBot({
             </div>
             <p className="mt-1.5 px-1 text-micro text-text-quaternary">{t('dashboards.aiBot.core.sendHint')}</p>
           </form>
+          </>)}
         </section>
       )}
     </ShowChartContext.Provider>

@@ -159,6 +159,9 @@ export const reportCodeApi = {
     Promise<{ revision: ReportRevision; warnings: string[] }> => (await apiClient.put(`${base(id)}/source`, body)).data,
   aiEdit: async (id: number, body: { instruction: string; region?: string | null; reference_image?: string; allow_data?: boolean }):
     Promise<{ job: ReportJob }> => (await apiClient.post(`${base(id)}/ai-edit`, body)).data,
+  /** Code proposed for review (an AI edit with propose, or code staged by an integration): never a revision until applied. */
+  proposal: async (id: number): Promise<{ proposal_id: string; base_number: number | null; html: string; css: string; js: string; notes: string[] }> =>
+    (await apiClient.get(`${base(id)}/proposal`)).data,
   revisions: async (id: number): Promise<ReportRevision[]> => (await apiClient.get(`${base(id)}/revisions`)).data,
   revision: async (id: number, number: number): Promise<ReportRevision> => (await apiClient.get(`${base(id)}/revisions/${number}`)).data,
   restore: async (id: number, number: number): Promise<{ revision: ReportRevision }> =>

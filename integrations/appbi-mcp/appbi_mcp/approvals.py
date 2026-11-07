@@ -31,6 +31,17 @@ KIND_TITLES = {
     "dashboard_html": "Create a draft Dashboard from an HTML report",
     "dataset_publish": "Publish a Dataset",
     "dashboard_publish": "Publish a Dashboard",
+    "dashboard_edit": "Edit a Dashboard (your draft)",
+    "model_edit": "Edit a Dataset's data model",
+    "share": "Share a resource with someone",
+    "unshare": "Revoke someone's access",
+    "chart_edit": "Change a shared chart everywhere it is shown",
+    "workboard_lifecycle": "Publish or unpublish a Workboard",
+    "vibe_create": "Create a draft AI Vibe report",
+    "vibe_source": "Change an AI Vibe report's code (new draft revision)",
+    "vibe_ai_edit": "Run an AI edit on an AI Vibe report (new draft revision)",
+    "vibe_restore": "Restore an AI Vibe report revision (new draft revision)",
+    "vibe_publish": "Publish an AI Vibe report",
 }
 
 
@@ -65,11 +76,36 @@ def _plain(value: Any) -> str:
     return str(value)
 
 
+def _render_diff(lines: list[Any], truncated: bool) -> str:
+    rows = []
+    for line in lines:
+        text = str(line)
+        cls = "add" if text.startswith("+") and not text.startswith("+++") else               "del" if text.startswith("-") and not text.startswith("---") else ""
+        rows.append(f"<span class={cls}>{escape(text)}</span>" if cls else escape(text))
+    more = "<p class=muted>Diff shortened; the full change is applied as planned.</p>" if truncated else ""
+    return f"<pre class=diff>{chr(10).join(rows)}</pre>{more}"
+
+
+def _render_links(links: list[Any]) -> str:
+    items = []
+    for url in links:
+        u = str(url)
+        if not u.startswith(("https://", "http://")):
+            continue
+        items.append(f"<li><a href='{escape(u, quote=True)}' target=_blank rel='noopener noreferrer'>{escape(u)}</a></li>")
+    return f"<ul>{''.join(items)}</ul><p class=muted>Opens AppBI with your own account; the preview runs the real renderer on real data.</p>"
+
+
 def render_summary(summary: dict[str, Any]) -> str:
     parts = []
     for section in summary.get("sections", []):
         parts.append(f"<h2>{escape(str(section.get('title', '')))}</h2>")
-        parts.append(_render_value(section.get("items") if "items" in section else section.get("text")))
+        if "diff" in section:
+            parts.append(_render_diff(section.get("diff") or [], bool(section.get("truncated"))))
+        elif "links" in section:
+            parts.append(_render_links(section.get("links") or []))
+        else:
+            parts.append(_render_value(section.get("items") if "items" in section else section.get("text")))
     warnings = summary.get("warnings") or []
     if warnings:
         parts.append("<h2>Please check</h2>")
@@ -84,12 +120,16 @@ def build_approval_routes(ctx: AppContext) -> list[Route]:
         from .ratelimit import client_ip
 
         ip = client_ip({k.lower(): v for k, v in request.headers.items()}, request.client.host if request.client else None)
-        allowed, _ = ctx.auth_limiter.allow(f"approve:{ip}")
-        if not allowed:
-            return message("Too many requests", "Wait a minute and try again.", status=429, tone="err")
         plan_id = request.path_params["plan_id"]
         session = request.cookies.get(SESSION_COOKIE, "")
         user_id = browser_session_user(ctx, request)
+        # Signed-in approvers are limited per USER (people behind one NAT/proxy do not
+        # share a bucket); anything without a valid session stays limited per IP.
+        allowed, retry = ctx.auth_limiter.allow(f"approve:user:{user_id}" if user_id else f"approve:ip:{ip}")
+        if not allowed:
+            resp = message("Too many requests", "Wait a moment and try again.", status=429, tone="err")
+            resp.headers["Retry-After"] = str(max(1, int(retry + 0.999)))
+            return resp
         if not user_id:
             if request.method == "GET":
                 return start_verify_flow(ctx, f"/mcp-oauth/approve/{plan_id}")
