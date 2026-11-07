@@ -43,6 +43,8 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/datasources/{id}"),
     ("GET", "/datasources/{id}/schema"),
     ("GET", "/datasources/{id}/tables/{seg}/{seg}"),
+    # re-test a SAVED source with its stored secret (the request carries nothing)
+    ("POST", "/datasources/{id}/test"),
     # datasets — reads
     ("GET", "/datasets/"),
     ("GET", "/datasets/{id}"),
@@ -63,6 +65,9 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/datasets/{id}/generate-model"),
     ("POST", "/datasets/{id}/model/joins"),
     ("PUT", "/datasets/{id}/model/views/{id}"),
+    # model edits of an existing dataset (guards below)
+    ("PUT", "/datasets/{id}/tables/{id}"),                 # transformations only (calculated columns)
+    ("POST", "/datasets/{id}/tables/{id}/preview"),        # read: sample rows for a calculated-column preview
     # datasets — publish (approval-gated by the caller)
     ("POST", "/datasets/{id}/publish"),
     # charts
@@ -71,6 +76,17 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/charts/{id}/data"),
     ("POST", "/charts/dry-run-create"),
     ("POST", "/charts/"),
+    ("GET", "/charts/{id}/usage"),
+    ("PUT", "/charts/{id}"),                              # a SHARED chart: approved with its usage listed
+    # workboards: reads + lifecycle (approved)
+    ("GET", "/workboards/"),
+    ("GET", "/workboards/{id}"),
+    ("POST", "/workboards/{id}/publish"),
+    ("POST", "/workboards/{id}/unpublish"),
+    # sharing (owner/admin decided by AppBI) -- each grant/revoke separately approved
+    ("GET", "/shares/{seg}/{id}"),
+    ("POST", "/shares/{seg}/{id}"),
+    ("DELETE", "/shares/{seg}/{id}/entries/{id}"),
     # dashboards — reads, draft writes, publish
     ("GET", "/dashboards/"),
     ("GET", "/dashboards/{id}"),
@@ -78,6 +94,14 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/{id}/charts"),
     ("POST", "/dashboards/{id}/widgets"),
     ("PUT", "/dashboards/{id}/draft-filters"),
+    # Manual Builder edits of an existing dashboard -- the caller's DRAFT only
+    ("PUT", "/dashboards/{id}/draft-layout"),
+    ("PUT", "/dashboards/{id}/draft-responsive"),
+    ("DELETE", "/dashboards/{id}/charts/{id}"),          # only with draft=true (see _REQUIRED_PARAMS)
+    ("PATCH", "/dashboards/{id}/widgets/{id}"),          # only with draft=true
+    ("POST", "/dashboards/{id}/charts/{id}/restore"),
+    ("POST", "/dashboards/{id}/charts/{id}/swap-chart"),
+    ("POST", "/dashboards/{id}/charts/{id}/fork-chart"),
     ("POST", "/dashboards/{id}/publish"),
     # HTML report import (W4) -- form-encoded; new draft dashboards only (guards below)
     ("GET", "/datasets/{id}/import-skill"),
@@ -85,6 +109,20 @@ ALLOWED_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/import-html/validate-plans"),
     ("POST", "/dashboards/import-html/dry-run-build"),
     ("POST", "/dashboards/import-html/build"),
+    # AI Vibe / Report-as-Code -- every write makes a NEW DRAFT revision (guards below)
+    ("GET", "/report-artifacts"),
+    ("GET", "/report-artifacts/{id}"),
+    ("GET", "/report-artifacts/{id}/job"),
+    ("GET", "/report-artifacts/{id}/revisions"),
+    ("GET", "/report-artifacts/{id}/revisions/{id}"),
+    ("POST", "/report-artifacts"),
+    ("POST", "/report-artifacts/blank"),
+    ("GET", "/report-artifacts/{id}/proposal"),
+    ("POST", "/report-artifacts/{id}/proposal"),
+    ("POST", "/report-artifacts/{id}/proposal/apply"),
+    ("POST", "/report-artifacts/{id}/ai-edit"),
+    ("POST", "/report-artifacts/{id}/revisions/{id}/restore"),
+    ("POST", "/report-artifacts/{id}/publish"),
 )
 
 # Never reachable. Kept as data so the contract test can assert none of these is
@@ -93,21 +131,16 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("PUT", "/dashboards/{id}"),
     ("PUT", "/dashboards/{id}/layout"),
     ("DELETE", "/dashboards/{id}"),
-    ("DELETE", "/dashboards/{id}/charts/{id}"),
-    ("PATCH", "/dashboards/{id}/widgets/{id}"),
     ("POST", "/dashboards/report-starter"),
     ("POST", "/dashboards/{id}/public-links"),
     ("PATCH", "/dashboards/{id}/public-links/{seg}"),
     ("POST", "/dashboards/{id}/discard-draft"),
     ("POST", "/auth/personal-access-tokens/"),
     ("POST", "/datasources/query"),
-    ("POST", "/datasources/{id}/test"),
     ("POST", "/datasources/validate-sql"),
-    ("PUT", "/charts/{id}"),
     ("DELETE", "/charts/{id}"),
     ("DELETE", "/datasets/{id}"),
     ("POST", "/datasets/{id}/model/joins/batch"),
-    ("POST", "/datasets/{id}/tables/{id}/preview"),
     # Last-write-wins with no version (F4): the dictionary is sent at dataset create.
     ("PUT", "/datasets/{id}/dictionary"),
     # HTML import: batch/draft-dataset/AI-fix variants are never used (W4).
@@ -115,6 +148,14 @@ FORBIDDEN_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/dashboards/import-html/build-batch"),
     ("POST", "/dashboards/import-html/prepare-draft"),
     ("POST", "/dashboards/import-html/fix-chart-plan"),
+    # Vibe: never deletes, never touches public links, never pastes foreign code.
+    ("DELETE", "/report-artifacts/{id}"),
+    # Saves code straight into a revision with no previewable proposal first.
+    ("PUT", "/report-artifacts/{id}/source"),
+    ("POST", "/report-artifacts/{id}/public-links"),
+    ("PATCH", "/report-artifacts/{id}/public-links/{id}"),
+    ("DELETE", "/report-artifacts/{id}/public-links/{id}"),
+    ("POST", "/report-artifacts/{id}/document-ticket"),
 )
 
 _COMPILED = [(m, _route(t), t) for m, t in ALLOWED_ROUTES]
@@ -165,6 +206,34 @@ def _guard_draft_filters(body: Any) -> None:
         raise GuardViolation("this service never removes tiles")
 
 
+def _guard_share(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("permission") not in ("view", "edit", "full") \
+            or (bool(body.get("email")) == bool(body.get("team_id"))) or set(body) - {"permission", "email", "team_id"}:
+        raise GuardViolation("a share names one person (email) or one team and a level")
+
+
+def _guard_table_update(body: Any) -> None:
+    if not isinstance(body, dict) or set(body) != {"transformations"} or not isinstance(body["transformations"], list):
+        raise GuardViolation("table updates from this service change transformations only (calculated columns)")
+
+
+def _guard_table_preview(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("refresh_schema") or int(body.get("limit") or 100) > 100:
+        raise GuardViolation("table preview is a bounded read (limit <= 100, no schema refresh)")
+    steps = body.get("draft_transformations")
+    if steps is not None and (not isinstance(steps, list) or not steps or steps[-1].get("type") != "add_column"):
+        raise GuardViolation("a draft preview appends exactly the proposed calculated column")
+
+
+def _guard_draft_layout(body: Any) -> None:
+    items = body.get("chart_layouts") if isinstance(body, dict) else None
+    if not isinstance(items, list) or not items:
+        raise GuardViolation("draft-layout carries chart_layouts")
+    for it in items:
+        if not isinstance(it, dict) or not isinstance(it.get("layout"), dict) or "draftOnly" in it["layout"] or "draftOwner" in it["layout"]:
+            raise GuardViolation("draft-layout entries are {id, layout} without draft row keys")
+
+
 def _guard_dashboard_publish(body: Any) -> None:
     if not isinstance(body, dict) or body.get("force"):
         raise GuardViolation("publish is never forced")
@@ -194,6 +263,36 @@ def _guard_dataset_create(body: Any) -> None:
 def _guard_table_add(body: Any) -> None:
     if not isinstance(body, dict) or body.get("source_kind") != "physical_table":
         raise GuardViolation("only physical tables are added (no SQL tables)")
+
+
+def _guard_vibe_create(body: Any) -> None:
+    if not isinstance(body, dict) or not body.get("dataset_id"):
+        raise GuardViolation("a Vibe report is created on a dataset")
+    if body.get("reference_html") or body.get("reference_image"):
+        raise GuardViolation("Vibe reports are created from a prompt only (no uploaded reference)")
+
+
+def _guard_vibe_proposal(body: Any) -> None:
+    if not isinstance(body, dict) or not isinstance(body.get("base_number"), int):
+        raise GuardViolation("Vibe proposals must quote base_number (the draft they were planned on)")
+
+
+def _guard_vibe_apply(body: Any) -> None:
+    _guard_vibe_proposal(body)
+    if not str(body.get("proposal_id") or ""):
+        raise GuardViolation("apply names the exact previewed proposal_id")
+
+
+def _guard_vibe_ai_edit(body: Any) -> None:
+    if not isinstance(body, dict) or body.get("propose") is not True or body.get("allow_data"):
+        raise GuardViolation("AI edits run as proposals (propose=true, no new data) so they are previewed before saving")
+    if body.get("reference_image"):
+        raise GuardViolation("AI edits take text instructions only")
+
+
+def _guard_vibe_publish(body: Any) -> None:
+    if not isinstance(body, dict) or not isinstance(body.get("revision_id"), int):
+        raise GuardViolation("a Vibe publish names the exact approved revision_id")
 
 
 # ── HTML report import (W4) ─────────────────────────────────────────────────────
@@ -293,15 +392,31 @@ BODY_GUARDS: dict[tuple[str, str], Callable[[Any], None]] = {
     ("POST", "/dashboards/{id}/widgets"): _guard_add_slicer,
     ("PUT", "/dashboards/{id}/draft-filters"): _guard_draft_filters,
     ("POST", "/dashboards/{id}/publish"): _guard_dashboard_publish,
+    ("PUT", "/dashboards/{id}/draft-layout"): _guard_draft_layout,
+    ("PUT", "/datasets/{id}/tables/{id}"): _guard_table_update,
+    ("POST", "/shares/{seg}/{id}"): _guard_share,
+    ("POST", "/datasets/{id}/tables/{id}/preview"): _guard_table_preview,
     ("POST", "/datasets/{id}/model/joins"): _guard_join,
     ("PUT", "/datasets/{id}/model/views/{id}"): _guard_view_put,
     ("POST", "/datasets/"): _guard_dataset_create,
     ("POST", "/datasets/{id}/tables"): _guard_table_add,
+    ("POST", "/report-artifacts"): _guard_vibe_create,
+    ("POST", "/report-artifacts/{id}/proposal"): _guard_vibe_proposal,
+    ("POST", "/report-artifacts/{id}/proposal/apply"): _guard_vibe_apply,
+    ("POST", "/report-artifacts/{id}/ai-edit"): _guard_vibe_ai_edit,
+    ("POST", "/report-artifacts/{id}/publish"): _guard_vibe_publish,
+}
+
+# Query parameters a route MUST carry: these routes write live rows without them.
+_REQUIRED_PARAMS: dict[tuple[str, str], dict[str, str]] = {
+    ("DELETE", "/dashboards/{id}/charts/{id}"): {"draft": "true"},
+    ("PATCH", "/dashboards/{id}/widgets/{id}"): {"draft": "true"},
 }
 
 # Query parameters forbidden on otherwise-allowed routes.
 _FORBIDDEN_PARAMS: dict[tuple[str, str], set[str]] = {
     ("PUT", "/datasets/{id}/model/views/{id}"): {"force"},
+    ("PUT", "/datasets/{id}/tables/{id}"): {"force"},
 }
 
 
@@ -396,6 +511,9 @@ class AppbiClient:
         if guard is not None:
             guard(form if is_form else json)
         data = {k: ("true" if v is True else "false" if v is False else str(v)) for k, v in form.items()} if form is not None else None
+        for key, value in _REQUIRED_PARAMS.get((method, template), {}).items():
+            if str((params or {}).get(key, "")).lower() != value:
+                raise GuardViolation(f"{template} is only used with {key}={value} (draft edit, never the live row)")
         for bad in _FORBIDDEN_PARAMS.get((method, template), set()):
             if params and params.get(bad):
                 raise GuardViolation(f"query parameter {bad!r} is not allowed on {template}")

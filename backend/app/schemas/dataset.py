@@ -278,6 +278,9 @@ class TablePreviewRequest(BaseModel):
     # Explicit "re-read this table's schema" (editor action): persist the column
     # cache + resync the model from the unfiltered first page. Preview alone is a read.
     refresh_schema: bool = False
+    # Preview UNSAVED transformation steps (e.g. a proposed calculated column) on the
+    # source's own engine: nothing is stored. Requires edit access on the dataset.
+    draft_transformations: Optional[List[Dict[str, Any]]] = None
 
 
 class TablePreviewResponse(BaseModel):

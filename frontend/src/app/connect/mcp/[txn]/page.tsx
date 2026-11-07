@@ -87,7 +87,13 @@ export default function ConnectMcpPage() {
         ]);
         if (cancelled) return;
         setUserEmail(String(me?.email || ''));
-        const perms: Record<string, string> = (me?.permissions as Record<string, string>) || {};
+        const raw: Record<string, string> = (me?.permissions as Record<string, string>) || {};
+        // `settings: full` is an administrator: the backend grants every module full from
+        // it (_normalize_permissions), so the page must read it the same way.
+        const perms: Record<string, string> = raw.settings === 'full'
+          ? new Proxy(raw, { get: (t, k) => (typeof k === 'string' ? 'full' : (t as any)[k]) })
+          : raw;
+        setUserPerms(perms);
         const rank: Record<string, number> = { none: 0, view: 1, edit: 2, full: 3 };
         const writable = ['datasets', 'explore_charts', 'dashboards'].every((m) => (rank[perms[m]] ?? 0) >= 2);
         setUserCanWrite(writable);
@@ -118,10 +124,21 @@ export default function ConnectMcpPage() {
     if (!userCanWrite) setLevel('read');
   }, [userCanWrite]);
 
+  const [userPerms, setUserPerms] = useState<Record<string, string>>({});
+  // The integration asks for a CEILING per module; the token never gets more than
+  // this user holds (AppBI refuses a cap above it), so each cap is lowered here.
   const appbiScopes = useMemo(() => {
     if (!info || info.mode !== 'connect') return null;
-    return level === 'full' ? info.appbi_scopes.full : info.appbi_scopes.read;
-  }, [info, level]);
+    const asked = level === 'full' ? info.appbi_scopes.full : info.appbi_scopes.read;
+    const rank: Record<string, number> = { none: 0, view: 1, edit: 2, full: 3 };
+    const out: Record<string, string> = {};
+    for (const [m, l] of Object.entries(asked)) {
+      const mine = userPerms[m] || 'none';
+      const capped = (rank[mine] ?? 0) < (rank[l] ?? 0) ? mine : l;
+      if (capped !== 'none') out[m] = capped;
+    }
+    return out;
+  }, [info, level, userPerms]);
 
   async function allow() {
     if (!info || submitted.current) return;

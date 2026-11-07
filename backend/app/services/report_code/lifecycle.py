@@ -327,6 +327,10 @@ def revision_view(rev: ReportArtifactRevision, *, with_source: bool) -> Dict[str
 
 def job_view(art: ReportArtifact) -> Optional[Dict[str, Any]]:
     job = dict(art.job or {}) or None
+    if job and "proposal" in job:
+        # The proposed code is read through GET /proposal only, never in lists/summaries.
+        job.pop("proposal")
+        job["has_proposal"] = True
     if job and job.get("state") == "running":
         started = job.get("started_at")
         try:
@@ -337,7 +341,62 @@ def job_view(art: ReportArtifact) -> Optional[Dict[str, Any]]:
     return job
 
 
-def start_job(db: Session, art: ReportArtifact, *, kind: str, user_id, run) -> Dict[str, Any]:
+def stage_proposal(db: Session, art: ReportArtifact, *, user_id, base_revision_id: int, html: str, css: str, js: str,
+                   bindings: List[Dict[str, Any]], filters: List[Dict[str, Any]], source: str, note: Optional[str]) -> Dict[str, Any]:
+    """Keep proposed code (validated, NOT saved as a revision) for review and live preview.
+
+    Uses the report's job slot, so it cannot coexist with a running AI job; a later AI
+    job replaces it (apply then refuses: the proposal is gone)."""
+    current = job_view(art)
+    if current and current.get("state") == "running":
+        raise ValueError("Báo cáo đang có một tác vụ AI chạy — chờ nó xong rồi thử lại.")
+    v = D.validate(html, css, js)
+    art.job = {"id": uuid.uuid4().hex, "kind": "proposal", "state": "done", "propose": True, "base_revision_id": base_revision_id,
+               "user": str(user_id) if user_id else None, "started_at": _now().isoformat(), "steps": [],
+               "proposal": {"html": v.html, "css": v.css, "js": v.js, "bindings": bindings, "filters": filters,
+                            "source": source, "note": note},
+               "notes": list(v.warnings)}
+    flag_modified(art, "job")
+    return art.job
+
+
+def proposal_of(art: ReportArtifact, proposal_id: str) -> Optional[Dict[str, Any]]:
+    job = art.job or {}
+    if job.get("id") != proposal_id or not job.get("propose") or job.get("state") != "done" or not job.get("proposal"):
+        return None
+    return job
+
+
+class ProposalStale(ValueError):
+    """The draft moved on after the proposal was made; applying it would discard that work."""
+
+
+def apply_proposal(db: Session, art: ReportArtifact, *, proposal_id: str, base_number: int, user_id) -> tuple[ReportArtifactRevision, List[str]]:
+    job = proposal_of(art, proposal_id)
+    if job is None:
+        raise ValueError("Đề xuất không còn (đã áp dụng, bị huỷ, hoặc một tác vụ AI khác đã thay thế).")
+    draft = get_revision(db, art, art.draft_revision_id)
+    if draft is None or draft.number != base_number or draft.id != job.get("base_revision_id"):
+        raise ProposalStale(f"Bản nháp đã đổi (phiên bản {draft.number if draft else '-'}) — đề xuất được tạo trên bản cũ.")
+    p = job["proposal"]
+    rev, warnings = add_revision(db, art, user_id=user_id, html=p["html"], css=p["css"], js=p["js"],
+                                 bindings=list(p.get("bindings") or []), filters=list(p.get("filters") or []),
+                                 source=p.get("source") or "ai", note=p.get("note"))
+    art.job = {**{k: v for k, v in job.items() if k != "proposal"}, "propose": False, "applied": True, "revision": rev.number}
+    flag_modified(art, "job")
+    return rev, warnings
+
+
+def discard_proposal(art: ReportArtifact, proposal_id: str) -> bool:
+    if proposal_of(art, proposal_id) is None:
+        return False
+    art.job = {**{k: v for k, v in art.job.items() if k != "proposal"}, "propose": False, "discarded": True}
+    flag_modified(art, "job")
+    return True
+
+
+def start_job(db: Session, art: ReportArtifact, *, kind: str, user_id, run, propose: bool = False,
+              base_revision_id: Optional[int] = None) -> Dict[str, Any]:
     """Claim the report's AI slot and run `run(db, art, progress)` in a thread.
 
     `run` returns (revision kwargs) or raises ValueError with a user-facing message."""
@@ -347,6 +406,8 @@ def start_job(db: Session, art: ReportArtifact, *, kind: str, user_id, run) -> D
     job_id = uuid.uuid4().hex
     art.job = {"id": job_id, "kind": kind, "state": "running", "step": "Bắt đầu", "steps": [],
                "started_at": _now().isoformat(), "user": str(user_id) if user_id else None}
+    if propose:
+        art.job.update({"propose": True, "base_revision_id": base_revision_id})
     db.commit()
     threading.Thread(target=_run_job, args=(art.id, job_id, user_id, run), name=f"report-code-{art.id}", daemon=True).start()
     return art.job
@@ -385,6 +446,18 @@ def _run_job(artifact_id: int, job_id: str, user_id, run) -> None:
         if art is None:
             return
         out = run(db, art, progress)
+        if (art.job or {}).get("propose"):
+            # A PROPOSAL: nothing of the report changes. Discard anything the run wrote,
+            # validate the code like a save would, and keep it in the job slot until the
+            # author applies or discards it (apply_proposal re-checks the base revision).
+            db.rollback()
+            v = D.validate(out["html"], out["css"], out["js"])
+            proposal = {"html": v.html, "css": v.css, "js": v.js, "bindings": out["bindings"], "filters": out["filters"],
+                        "source": out.get("source", "ai"), "note": out.get("note")}
+            _update_job(progress_db, artifact_id, job_id, state="done", step="Hoàn tất (đề xuất, chưa lưu)",
+                        proposal=proposal, notes=(out.get("notes") or []) + list(v.warnings), summary=out.get("summary"),
+                        elapsed_ms=int((_now() - started).total_seconds() * 1000))
+            return
         if out.get("name") and not (art.name or "").strip():
             art.name = out["name"]
         rev, warnings = add_revision(db, art, user_id=user_id, html=out["html"], css=out["css"], js=out["js"],

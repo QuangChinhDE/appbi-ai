@@ -18,7 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
-from .appbi_client import AmbiguousWrite, AppbiError
+from .appbi_client import AmbiguousWrite, AppbiError, GuardViolation, RouteNotAllowed
 from .state import StateStore, canonical_json, new_id, sha256_hex
 
 PLAN_TTL = 24 * 3600
@@ -288,6 +288,10 @@ class Run:
         except AppbiError as exc:
             self.plans.mark(self.plan.id, key, "failed", error=exc.as_dict())
             raise
+        except (GuardViolation, RouteNotAllowed) as exc:
+            # Refused before anything left the process: a definite failure, never "sent".
+            self.plans.mark(self.plan.id, key, "failed", error={"status": "policy_refusal", "message": str(exc)})
+            raise OperationError("blocked", f"Refused by the integration's safety policy: {exc}", step=key) from exc
         except OperationError as exc:
             # A refusal decided inside the step (e.g. a measure dry-run AppBI rejected)
             # is a definite failure, not an unknown outcome: never leave it `sent`.

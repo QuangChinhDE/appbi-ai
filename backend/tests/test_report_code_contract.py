@@ -944,6 +944,78 @@ def test_a_report_source_carries_the_binding_ids_that_draw_it(monkeypatch):
     assert "anchors" not in ev2, "a dashboard chart has no anchors: its tile is found by chart"
 
 
+# ── Proposals: reviewed and previewed BEFORE they become a revision ──────────────
+
+def _proposal_art():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id=7, job=None, draft_revision_id=11)
+
+
+def _flagless(monkeypatch):
+    from app.services.report_code import lifecycle as L
+
+    monkeypatch.setattr(L, "flag_modified", lambda *_a, **_k: None)
+    return L
+
+
+def test_a_staged_proposal_is_validated_and_never_a_revision(monkeypatch):
+    L = _flagless(monkeypatch)
+    added = []
+    monkeypatch.setattr(L, "add_revision", lambda *a, **k: added.append(k))
+    art = _proposal_art()
+    job = L.stage_proposal(None, art, user_id=None, base_revision_id=11, html='<p onclick="x()">hi</p>', css="", js="",
+                           bindings=[{"id": "b1"}], filters=[], source="manual", note="n")
+    assert added == [], "staging writes no revision"
+    assert job["propose"] and job["state"] == "done" and "onclick" not in job["proposal"]["html"]
+    view = L.job_view(art)
+    assert "proposal" not in view and view["has_proposal"], "lists/summaries never carry the proposed code"
+
+
+def test_a_proposal_is_applied_only_on_the_draft_it_was_made_on(monkeypatch):
+    from types import SimpleNamespace
+
+    L = _flagless(monkeypatch)
+    art = _proposal_art()
+    job = L.stage_proposal(None, art, user_id=None, base_revision_id=11, html="<p>v2</p>", css="", js="",
+                           bindings=[], filters=[], source="manual", note=None)
+    draft = SimpleNamespace(id=11, number=3)
+    monkeypatch.setattr(L, "get_revision", lambda db, a, rid: draft)
+    with pytest.raises(L.ProposalStale):
+        L.apply_proposal(None, art, proposal_id=job["id"], base_number=2, user_id=None)
+    with pytest.raises(ValueError):
+        L.apply_proposal(None, art, proposal_id="someone-elses", base_number=3, user_id=None)
+    saved = {}
+    monkeypatch.setattr(L, "add_revision", lambda db, a, **k: (saved.update(k) or SimpleNamespace(number=4), []))
+    rev, _ = L.apply_proposal(None, art, proposal_id=job["id"], base_number=3, user_id=None)
+    assert rev.number == 4 and saved["html"] == "<p>v2</p>"
+    assert L.proposal_of(art, job["id"]) is None, "a proposal is applied once"
+
+
+def test_a_moved_draft_refuses_the_proposal_even_with_the_right_number(monkeypatch):
+    from types import SimpleNamespace
+
+    L = _flagless(monkeypatch)
+    art = _proposal_art()
+    job = L.stage_proposal(None, art, user_id=None, base_revision_id=11, html="x", css="", js="", bindings=[], filters=[],
+                           source="manual", note=None)
+    monkeypatch.setattr(L, "get_revision", lambda db, a, rid: SimpleNamespace(id=99, number=3))  # restored/rewritten draft
+    with pytest.raises(L.ProposalStale):
+        L.apply_proposal(None, art, proposal_id=job["id"], base_number=3, user_id=None)
+
+
+def test_discard_and_a_running_job_both_protect_the_slot(monkeypatch):
+    L = _flagless(monkeypatch)
+    art = _proposal_art()
+    job = L.stage_proposal(None, art, user_id=None, base_revision_id=11, html="x", css="", js="", bindings=[], filters=[],
+                           source="manual", note=None)
+    assert L.discard_proposal(art, job["id"]) and L.proposal_of(art, job["id"]) is None
+    art.job = {"id": "j", "state": "running", "started_at": L._now().isoformat()}
+    with pytest.raises(ValueError):
+        L.stage_proposal(None, art, user_id=None, base_revision_id=11, html="x", css="", js="", bindings=[], filters=[],
+                         source="manual", note=None)
+
+
 # ── Re-import / re-bind keeps every anchor and every binding id ─────────────────────
 
 def _reimport_world(monkeypatch, n_cands: int):

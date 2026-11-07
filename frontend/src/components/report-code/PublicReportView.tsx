@@ -9,12 +9,14 @@
  * expire (410), and lock filters — locks are applied by the server; the banner below
  * only shows the viewer which ones are fixed.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { Lock } from 'lucide-react';
 
 import { PasswordGate } from '@/components/common/PublicPasswordGate';
 import { DashboardAiBot } from '@/components/dashboards/DashboardAiBot';
+import type { BridgeCommand } from '@/lib/public-mcp/bridge';
+import { useI18n } from '@/providers/LanguageProvider';
 import { ReportFrame } from '@/components/report-code/ReportFrame';
 import { clearPublicSession, getPublicSession, publicReportApi, savePublicSession, type PublicReportMeta } from '@/lib/api/public';
 import type { FilterState } from '@/lib/report-code/protocol';
@@ -32,7 +34,33 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
   // The viewer's filter choices in the report: the AI Bot reads the same filtered report.
   const [viewerState, setViewerState] = useState<FilterState>({});
   // the AI Bot's source chip: bring that chart of the report into view (as a dashboard does)
-  const [focus, setFocus] = useState<{ id: string; n: number } | null>(null);
+  const [focus, setFocus] = useState<{ id?: string; region?: string; n: number } | null>(null);
+  // the viewer's own Claude (Public Read MCP): the panel, and the filter state it sets
+  const { t } = useI18n();
+  const [externalState, setExternalState] = useState<{ state: FilterState; n: number } | null>(null);
+  const claudeView = useMemo(() => ({
+    kind: 'report', filters: viewerState, focus: focus ? (focus.id || focus.region || null) : null,
+  }), [viewerState, focus]);
+  const applyClaude = useCallback((cmd: BridgeCommand) => {
+    switch (cmd.type) {
+      case 'set_filters':
+        setExternalState((x) => ({ state: (cmd.filters || {}) as FilterState, n: (x?.n || 0) + 1 }));
+        return { ok: true };
+      case 'reset_filters':
+        setExternalState((x) => ({ state: {}, n: (x?.n || 0) + 1 }));
+        return { ok: true };
+      case 'go_to_page':
+        setFocus((f) => ({ region: cmd.page, n: (f?.n || 0) + 1 }));
+        return { ok: true };
+      case 'focus':
+        setFocus((f) => ({ id: cmd.chart, n: (f?.n || 0) + 1 }));
+        return { ok: true };
+      case 'clear_drill':
+        return { ok: true };
+      default:
+        return { ok: false, error: 'not supported on this report' };
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -134,10 +162,16 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           title={meta.name}
           onStateChange={(st) => setViewerState({ ...st })}
           focus={focus}
+          externalState={externalState}
           className="min-h-0 min-w-0 flex-1"
         />
-        {variant === 'public' && meta.appearance?.ai_bot_enabled === true && (
+        {variant === 'public' && (meta.appearance?.ai_bot_enabled === true || meta.appearance?.mcp_enabled === true) && (
           <DashboardAiBot
+            aiBotEnabled={meta.appearance?.ai_bot_enabled === true}
+            claude={meta.appearance?.mcp_enabled === true
+              ? { kind: 'report', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude,
+                keepsHistory: (meta.appearance as any)?.mcp_keeps_history === true }
+              : undefined}
             surface="reports"
             token={token}
             sessionToken={getPublicSession(token)}
@@ -162,7 +196,9 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
       {variant === 'public' && (
         <div className="flex items-center justify-between border-t border-slate-200 bg-white px-4 py-1.5 text-[11px] text-slate-400">
           <span>{meta.preview ? 'Xem trước liên kết · ' : ''}Phiên bản {meta.version}{meta.published_at ? ` · xuất bản ${new Date(meta.published_at).toLocaleString('vi-VN')}` : ''}</span>
-          <span>Dữ liệu được quản trị bởi AppBI</span>
+          <span className="flex items-center gap-3">
+            Dữ liệu được quản trị bởi AppBI
+          </span>
         </div>
       )}
     </div>

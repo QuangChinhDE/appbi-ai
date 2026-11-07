@@ -4507,6 +4507,23 @@ def preview_dataset_table(
         if not datasource:
             raise HTTPException(status_code=404, detail=_build_datasource_missing_detail(db_table))
 
+    if preview_request.draft_transformations is not None:
+        # The model editor's proposal preview: the SAME live-source compile and engine
+        # as a saved table, with the proposed steps; nothing is persisted. Proposing
+        # shaping is an edit-level act, so it needs edit access (a viewer previews saved steps).
+        require_edit_access(db, current_user, dataset_obj, "datasets")
+        if preview_request.refresh_schema:
+            raise HTTPException(status_code=400, detail="refresh_schema cannot be combined with draft_transformations")
+
+        class _DraftTable:
+            def __init__(self, base, steps):
+                self._base, self.transformations = base, steps
+
+            def __getattr__(self, name):
+                return getattr(self._base, name)
+
+        target_table = _DraftTable(target_table, list(preview_request.draft_transformations))
+
     # ── Preview directly from live source ──
     try:
         result = LiveQueryService.execute_preview_query(
