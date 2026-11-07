@@ -115,7 +115,15 @@ def _guide(h: Handle) -> Optional[Dict[str, Any]]:
     from app.services.answer_core import publisher_guide as PG
 
     g = PG.load(h.appearance)
-    return g.model_dump(mode="json") if g is not None else None
+    out = g.model_dump(mode="json") if g is not None else {}
+    # the publisher's own instructions to the report's assistant: the AppBI AI Bot's system
+    # prompt (`ai_bot_report_context_note`), the same foundation for both engines
+    from app.services.dashboard_ai_bot.public_link_config import sanitize_report_context_note
+
+    note = sanitize_report_context_note(h.appearance.get("ai_bot_report_context_note"))
+    if note:
+        out["instructions"] = note
+    return out or None
 
 
 # ── dashboard links ───────────────────────────────────────────────────────────
@@ -315,7 +323,11 @@ def report_filter_values(db, h: Handle, key: str, search: str, state: Dict[str, 
 # ── one entry point per operation ─────────────────────────────────────────────
 
 def describe(db, h: Handle, state: Dict[str, Any]) -> Dict[str, Any]:
-    return describe_dashboard(db, h, state) if h.kind == DASHBOARD else describe_report(db, h, state)
+    out = describe_dashboard(db, h, state) if h.kind == DASHBOARD else describe_report(db, h, state)
+    from app.services.public_mcp.brief import render
+
+    out["assistant_brief"] = render(out)
+    return out
 
 
 def chart_data(db, h: Handle, ref: Any, state: Dict[str, Any]) -> Dict[str, Any]:

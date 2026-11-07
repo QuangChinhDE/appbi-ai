@@ -38,6 +38,14 @@ export function PublicLinkClaudeAccess({ value, onChange }: {
               <span className="block text-caption text-text-tertiary">{t('publicClaude.owner.shareGuideHint')}</span>
             </span>
           </label>
+          <label className="flex items-start gap-2.5">
+            <input type="checkbox" className="mt-0.5" checked={cfg.keep_history !== false} data-testid="link-claude-keep-history"
+              onChange={(e) => set({ keep_history: e.target.checked })} />
+            <span>
+              <span className="block text-caption font-emphasis text-text-secondary">{t('publicClaude.owner.keepHistory')}</span>
+              <span className="block text-caption text-text-tertiary">{t('publicClaude.owner.keepHistoryHint')}</span>
+            </span>
+          </label>
           <button type="button" className="text-caption text-red-600 underline" data-testid="link-claude-disconnect-all"
             onClick={() => set({ epoch: (cfg.epoch || 0) + 1 })}>
             {t('publicClaude.owner.disconnectAll')}

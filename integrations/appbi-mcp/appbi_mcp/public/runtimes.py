@@ -45,6 +45,9 @@ CREATE INDEX IF NOT EXISTS ix_runtime_leases_live ON runtime_leases(runtime, end
 """
 
 IDLE_SECONDS = 30 * 60
+#: the viewer's tab stopped polling this long (closed, not reloaded — a reload rejoins within
+#: seconds): the session ends and its runtime is recycled
+TAB_GONE_SECONDS = 5 * 60
 
 
 class PoolBusy(Exception):
@@ -126,14 +129,29 @@ class RuntimePool:
             cur.execute("INSERT INTO runtime_leases(id, runtime, session_id, grant_id, cookie_hash, created_at, last_seen_at) "
                         "VALUES (?, ?, ?, ?, ?, ?, ?)", (lease_id, index, session["id"], grant["id"], sha256_hex(cookie), now, now))
         try:
+            brief = await self._brief(session)
             await self._agent(index, "POST", "/lease", {"lease_id": lease_id, "mcp_token": token,
-                                                         "mcp_url": self.ctx.settings.resource_url})
+                                                         "mcp_url": self.ctx.settings.resource_url, "brief": brief})
         except Exception:
             self._close(lease_id, "agent_refused")
             provider.revoke_grant(grant["id"], "runtime_lease_failed")
             raise
         log.info("runtime %s leased to session %s (%s)", index, session["id"], lease_id)
         return {"runtime": index, "cookie": cookie, "panel_path": f"/claude-rt/{index}/"}
+
+    async def _brief(self, session: dict) -> str:
+        """The report's business context for Claude's system prompt (AppBI renders it from what
+        the link discloses: structure, filters, the publisher's guide and instructions if shared)."""
+        bridge = getattr(self, "bridge", None)
+        grant = bridge.grant_of(session) if bridge else None
+        if not grant:
+            return ""
+        try:
+            d = await bridge.appbi(grant).post("/public/mcp/describe", {"state": {}})
+        except Exception as exc:  # noqa: BLE001 - Claude still has get_report_context
+            log.warning("runtime brief unavailable: %s", type(exc).__name__)
+            return ""
+        return str(d.get("assistant_brief") or "")[:16000]
 
     async def _holds(self, lease: dict) -> bool:
         """The runtime still runs THIS lease (it may have restarted under it: then it is clean)."""
@@ -186,6 +204,8 @@ class RuntimePool:
                 await self.release_session(row["session_id"], "session_ended")
             elif now - seen > IDLE_SECONDS:
                 await self.release_session(row["session_id"], "idle")
+            elif now - float(sess.get("last_seen_at") or row["created_at"]) > TAB_GONE_SECONDS:
+                bridge.end(row["session_id"], "tab_gone")  # on_end releases the runtime
         live = {r["runtime"] for r in self.store.query("SELECT runtime FROM runtime_leases WHERE ended_at IS NULL")}
         for i in range(1, len(self.urls) + 1):
             if i in live:

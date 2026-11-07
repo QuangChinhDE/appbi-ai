@@ -26,6 +26,8 @@ export interface ClaudeEngineProps {
   token: string;
   sessionToken?: string | null;
   viewState: Record<string, unknown>;
+  /** The publisher keeps this conversation (a notice is shown before the first question). */
+  keepsHistory?: boolean;
   apply: (cmd: BridgeCommand) => Promise<ApplyResult> | ApplyResult;
 }
 
@@ -92,12 +94,33 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
     }
   }, [engine.kind, engine.token, engine.sessionToken, t]);
 
-  useEffect(() => { void start(); return () => { void bridgeRef.current?.stop(); }; }, [start]);
+  // Leaving the page (reload, navigation, closing the tab) only DETACHES: a reload of this tab
+  // rejoins the same session, runtime, sign-in and conversation; a tab that never comes back is
+  // ended by the service after a few minutes. Only "End session" ends it on purpose.
+  useEffect(() => { void start(); return () => { bridgeRef.current?.detach(); }; }, [start]);
   useEffect(() => {
-    const end = () => { void bridgeRef.current?.stop(); };
-    window.addEventListener('pagehide', end);
-    return () => window.removeEventListener('pagehide', end);
+    const leave = () => { bridgeRef.current?.detach(); };
+    window.addEventListener('pagehide', leave);
+    return () => window.removeEventListener('pagehide', leave);
   }, []);
+
+  // the conversation so far, kept by the runtime (a reload shows it again; Claude resumes it)
+  useEffect(() => {
+    if (!base) return;
+    void (async () => {
+      try {
+        const r = await fetch(`${base}api/history`, { credentials: 'include', cache: 'no-store' });
+        if (!r.ok) return;
+        const j = await r.json();
+        const kept: Turn[] = (j.turns || []).map((x: any) => ({
+          id: newId(), question: String(x.question || ''), answer: String(x.answer || ''),
+          steps: (x.tools || []).map((n: string) => (TOOL_KEYS[n] ? t(TOOL_KEYS[n]) : n)), running: false,
+          error: x.error ? t('publicClaude.chat.failed') : undefined,
+        }));
+        setTurns((now) => (now.length ? now : kept));
+      } catch { /* a fresh runtime: nothing to show */ }
+    })();
+  }, [base, t]);
   // the viewer's view changed (their click or Claude's command): Claude reads the same view
   useEffect(() => { void bridgeRef.current?.pushState(); }, [engine.viewState]);
 
@@ -264,6 +287,9 @@ export function ClaudeChat({ engine, dashboardName, starters, resetSignal }: {
             </button>
           )}
         </div>
+        {engine.keepsHistory && (
+          <p className="mt-1.5 px-1 text-micro text-text-tertiary" data-testid="claude-chat-history-notice">{t('publicClaude.chat.historyNotice')}</p>
+        )}
         <div className="mt-1.5 flex items-center justify-between px-1 text-micro text-text-quaternary">
           <span>{t('publicClaude.chat.hint')}</span>
           {base && (

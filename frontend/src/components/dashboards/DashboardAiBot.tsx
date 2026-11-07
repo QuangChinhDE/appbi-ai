@@ -116,13 +116,19 @@ export function DashboardAiBot({
 }: Props) {
   const { t, locale } = useI18n();
   // which engine answers in this panel: AppBI's AI Bot or the viewer's own Claude
-  const [engine, setEngine] = useState<'appbi' | 'claude'>(aiBotEnabled ? 'appbi' : 'claude');
+  // the panel's open/engine choice survives a reload of this tab (sessionStorage), so a viewer
+  // who was talking to Claude comes back to the same conversation
+  const uiStorage = `appbi.aiBot.ui.${token}`;
+  const savedUi = useMemo(() => { try { return JSON.parse(storageGet(uiStorage) || '{}'); } catch { return {}; } }, [uiStorage]);
+  const [engine, setEngine] = useState<'appbi' | 'claude'>(
+    claude && (savedUi.engine === 'claude' || !aiBotEnabled) ? 'claude' : 'appbi');
   const [claudeReset, setClaudeReset] = useState(0);
   const [claudeStarted, setClaudeStarted] = useState(false);
   useEffect(() => { if (engine === 'claude') setClaudeStarted(true); }, [engine]);
   const convStorage = `appbi.aiAnswer.conv.${token}`;
   const msgStorage = `appbi.aiAnswer.msgs.${token}`;
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState<boolean>(savedUi.open === true);
+  useEffect(() => { storageSet(uiStorage, JSON.stringify({ open, engine })); }, [open, engine, uiStorage]);
   const [ready, setReady] = useState<boolean | null>(null);
   const [question, setQuestion] = useState('');
   const [conversationKey, setConversationKey] = useState<string>(() => storageGet(convStorage) || newKey());
@@ -292,7 +298,9 @@ export function DashboardAiBot({
           <BotIcon />
         </button>
       )}
-      {open && (
+      {(open || claudeStarted) && (
+        // Kept mounted while closed once Claude started: closing the panel must not end the
+        // viewer's Claude session (sign-in, conversation). Hidden, not unmounted.
         // A SIDE PANEL IN THE LAYOUT, not an overlay (PO 2026-10-28, the earlier
         // look): the report's flex row gives it its width and the report narrows
         // beside it, so no chart is hidden behind the assistant. On a phone the
@@ -302,7 +310,7 @@ export function DashboardAiBot({
           aria-label={t('dashboards.aiBot.core.title')}
           data-testid="ai-bot-panel"
           style={{ width: 'min(400px, calc(100vw - 24px))' }}
-          className="my-3 mr-1.5 flex min-w-0 flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm sm:mr-3"
+          className={`my-3 mr-1.5 min-w-0 flex-shrink-0 flex-col overflow-hidden rounded-2xl border border-[rgb(var(--border-line))] bg-surface-1 shadow-[0_8px_32px_-12px_rgba(0,0,0,0.18),0_2px_6px_-2px_rgba(0,0,0,0.08)] backdrop-blur-sm sm:mr-3 ${open ? 'flex' : 'hidden'}`}
         >
           <header className="flex flex-shrink-0 items-center gap-2 border-b border-[rgb(var(--border-line))]/60 bg-gradient-to-b from-surface-2 to-surface-1 px-4 py-3">
             <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-brand to-brand/70 text-white shadow-sm">

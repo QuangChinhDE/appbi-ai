@@ -2895,7 +2895,8 @@ function PublicDashboardViewInner({ variant = 'public' }: { variant?: 'public' |
         <DashboardAiBot
           aiBotEnabled={dashboard?.public_link_appearance?.ai_bot_enabled === true}
           claude={(dashboard?.public_link_appearance as any)?.mcp_enabled === true
-            ? { kind: 'dashboard', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude }
+            ? { kind: 'dashboard', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude,
+                keepsHistory: (dashboard?.public_link_appearance as any)?.mcp_keeps_history === true }
             : undefined}
           token={token}
           sessionToken={getPublicSession(token)}

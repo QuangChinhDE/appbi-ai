@@ -35,7 +35,8 @@ from ..state import new_id, new_secret, sha256_hex
 log = logging.getLogger("appbi_mcp.public.bridge")
 
 PAIR_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-APPBI_PATHS = ("/public/mcp/describe", "/public/mcp/chart-data", "/public/mcp/check-state", "/public/mcp/filter-values")
+APPBI_PATHS = ("/public/mcp/describe", "/public/mcp/chart-data", "/public/mcp/check-state", "/public/mcp/filter-values",
+               "/public/mcp/transcript")
 MAX_STATE_BYTES = 64 * 1024
 
 
@@ -197,6 +198,10 @@ class Bridge:
     def mark_claude(self, sid: str) -> None:
         """Claude actually called this session's MCP: the tab may say 'connected'."""
         self.store.execute("UPDATE view_sessions SET claimed_at = COALESCE(claimed_at, ?) WHERE id = ?", (time.time(), sid))
+
+    def last_command_id(self, sid: str) -> int:
+        row = self.store.query_one("SELECT MAX(id) AS m FROM view_commands WHERE session_id = ?", (sid,))
+        return int((row and row["m"]) or 0)
 
     def touch(self, sid: str) -> None:
         self.store.execute("UPDATE view_sessions SET last_seen_at = ? WHERE id = ?", (time.time(), sid))

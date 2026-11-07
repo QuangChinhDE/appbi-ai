@@ -16,6 +16,11 @@ cookie; this runtime's network holds nothing else but the edge and the public MC
   POST /api/chat   {"message"} -> NDJSON stream of Claude Code's own events (`claude -p
                     --output-format stream-json`), the conversation resumed across messages
   POST /api/reset  -> a new conversation
+  GET  /api/history -> the conversation so far (this runtime's memory: a reload of the
+                    viewer's tab shows it again; gone with the runtime)
+History: each finished turn (question, answer, report tools used) is reported to the public
+MCP with this runtime's secret, which has AppBI keep it when the publisher keeps history.
+Never in it: the viewer's Claude credential (this agent never sees one) or the MCP token.
 Sign-in: the panel shows Claude Code's own `claude auth login` (ttyd, port 7681): the viewer
 completes it with Anthropic in their own browser. This agent never reads, stores or relays a
 Claude credential; it only checks that Claude Code has one.
@@ -42,7 +47,9 @@ HOME = os.path.expanduser("~")
 WORK = os.path.join(HOME, "report")
 SECRET = os.environ.get("RUNTIME_SECRET", "")
 INDEX = os.environ.get("RUNTIME_INDEX", "1")
-STATE = {"lease": None, "session": None, "login": None}
+STATE = {"lease": None, "session": None, "login": None, "brief": "", "turns": []}
+PUBLIC_MCP = os.environ.get("PUBLIC_MCP_INTERNAL", "http://public-mcp:8091").rstrip("/")
+MAX_TURNS_KEPT = 100
 LOCK = threading.Lock()
 CHAT = threading.Lock()
 MAX_MESSAGE = 4000
@@ -56,8 +63,17 @@ SYSTEM_NOTE = (
     "Answer only about this report. Read numbers with read_chart and cite the report, chart, filters and as-of. "
     "Compute derived numbers with the calculate tool and label them as your own calculation, not an AppBI metric. "
     "Use the view tools to change what the viewer sees when they ask, and say what you changed. "
-    "Reply in the viewer's language, concisely, in Markdown (short paragraphs, small tables)."
+    "Reply in the viewer's language, concisely, in Markdown (short paragraphs, small tables). "
+    "Before answering about numbers, check what the viewer sees now with get_view_state. "
+    "Follow the publisher's instructions and definitions in the report brief below; decline topics it marks "
+    "out of scope. Never guess fixed filters that are not disclosed. You cannot change the report itself "
+    "(datasets, charts, models, publishing): only the viewer's temporary view."
 )
+
+
+def system_prompt() -> str:
+    brief = STATE.get("brief") or ""
+    return SYSTEM_NOTE + ("\n\n" + brief if brief else "")
 
 
 def _write(path: str, data: dict) -> None:
@@ -166,6 +182,41 @@ def signed_in() -> bool:
     return False
 
 
+def _collect(turn: dict, texts: list, ev: dict) -> None:
+    """What the history keeps of one stream event: answer text, report tools used, model."""
+    if ev.get("type") == "system" and ev.get("model"):
+        turn["model"] = str(ev["model"])
+    elif ev.get("type") == "assistant":
+        for part in (ev.get("message") or {}).get("content") or []:
+            if part.get("type") == "text" and part.get("text"):
+                texts.append(str(part["text"]))
+            elif part.get("type") == "tool_use":
+                turn["tools"].append({"name": str(part.get("name") or "").replace("mcp__appbi-report__", ""),
+                                      "input": part.get("input") or {}})
+    elif ev.get("type") == "result":
+        turn["duration_ms"] = int(ev.get("duration_ms") or 0)
+        if texts:
+            turn["answer"] = "\n\n".join(texts)
+        elif ev.get("result"):
+            turn["answer"] = str(ev["result"])
+        if ev.get("is_error"):
+            turn["error"] = str(ev.get("result") or "error")[:300]
+
+
+def report_turn(lease_id: str, turn: dict) -> None:
+    """Best effort: the public MCP has AppBI keep this turn (if the publisher keeps history)."""
+    import urllib.request
+
+    req = urllib.request.Request(f"{PUBLIC_MCP}/public-mcp/runtime-transcript", method="POST",
+                                 data=json.dumps({"lease_id": lease_id, "turn": turn}, ensure_ascii=False).encode(),
+                                 headers={"Content-Type": "application/json", "X-Runtime-Secret": SECRET,
+                                          "X-Runtime-Index": str(INDEX)})
+    try:
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:  # noqa: BLE001 - history is never allowed to break the chat
+        print(f"transcript not kept: {type(exc).__name__}", file=sys.stderr)
+
+
 def wait_for_port(port: int, timeout: float = 8.0) -> None:
     end = time.time() + timeout
     while time.time() < end:
@@ -202,6 +253,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             return self._send(200, {"state": "leased" if STATE["lease"] else "idle", "lease": STATE["lease"], "index": INDEX})
+        if self.path.endswith("/api/history"):
+            if not STATE["lease"]:
+                return self._send(409, {"error": "not_leased"})
+            return self._send(200, {"turns": [{k: t.get(k) for k in ("question", "answer", "error")}
+                                              | {"tools": [x["name"] for x in t.get("tools") or []]}
+                                              for t in STATE["turns"]]})
         if self.path.endswith("/api/status"):
             if not STATE["lease"]:
                 return self._send(409, {"error": "not_leased"})
@@ -220,6 +277,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(409, {"error": "busy", "lease": STATE["lease"]})
                 configure(str(body["mcp_url"]), str(body["mcp_token"]))
                 STATE["lease"] = str(body["lease_id"])
+                STATE["brief"] = str(body.get("brief") or "")[:16000]
             return self._send(200, {"ok": True, "panel_path": f"/claude-rt/{INDEX}/"})
         if self.path == "/recycle":
             self._send(200, {"ok": True})
@@ -233,6 +291,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(409, {"error": "not_leased"})
         if self.path.endswith("/api/reset"):
             STATE["session"] = None
+            STATE["turns"] = []
             return self._send(200, {"ok": True})
         if self.path.endswith("/api/signin/start"):
             return self._send(200, signin_start())
@@ -262,7 +321,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _stream(self, msg: str) -> None:
         cmd = ["claude", "-p", msg, "--output-format", "stream-json", "--verbose",
-               "--append-system-prompt", SYSTEM_NOTE]
+               "--append-system-prompt", system_prompt()]
+        turn = {"id": f"{STATE['lease']}-{int(time.time() * 1000)}", "question": msg, "answer": "",
+                "tools": [], "model": "", "duration_ms": 0, "error": None}
+        texts: list = []
         if STATE["session"]:
             cmd += ["--resume", STATE["session"]]
         self.send_response(200)
@@ -291,15 +353,21 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if ev.get("session_id"):
                     STATE["session"] = ev["session_id"]
+                _collect(turn, texts, ev)
                 chunk(ev)
             proc.wait()
             if proc.returncode not in (0, None):
                 err = (proc.stderr.read() if proc.stderr else "")[-400:]  # type: ignore[union-attr]
                 chunk({"type": "agent_error", "code": proc.returncode, "message": err})
+                turn["error"] = turn["error"] or "claude_failed"
         except (BrokenPipeError, ConnectionResetError):
             proc.kill()
+            turn["error"] = turn["error"] or "stopped"
         finally:
             killer.cancel()
+            turn["answer"] = turn["answer"] or "\n\n".join(texts)
+            STATE["turns"] = (STATE["turns"] + [turn])[-MAX_TURNS_KEPT:]
+            threading.Thread(target=report_turn, args=(STATE["lease"], dict(turn)), daemon=True).start()
             try:
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()

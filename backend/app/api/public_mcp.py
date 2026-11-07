@@ -11,7 +11,9 @@ Two callers, two credentials, nothing else:
 Every grant request re-resolves the link through the official resolver
 (`public._get_dashboard_by_token`, `public_links.resolve`): revoke, expiry, password
 change, "Claude access off" and the publisher's disconnect all take effect on the next
-call. Read-only by construction: there is no route here that writes anything.
+call. Nothing here writes to a report, chart, dataset, model or link: the one write is
+`/transcript`, a finished Claude turn appended to the link's own AI Bot history (when the
+publisher keeps it).
 """
 # No `from __future__ import annotations`: slowapi wraps each endpoint (see public_reports.py).
 import hashlib
@@ -56,6 +58,11 @@ class StateBody(BaseModel):
 
 class ChartBody(StateBody):
     chart: Any
+
+
+class TranscriptBody(BaseModel):
+    turn: Dict[str, Any]
+    view_state: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ValuesBody(StateBody):
@@ -212,3 +219,22 @@ def filter_values(body: ValuesBody, request: Request, db: Session = Depends(get_
 
     return JSONResponse({"values": jsonable_encoder(values[:200]), "truncated": len(values) > 200},
                         headers={"Cache-Control": "no-store"})
+
+
+# ── the Public MCP reports a finished Claude turn (history) ──────────────────
+
+@router.post("/transcript")
+@_limiter.limit("30/minute", key_func=_grant_key)
+def transcript(body: TranscriptBody, request: Request, db: Session = Depends(get_db),
+               x_public_mcp_grant: Optional[str] = Header(default=None)):
+    """Keep one finished Claude turn of this view session in the link's AI Bot turn table
+    (only when the publisher keeps history). The grant proves the session and the link."""
+    from app.services.public_mcp import transcript as TR
+
+    try:
+        h = _handle(db, x_public_mcp_grant)
+        out = TR.record(db, h, body.turn, body.view_state)
+    except S.Refused as exc:
+        return _refused(exc)
+    S.audit(h, "transcript", kept=out.get("kept"))
+    return JSONResponse(out, headers={"Cache-Control": "no-store"})

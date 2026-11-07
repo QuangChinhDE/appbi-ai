@@ -93,6 +93,7 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
     ctx = AppContext(settings=settings, store=store, provider=provider, appbi_transport=appbi_transport)
     bridge = Bridge(ctx)
     pool = RuntimePool(ctx, list(settings.runtime_urls), settings.runtime_secret, transport=runtime_transport)
+    pool.bridge = bridge  # the lease reads the report brief with the session's grant
     bridge.on_end = pool.release_session
     pair_limiter = RateLimiter(10, burst=5)
     bridge_limiter = RateLimiter(20, burst=10)
@@ -246,7 +247,8 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         if fresh is None:
             return _bridge_json({"error": "session_ended"}, 410)
         return _bridge_json({"commands": cmds, "claude_connected": bool(fresh.get("claimed_at")),
-                             "pair_pending": bool(fresh.get("pair_hash"))})
+                             "pair_pending": bool(fresh.get("pair_hash")),
+                             "last_command_id": bridge.last_command_id(row["id"])})
 
     async def session_state(request: Request) -> Response:
         row = _tab(request)
@@ -309,6 +311,34 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
             return _bridge_json({"error": "not_found"}, 404)
         return _bridge_json({"runtimes": await pool.status()})
 
+    async def runtime_transcript(request: Request) -> Response:
+        """A runtime reports one finished Claude turn of its viewer (history). Only that runtime
+        (its own secret) and only for the lease it currently holds; kept by AppBI with the
+        session's grant, when the publisher keeps history."""
+        import secrets as _s
+
+        try:
+            index = int(request.headers.get("x-runtime-index", "0"))
+            body = await request.json()
+        except ValueError:
+            return _bridge_json({"error": "bad_request"}, 400)
+        if (not pool.enabled or index < 1 or index > len(pool.urls)
+                or not _s.compare_digest(request.headers.get("x-runtime-secret", ""), pool.secret_for(index))):
+            return _bridge_json({"error": "not_found"}, 404)
+        lease = pool.store.query_one("SELECT * FROM runtime_leases WHERE runtime = ? AND ended_at IS NULL", (index,))
+        if not lease or lease["id"] != str((body or {}).get("lease_id") or ""):
+            return _bridge_json({"error": "no_lease"}, 409)
+        sess = bridge.session(lease["session_id"])
+        grant = bridge.grant_of(sess) if sess else None
+        if not grant:
+            return _bridge_json({"error": "session_ended"}, 410)
+        try:
+            out = await bridge.appbi(grant).post("/public/mcp/transcript", {
+                "turn": (body or {}).get("turn") or {}, "view_state": bridge.view_state(sess)})
+        except Refused as exc:
+            return _bridge_json({"error": exc.code}, exc.status if exc.status >= 400 else 400)
+        return _bridge_json(out)
+
     async def session_end(request: Request) -> Response:
         row = _tab(request)
         if row is not None:
@@ -356,6 +386,7 @@ def create_public_app(settings: PublicSettings | None = None, *, appbi_transport
         Route(f"{res_path}/bridge/sessions/{{sid}}/runtime", endpoint=bridge_cors(session_runtime, ["POST"]), methods=["POST", "OPTIONS"]),
         Route(f"{res_path}/runtime-auth", endpoint=runtime_auth, methods=["GET"]),
         Route(f"{res_path}/runtime-pool", endpoint=runtime_pool, methods=["GET"]),
+        Route(f"{res_path}/runtime-transcript", endpoint=runtime_transcript, methods=["POST"]),
         Route(res_path, endpoint=gated, methods=["GET", "POST", "DELETE"]),
     ]
     app = Starlette(routes=routes, lifespan=lifespan)

@@ -165,6 +165,67 @@ def test_the_guide_is_shared_only_on_the_publishers_say_so(client, owner, report
     assert "ai_bot_guide" not in meta["appearance"], "a viewer still never receives the guide"
 
 
+def test_claude_gets_the_ai_bot_context_in_its_brief_only_when_shared(client, owner, report):  # noqa: F811
+    """One foundation, two engines: the AI Bot's instructions + guide reach Claude's brief —
+    and only on the publisher's say-so; a viewer never receives them."""
+    note = "Luon bao cao theo don vi trieu dong."
+    guide = {"definitions": [{"name": "AOV", "formula": "revenue / orders"}],
+             "out_of_scope": [{"topic": "luong nhan vien"}]}
+    cfg = {"ai_bot_report_context_note": note, "ai_bot_guide": guide}
+    off = _link(client, owner, report, appearance_config={"mcp_access": {"enabled": True}, **cfg})
+    brief = _describe(client, _pair(client, off["token"]).json()["grant"]).json()["assistant_brief"]
+    assert "PMCP report" in brief and note not in brief and "AOV" not in brief
+
+    on = _link(client, owner, report, appearance_config={"mcp_access": {"enabled": True, "share_guide": True}, **cfg})
+    out = _describe(client, _pair(client, on["token"]).json()["grant"]).json()
+    assert out["publisher_guide"]["instructions"] == note
+    for text in (note, "AOV: revenue / orders", "luong nhan vien"):
+        assert text in out["assistant_brief"]
+    meta = client.get(f"/api/v1/public/reports/{on['token']}").json()
+    assert "ai_bot_report_context_note" not in meta["appearance"] and "ai_bot_guide" not in meta["appearance"]
+
+
+def _transcript(client, grant, turn, view_state=None):  # noqa: F811
+    return client.post("/api/v1/public/mcp/transcript", json={"turn": turn, "view_state": view_state or {}},
+                       headers={"X-Public-MCP-Grant": grant})
+
+
+def test_claude_turns_are_kept_in_the_ai_bot_history_without_secrets(client, db, owner, report):  # noqa: F811
+    from app.models.report_artifact import ReportAnswerTurn
+
+    link = _link(client, owner, report, appearance_config=ON)
+    meta = client.get(f"/api/v1/public/reports/{link['token']}").json()
+    assert meta["appearance"]["mcp_keeps_history"] is True, "the viewer is told the conversation is kept"
+    p = _pair(client, link["token"]).json()
+    secret = "sk-ant-oat01-" + "x" * 60
+    turn = {"id": "lease1-1", "question": f"Doanh thu? {secret}", "answer": "2,253,900 (Bearer abc.def.ghi)",
+            "tools": [{"name": "read_chart", "input": {"chart": "b1", "token": "y" * 64}}], "model": "claude-opus-5-5",
+            "duration_ms": 1200}
+    r = _transcript(client, p["grant"], turn, {"page": "p1", "filters": {"f1": ["SP"]}})
+    assert r.status_code == 200 and r.json()["kept"] is True, r.text
+    assert _transcript(client, p["grant"], turn).json().get("replayed") is True, "a retried report is kept once"
+    rows = db.query(ReportAnswerTurn).filter(ReportAnswerTurn.link_id == link["id"]).all()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.idempotency_key == "claude:lease1-1" and row.conversation_key == f"claude-{p['sid']}"[:64]
+    assert row.status == "answered" and row.envelope["engine"] == "claude"
+    assert row.envelope["tools"][0]["name"] == "read_chart" and row.envelope["view_state"]["filters"] == {"f1": ["SP"]}
+    dumped = str(row.question) + str(row.envelope)
+    assert "sk-ant" not in dumped and "abc.def.ghi" not in dumped and "y" * 64 not in dumped
+
+
+def test_history_off_keeps_nothing_and_a_dead_grant_cannot_write(client, db, owner, report):  # noqa: F811
+    from app.models.report_artifact import ReportAnswerTurn
+
+    link = _link(client, owner, report, appearance_config={"mcp_access": {"enabled": True, "keep_history": False}})
+    assert client.get(f"/api/v1/public/reports/{link['token']}").json()["appearance"]["mcp_keeps_history"] is False
+    grant = _pair(client, link["token"]).json()["grant"]
+    r = _transcript(client, grant, {"id": "t", "question": "q", "answer": "a"})
+    assert r.status_code == 200 and r.json() == {"kept": False, "reason": "history_off"}
+    assert db.query(ReportAnswerTurn).filter(ReportAnswerTurn.link_id == link["id"]).count() == 0
+    assert _transcript(client, "forged", {"id": "t", "question": "q"}).status_code in (401, 403)
+
+
 # ── dashboard links ───────────────────────────────────────────────────────────
 
 @pytest.fixture()

@@ -7,7 +7,11 @@
  *  - long-polls the commands the viewer's Claude sent to THIS tab and applies them
  *    through the page's own controls, acknowledging each one.
  *
- * The browser secret lives in memory only (never storage, never a URL). No AppBI
+ * The browser secret lives in memory and in THIS tab's sessionStorage (never localStorage,
+ * never a URL), so a reload of the tab rejoins the same view session — and with it the same
+ * Claude runtime, sign-in and conversation — instead of starting over. Another tab, another
+ * browser or a closed tab cannot rejoin it; the service ends a session whose tab stopped
+ * polling (TAB_GONE in the runtime pool). No AppBI
  * credential is involved: it talks to the MCP service with `credentials: 'omit'`.
  * Every command was validated by AppBI before it arrived; every data read is
  * re-checked by AppBI anyway, so a tampered tab can only mislead itself.
@@ -56,8 +60,44 @@ export class ReportBridge {
 
   constructor(private h: Handlers) {}
 
+  private storeKey = '';
+
+  private save(): void {
+    try {
+      window.sessionStorage.setItem(this.storeKey, JSON.stringify({ root: this.root, sid: this.sid, secret: this.secret, session: this.session }));
+    } catch { /* private mode: a reload starts a new session */ }
+  }
+
+  private forget(): void {
+    try { window.sessionStorage.removeItem(this.storeKey); } catch { /* nothing kept */ }
+  }
+
+  /** Rejoin the view session this tab held before a reload, if the service still has it. */
+  private async resume(): Promise<boolean> {
+    let saved: any = null;
+    try { saved = JSON.parse(window.sessionStorage.getItem(this.storeKey) || 'null'); } catch { saved = null; }
+    if (!saved?.sid || !saved?.secret || !saved?.root) return false;
+    this.root = saved.root; this.sid = saved.sid; this.secret = saved.secret;
+    const r = await fetch(`${this.root}/bridge/sessions/${this.sid}/commands?after=${Number.MAX_SAFE_INTEGER}&wait=0`, {
+      credentials: 'omit', headers: this.headers(),
+    }).catch(() => null);
+    if (!r || !r.ok) { this.sid = ''; this.secret = ''; this.forget(); return false; }
+    // commands sent while the page reloaded were for the page that is gone: start after them
+    const b = await r.json().catch(() => ({}));
+    this.after = Number(b?.last_command_id || 0);
+    this.session = saved.session || null;
+    return true;
+  }
+
   async start(kind: 'dashboard' | 'report', token: string, sessionToken?: string | null): Promise<BridgeSession> {
     this.h.onStatus('starting');
+    this.storeKey = `appbi.pmcp.${kind}.${token}`;
+    if (await this.resume() && this.session) {
+      this.h.onStatus('waiting');
+      await this.pushState(true);
+      void this.loop();
+      return this.session;
+    }
     const paired = await publicMcpApi.pair(kind, token, sessionToken);
     this.root = base(paired.mcp_base);
     const r = await fetch(`${this.root}/bridge/sessions`, {
@@ -72,6 +112,7 @@ export class ReportBridge {
       sessionId: body.session_id, pairCode: body.pair_code, pairExpiresAt: Date.now() + body.pair_expires_in * 1000,
       connectorUrl: body.connector_url, reportName: body.report?.name || paired.report?.name || '',
     };
+    this.save();
     this.h.onStatus('waiting');
     await this.pushState(true);
     void this.loop();
@@ -118,7 +159,7 @@ export class ReportBridge {
         const r = await fetch(`${this.root}/bridge/sessions/${this.sid}/commands?after=${this.after}`, {
           credentials: 'omit', headers: this.headers(),
         });
-        if (r.status === 410) { this.stopped = true; this.h.onStatus('ended'); return; }
+        if (r.status === 410) { this.stopped = true; this.forget(); this.h.onStatus('ended'); return; }
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         failures = 0;
         const b = await r.json();
@@ -140,9 +181,13 @@ export class ReportBridge {
     }
   }
 
+  /** Stop polling without ending the session (the page is unloading; a reload rejoins it). */
+  detach(): void { this.stopped = true; }
+
   async stop(): Promise<void> {
     if (this.stopped || !this.sid) return;
     this.stopped = true;
+    this.forget();
     await fetch(`${this.root}/bridge/sessions/${this.sid}/end`, {
       method: 'POST', credentials: 'omit', headers: this.headers(), keepalive: true,
     }).catch(() => undefined);

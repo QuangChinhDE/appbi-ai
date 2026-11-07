@@ -44,7 +44,7 @@ class FakeAgents:
             st = self.state[idx(request)]
             if st["lease"]:
                 return JSONResponse({"error": "busy"}, status_code=409)
-            st.update(lease=body["lease_id"], token=body["mcp_token"], url=body["mcp_url"])
+            st.update(lease=body["lease_id"], token=body["mcp_token"], url=body["mcp_url"], brief=body.get("brief"))
             return JSONResponse({"ok": True})
 
         async def recycle(request: Request) -> JSONResponse:
@@ -214,3 +214,68 @@ async def test_a_runtime_restarted_under_a_lease_is_reconciled(rc, agents):
     assert again.status_code == 200
     assert (await mcp(rc, tok)).status_code == 401, "the old lease's token is revoked"
     assert agents.state[again.json()["runtime"]]["token"] != tok
+
+
+async def _poll(c, t: dict, **params) -> httpx2.Response:
+    return await c.get(f"/public-mcp/bridge/sessions/{t['session_id']}/commands", params={"wait": 0, **params},
+                       headers={"X-Bridge-Secret": t["browser_secret"]})
+
+
+async def test_lease_hands_claude_the_report_brief(rc, agents):
+    """Claude starts with the report's business context (rendered by AppBI), not tools alone."""
+    a = await tab(rc, "A")
+    i = (await lease(rc, a)).json()["runtime"]
+    assert agents.state[i]["brief"] == "# Report: A"
+
+
+async def test_a_reload_rejoins_the_same_session_and_runtime(rc, agents):
+    """Reload: the tab polls again with its saved secret; nothing ends, the runtime stays."""
+    a = await tab(rc, "A")
+    i = (await lease(rc, a)).json()["runtime"]
+    r = await _poll(rc, a, after=2**53)
+    assert r.status_code == 200 and r.json()["last_command_id"] == 0
+    again = await lease(rc, a)
+    assert again.json()["runtime"] == i and i not in agents.recycled
+    # a wrong secret cannot rejoin
+    bad = await rc.get(f"/public-mcp/bridge/sessions/{a['session_id']}/commands", params={"wait": 0},
+                       headers={"X-Bridge-Secret": "nope"})
+    assert bad.status_code == 410
+
+
+async def test_a_tab_that_never_comes_back_ends_and_frees_its_runtime(rc, agents, monkeypatch):
+    import appbi_mcp.public.runtimes as R
+
+    a = await tab(rc, "A")
+    i = (await lease(rc, a)).json()["runtime"]
+    await rc.app.state.pool.reap(rc.app.state.bridge)
+    assert i not in agents.recycled, "a polling tab keeps its runtime"
+    monkeypatch.setattr(R, "TAB_GONE_SECONDS", -1)
+    await rc.app.state.pool.reap(rc.app.state.bridge)
+    for _ in range(50):
+        if i in agents.recycled:
+            break
+        await asyncio.sleep(0.02)
+    assert i in agents.recycled
+    assert (await _poll(rc, a)).status_code == 410
+
+
+async def test_runtime_transcript_only_from_that_runtime_for_its_lease(rc, agents):
+    a = await tab(rc, "A")
+    i = (await lease(rc, a)).json()["runtime"]
+    lease_id = agents.state[i]["lease"]
+    turn = {"id": "t1", "question": "Doanh thu?", "answer": "2,253,900", "tools": [{"name": "read_chart", "input": {"chart": "7"}}]}
+
+    async def send(headers: dict, lid: str = lease_id) -> httpx2.Response:
+        return await rc.post("/public-mcp/runtime-transcript", json={"lease_id": lid, "turn": turn}, headers=headers)
+
+    assert (await send({})).status_code == 404
+    assert (await send({"X-Runtime-Index": str(i), "X-Runtime-Secret": "wrong"})).status_code == 404
+    other = 2 if i == 1 else 1
+    assert (await send({"X-Runtime-Index": str(other), "X-Runtime-Secret": SECRET})).status_code == 409
+    assert (await send({"X-Runtime-Index": str(i), "X-Runtime-Secret": SECRET}, "rtl_other")).status_code == 409
+    rc.fake.calls.clear()
+    ok = await send({"X-Runtime-Index": str(i), "X-Runtime-Secret": SECRET})
+    assert ok.status_code == 200 and ok.json() == {"kept": True}
+    path, body = rc.fake.calls[-1]
+    assert path == "/public/mcp/transcript" and body["_grant_name"] == "A"
+    assert body["turn"]["question"] == "Doanh thu?" and body["view_state"] == DASH_STATE

@@ -169,7 +169,8 @@ export function PublicReportView({ variant }: { variant: 'public' | 'embed' }) {
           <DashboardAiBot
             aiBotEnabled={meta.appearance?.ai_bot_enabled === true}
             claude={meta.appearance?.mcp_enabled === true
-              ? { kind: 'report', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude }
+              ? { kind: 'report', token, sessionToken: getPublicSession(token), viewState: claudeView, apply: applyClaude,
+                keepsHistory: (meta.appearance as any)?.mcp_keeps_history === true }
               : undefined}
             surface="reports"
             token={token}

@@ -52,7 +52,10 @@ class FakePublicAppbi:
                 return JSONResponse({"error": "link_closed", "message": "closed"}, status_code=404)
             state = body.get("state") or {}
             if path == "/public/mcp/describe":
-                return JSONResponse({"kind": g["kind"], "name": g["name"], "charts": [{"chart_id": 7, "title": "Revenue"}]})
+                return JSONResponse({"kind": g["kind"], "name": g["name"], "charts": [{"chart_id": 7, "title": "Revenue"}],
+                                     "assistant_brief": f"# Report: {g['name']}"})
+            if path == "/public/mcp/transcript":
+                return JSONResponse({"kept": True})
             if path == "/public/mcp/check-state":
                 for f in state.get("viewer_filters") or []:
                     if f.get("field") == "orders.region":
